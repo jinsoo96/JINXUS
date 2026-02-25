@@ -96,6 +96,19 @@ class MetaStore:
                 )
             """)
 
+            # A/B 테스트 이력
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ab_test_logs (
+                    id              TEXT PRIMARY KEY,
+                    agent_name      TEXT NOT NULL,
+                    old_score       REAL,
+                    new_score       REAL,
+                    winner          TEXT NOT NULL,
+                    test_count      INTEGER,
+                    created_at      TEXT NOT NULL
+                )
+            """)
+
             # 인덱스 생성
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_logs_agent ON agent_task_logs(agent_name)"
@@ -365,6 +378,7 @@ class MetaStore:
         failure_patterns: str,
         improvement_applied: str,
         score_before: Optional[float] = None,
+        ab_test_score: Optional[float] = None,
     ) -> str:
         """개선 이력 저장"""
         improve_id = str(uuid.uuid4())
@@ -373,8 +387,8 @@ class MetaStore:
                 """
                 INSERT INTO improve_logs
                 (id, target_agent, trigger_type, trigger_source, old_version, new_version,
-                 failure_patterns, improvement_applied, score_before, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 failure_patterns, improvement_applied, score_before, score_after, ab_test_done, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     improve_id,
@@ -386,6 +400,8 @@ class MetaStore:
                     failure_patterns,
                     improvement_applied,
                     score_before,
+                    ab_test_score,
+                    1 if ab_test_score is not None else 0,
                     datetime.utcnow().isoformat(),
                 ),
             )
@@ -421,6 +437,58 @@ class MetaStore:
 
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    # ===== A/B 테스트 =====
+
+    async def log_ab_test(
+        self,
+        agent_name: str,
+        old_score: float,
+        new_score: float,
+        winner: str,
+        test_count: int,
+    ) -> str:
+        """A/B 테스트 결과 저장"""
+        test_id = str(uuid.uuid4())
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO ab_test_logs
+                (id, agent_name, old_score, new_score, winner, test_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    test_id,
+                    agent_name,
+                    old_score,
+                    new_score,
+                    winner,
+                    test_count,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            await db.commit()
+        return test_id
+
+    async def get_successful_tasks(
+        self, agent_name: str, limit: int = 10
+    ) -> list[dict]:
+        """성공한 작업 목록 조회 (테스트 케이스용)"""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT instruction as input, success_score
+                FROM agent_task_logs
+                WHERE agent_name = ? AND success = 1 AND success_score >= 0.7
+                ORDER BY success_score DESC, created_at DESC
+                LIMIT ?
+                """,
+                (agent_name, limit),
+            )
+            rows = await cursor.fetchall()
+            # 테스트 케이스 형식으로 반환 (output은 별도로 없으므로 빈값)
+            return [{"input": row["input"], "output": ""} for row in rows]
 
     # ===== 전체 통계 =====
 

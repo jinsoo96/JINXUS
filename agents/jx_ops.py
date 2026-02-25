@@ -4,15 +4,25 @@ LangGraph 패턴 적용:
 - retry 로직 (최대 3회, 지수 백오프)
 - reflect (반성 → 개선점 도출)
 - memory_write (장기기억 저장)
+
+실제 도구 사용:
+- github_agent: GitHub 작업 실행
+- scheduler: 스케줄 작업 등록
+- file_manager: 파일 CRUD
 """
 import asyncio
 import uuid
 import time
+import json
+import re
 
 from anthropic import Anthropic
 
 from config import get_settings
 from memory import get_jinx_memory
+from tools.github_agent import GitHubAgent
+from tools.scheduler import Scheduler
+from tools.file_manager import FileManager
 
 
 class JXOps:
@@ -34,6 +44,11 @@ class JXOps:
         self._model = settings.claude_model
         self._memory = get_jinx_memory()
         self._prompt_version = "v1.0"
+
+        # 실제 도구 초기화
+        self._github = GitHubAgent()
+        self._scheduler = Scheduler()
+        self._file_manager = FileManager()
 
     def _get_system_prompt(self) -> str:
         return """너는 JX_OPS야. 주인님을 모시는 JINXUS의 운영 전문가.
@@ -173,39 +188,283 @@ class JXOps:
         self, instruction: str, context: list, memory_context: list,
         task_type: str, is_destructive: bool, last_error: str = None
     ) -> dict:
-        """단일 실행 시도"""
-        # 이전 실패가 있으면 프롬프트에 포함
-        error_context = ""
-        if last_error:
-            error_context = f"\n\n이전 시도에서 오류 발생: {last_error}\n다른 방법을 안내해줘."
+        """단일 실행 시도 - 실제 도구 사용"""
+        # 파괴적 작업이면 확인 요청만
+        if is_destructive:
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, 이 작업은 파괴적입니다.\n\n요청: {instruction}\n\n실행 전 확인이 필요합니다. '확인'이라고 말씀해주시면 진행하겠습니다.",
+                "error": None,
+                "task_type": task_type,
+                "is_destructive": is_destructive,
+                "requires_confirmation": True,
+            }
 
-        # 메모리 컨텍스트
+        # 작업 유형별 실제 실행
+        if task_type == "github":
+            return await self._execute_github(instruction)
+        elif task_type == "schedule":
+            return await self._execute_schedule(instruction)
+        elif task_type == "file":
+            return await self._execute_file(instruction)
+        else:
+            # 일반 작업은 안내만
+            return await self._execute_guide(instruction, context, memory_context, task_type)
+
+    async def _execute_github(self, instruction: str) -> dict:
+        """GitHub 작업 실제 실행"""
+        # Claude에게 어떤 GitHub 작업을 해야 하는지 분석 요청
+        analysis_prompt = f"""다음 GitHub 관련 요청을 분석해서 실행할 작업을 JSON으로 알려줘.
+
+요청: {instruction}
+
+사용 가능한 action:
+- get_repo: 레포 정보 조회 (repo 필요)
+- list_branches: 브랜치 목록 (repo 필요)
+- create_branch: 브랜치 생성 (repo, branch, base 필요)
+- commit_file: 파일 커밋 (repo, path, content, message 필요)
+- create_pr: PR 생성 (repo, title, body, branch, base 필요)
+- list_prs: PR 목록 (repo 필요)
+- create_issue: 이슈 생성 (repo, title, body 필요)
+- list_issues: 이슈 목록 (repo 필요)
+
+JSON 형식으로만 응답해:
+```json
+{{"action": "...", "repo": "owner/repo", ...}}
+```
+
+실행할 수 없거나 정보가 부족하면:
+```json
+{{"action": "none", "reason": "이유..."}}
+```"""
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": analysis_prompt}],
+        )
+
+        response_text = response.content[0].text
+
+        # JSON 파싱
+        try:
+            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+            if json_match:
+                params = json.loads(json_match.group(1))
+            else:
+                params = json.loads(response_text)
+        except json.JSONDecodeError:
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, GitHub 작업을 분석했지만 추가 정보가 필요합니다.\n\n분석 결과:\n{response_text}",
+                "error": None,
+                "task_type": "github",
+                "is_destructive": False,
+            }
+
+        if params.get("action") == "none":
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, {params.get('reason', '요청을 처리할 수 없습니다.')}",
+                "error": None,
+                "task_type": "github",
+                "is_destructive": False,
+            }
+
+        # 실제 GitHub 작업 실행
+        result = await self._github.run(params)
+
+        if result.success:
+            return {
+                "success": True,
+                "score": 0.95,
+                "output": f"주인님, GitHub 작업을 완료했습니다.\n\n작업: {params.get('action')}\n결과:\n```json\n{json.dumps(result.output, ensure_ascii=False, indent=2)}\n```",
+                "error": None,
+                "task_type": "github",
+                "is_destructive": False,
+            }
+        else:
+            return {
+                "success": False,
+                "score": 0.3,
+                "output": f"주인님, GitHub 작업 중 오류가 발생했습니다.\n\n오류: {result.error}",
+                "error": result.error,
+                "task_type": "github",
+                "is_destructive": False,
+            }
+
+    async def _execute_schedule(self, instruction: str) -> dict:
+        """스케줄 작업 실제 실행"""
+        # Claude에게 스케줄 작업 분석 요청
+        analysis_prompt = f"""다음 스케줄 관련 요청을 분석해서 실행할 작업을 JSON으로 알려줘.
+
+요청: {instruction}
+
+사용 가능한 action:
+- add: 스케줄 추가 (name, cron, task_prompt 필요)
+- remove: 스케줄 제거 (name 필요)
+- list: 스케줄 목록 조회
+- pause: 스케줄 일시정지 (name 필요)
+- resume: 스케줄 재개 (name 필요)
+
+cron 형식: "분 시 일 월 요일" (예: "0 9 * * *" = 매일 9시)
+
+JSON 형식으로만 응답해:
+```json
+{{"action": "add", "name": "daily_news", "cron": "0 9 * * *", "task_prompt": "AI 뉴스 검색해서 요약해줘"}}
+```"""
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": analysis_prompt}],
+        )
+
+        response_text = response.content[0].text
+
+        try:
+            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+            if json_match:
+                params = json.loads(json_match.group(1))
+            else:
+                params = json.loads(response_text)
+        except json.JSONDecodeError:
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, 스케줄 작업을 분석했습니다.\n\n{response_text}",
+                "error": None,
+                "task_type": "schedule",
+                "is_destructive": False,
+            }
+
+        # 실제 스케줄 작업 실행
+        result = await self._scheduler.run(params)
+
+        if result.success:
+            return {
+                "success": True,
+                "score": 0.95,
+                "output": f"주인님, 스케줄 작업을 완료했습니다.\n\n작업: {params.get('action')}\n결과:\n```json\n{json.dumps(result.output, ensure_ascii=False, indent=2)}\n```",
+                "error": None,
+                "task_type": "schedule",
+                "is_destructive": False,
+            }
+        else:
+            return {
+                "success": False,
+                "score": 0.3,
+                "output": f"주인님, 스케줄 작업 중 오류가 발생했습니다.\n\n오류: {result.error}",
+                "error": result.error,
+                "task_type": "schedule",
+                "is_destructive": False,
+            }
+
+    async def _execute_file(self, instruction: str) -> dict:
+        """파일 작업 실제 실행"""
+        # Claude에게 파일 작업 분석 요청
+        analysis_prompt = f"""다음 파일 관련 요청을 분석해서 실행할 작업을 JSON으로 알려줘.
+
+요청: {instruction}
+
+사용 가능한 action:
+- read: 파일 읽기 (path 필요)
+- write: 파일 쓰기 (path, content 필요)
+- list: 디렉토리 목록 (path 필요)
+- delete: 파일 삭제 (path 필요) - 주의: 파괴적 작업
+- move: 파일 이동 (source, destination 필요)
+- copy: 파일 복사 (source, destination 필요)
+
+JSON 형식으로만 응답해:
+```json
+{{"action": "read", "path": "/path/to/file"}}
+```
+
+삭제 등 파괴적 작업이면:
+```json
+{{"action": "delete", "path": "...", "destructive": true}}
+```"""
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": analysis_prompt}],
+        )
+
+        response_text = response.content[0].text
+
+        try:
+            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+            if json_match:
+                params = json.loads(json_match.group(1))
+            else:
+                params = json.loads(response_text)
+        except json.JSONDecodeError:
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, 파일 작업을 분석했습니다.\n\n{response_text}",
+                "error": None,
+                "task_type": "file",
+                "is_destructive": False,
+            }
+
+        # 파괴적 작업이면 확인 요청
+        if params.get("destructive"):
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, 이 작업은 파괴적입니다.\n\n작업: {params.get('action')}\n경로: {params.get('path')}\n\n실행하려면 '확인'이라고 말씀해주세요.",
+                "error": None,
+                "task_type": "file",
+                "is_destructive": True,
+                "pending_action": params,
+            }
+
+        # 실제 파일 작업 실행
+        result = await self._file_manager.run(params)
+
+        if result.success:
+            output_str = result.output if isinstance(result.output, str) else json.dumps(result.output, ensure_ascii=False, indent=2)
+            return {
+                "success": True,
+                "score": 0.95,
+                "output": f"주인님, 파일 작업을 완료했습니다.\n\n작업: {params.get('action')}\n결과:\n```\n{output_str[:2000]}\n```",
+                "error": None,
+                "task_type": "file",
+                "is_destructive": False,
+            }
+        else:
+            return {
+                "success": False,
+                "score": 0.3,
+                "output": f"주인님, 파일 작업 중 오류가 발생했습니다.\n\n오류: {result.error}",
+                "error": result.error,
+                "task_type": "file",
+                "is_destructive": False,
+            }
+
+    async def _execute_guide(
+        self, instruction: str, context: list, memory_context: list, task_type: str
+    ) -> dict:
+        """일반 작업 안내 (기존 방식)"""
         memory_str = ""
         if memory_context:
             memory_str = "\n\n참고: 과거 유사 작업\n" + "\n".join(
                 f"- {m.get('summary', '')[:100]}" for m in memory_context[:2]
             )
 
-        # 작업 유형별 가이드
         type_guide = self._get_type_guide(task_type)
-
-        # 파괴적 작업 경고
-        destructive_warning = ""
-        if is_destructive:
-            destructive_warning = """
-⚠️ 주의: 이 작업은 파괴적입니다. 되돌릴 수 없을 수 있습니다.
-반드시 주인님께 확인을 받은 후 실행해야 합니다.
-"""
 
         prompt = f"""주인님의 운영 요청: {instruction}
 {memory_str}
-{error_context}
 
 {type_guide}
-{destructive_warning}
 
-이 요청을 어떻게 처리할지 계획을 세우고, 실행 방법을 안내해줘.
-파괴적 작업이라면 주인님께 확인을 요청해."""
+이 요청을 어떻게 처리할지 계획을 세우고, 실행 방법을 안내해줘."""
 
         response = self._client.messages.create(
             model=self._model,
@@ -214,15 +473,13 @@ class JXOps:
             messages=[{"role": "user", "content": prompt}],
         )
 
-        output = response.content[0].text
-
         return {
             "success": True,
             "score": 0.85,
-            "output": output,
+            "output": response.content[0].text,
             "error": None,
             "task_type": task_type,
-            "is_destructive": is_destructive,
+            "is_destructive": False,
         }
 
     def _get_type_guide(self, task_type: str) -> str:

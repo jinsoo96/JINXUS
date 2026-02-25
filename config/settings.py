@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     github_token: str = Field(default="")
     github_personal_access_token: str = Field(default="")
 
+    # 텔레그램
+    telegram_bot_token: str = Field(default="")
+    telegram_authorized_user_id: int = Field(default=0)  # 허용된 사용자 ID
+
     # 자가 강화
     auto_improve_threshold: float = Field(default=0.6)
     reflect_every_n_tasks: int = Field(default=10)

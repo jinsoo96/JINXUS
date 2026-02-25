@@ -10,6 +10,8 @@ from anthropic import Anthropic
 
 from config import get_settings
 from memory import get_jinx_memory
+from core.context_guard import guard_results, guard_context
+from core.model_router import select_model_for_core
 
 
 class SubTask(TypedDict):
@@ -206,8 +208,8 @@ class JinxusCore:
         }
 
     async def _aggregate_node(self, state: ManagerState) -> ManagerState:
-        """에이전트 결과 취합"""
-        results = state["dispatch_results"]
+        """에이전트 결과 취합 (context_guard 적용)"""
+        results = guard_results(state["dispatch_results"])  # 토큰 폭탄 방지
         user_input = state["user_input"]
 
         if len(results) == 1:
@@ -314,7 +316,7 @@ class JinxusCore:
         return parsed_results
 
     async def _execute_sequential(self, subtasks: list[SubTask]) -> list[AgentResult]:
-        """순차 실행 (의존성 고려)"""
+        """순차 실행 (의존성 고려, context_guard 적용)"""
         results = []
         context = []
 
@@ -335,12 +337,15 @@ class JinxusCore:
                             "summary": dep_result["output"][:500],
                         })
 
+            # 컨텍스트 크기 제한 적용
+            guarded_context = guard_context(context)
+
             if agent_name in self._agents:
                 result = await self._run_agent(
                     subtask["task_id"],
                     self._agents[agent_name],
                     subtask["instruction"],
-                    context,
+                    guarded_context,
                 )
                 results.append(result)
 
@@ -503,18 +508,41 @@ class JinxusCore:
 """
 
     def _parse_decomposition(self, response_text: str) -> dict:
-        """분해 응답 파싱"""
-        try:
-            # JSON 블록 추출
-            import re
-            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(1))
+        """더 강건한 JSON 파싱 (여러 패턴 시도)"""
+        import re
 
-            # JSON 직접 파싱 시도
+        # 1차: ```json 블록
+        m = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # 2차: ``` 블록 (언어 표시 없음)
+        m = re.search(r"```\s*(.*?)\s*```", response_text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # 3차: { ... } 패턴 직접 찾기
+        m = re.search(r"\{[\s\S]*\}", response_text)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # 4차: 전체 텍스트를 JSON으로 시도
+        try:
             return json.loads(response_text)
         except json.JSONDecodeError:
-            return {"subtasks": [], "execution_mode": "sequential"}
+            pass
+
+        # 5차: 파싱 완전 실패 → 직접 응답으로 폴백
+        return {"subtasks": [], "execution_mode": "sequential", "brief_plan": "direct_response"}
 
     # ===== 공개 인터페이스 =====
 
@@ -568,49 +596,133 @@ class JinxusCore:
         }
 
     async def run_stream(self, user_input: str, session_id: str = None):
-        """SSE 스트리밍 실행 (제너레이터)"""
+        """진짜 SSE 스트리밍 — 단계별 실시간 전송"""
         if not session_id:
             session_id = str(uuid.uuid4())
 
         task_id = str(uuid.uuid4())
 
         # 시작 이벤트
-        yield {
-            "event": "start",
-            "data": {"task_id": task_id, "session_id": session_id},
-        }
+        yield {"event": "start", "data": {"task_id": task_id, "session_id": session_id}}
 
-        # 분해 단계
-        yield {
-            "event": "manager_thinking",
-            "data": {"step": "decompose"},
-        }
+        # === 1. intake (메모리 로드) ===
+        yield {"event": "manager_thinking", "data": {"step": "intake"}}
 
-        # 실제 실행
-        result = await self.run(user_input, session_id)
+        short_term = await self._memory.get_short_term(session_id, limit=5)
+        memory_context = self._memory.search_all_memories(user_input, limit=5)
+        await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
 
-        # 에이전트 실행 이벤트
-        for agent in result["agents_used"]:
-            yield {
-                "event": "agent_done",
-                "data": {"agent": agent, "success": True},
-            }
+        # === 2. decompose (명령 분해) ===
+        yield {"event": "manager_thinking", "data": {"step": "decompose"}}
 
-        # 응답 청크
-        response = result["response"]
-        chunk_size = 100
-        for i in range(0, len(response), chunk_size):
-            yield {
-                "event": "message",
-                "data": {"content": response[i:i+chunk_size], "chunk": True},
-            }
+        decompose_prompt = self._get_decompose_prompt(user_input, memory_context)
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=2048,
+            system=self._get_system_prompt(),
+            messages=[{"role": "user", "content": decompose_prompt}],
+        )
+        decomposition = self._parse_decomposition(response.content[0].text)
+        subtasks = decomposition.get("subtasks", [])
+        execution_mode = decomposition.get("execution_mode", "sequential")
+
+        # 서브태스크가 없으면 직접 응답
+        if not subtasks:
+            subtasks = [{
+                "task_id": "sub_001",
+                "assigned_agent": "DIRECT",
+                "instruction": user_input,
+                "depends_on": [],
+                "priority": "normal",
+            }]
+
+        yield {"event": "decompose_done", "data": {"subtasks_count": len(subtasks), "mode": execution_mode}}
+
+        # === 3. dispatch (에이전트 실행) ===
+        results = []
+        agents_used = []
+
+        if len(subtasks) == 1 and subtasks[0]["assigned_agent"] == "DIRECT":
+            # 직접 응답: 진짜 스트리밍
+            yield {"event": "agent_started", "data": {"agent": "JINXUS_CORE"}}
+
+            # 모델 라우팅: 단순 대화는 sonnet, 복잡한 작업은 opus
+            selected_model = select_model_for_core(user_input)
+
+            # messages.stream() 사용하여 토큰 단위 스트리밍
+            full_response = ""
+            with self._client.messages.stream(
+                model=selected_model,
+                max_tokens=2048,
+                system=self._get_system_prompt(),
+                messages=[{"role": "user", "content": user_input}],
+            ) as stream:
+                for text_chunk in stream.text_stream:
+                    full_response += text_chunk
+                    yield {"event": "message", "data": {"content": text_chunk, "chunk": True}}
+
+            results.append({
+                "task_id": subtasks[0]["task_id"],
+                "agent_name": "JINXUS_CORE",
+                "success": True,
+                "success_score": 0.9,
+                "output": full_response,
+                "failure_reason": None,
+                "duration_ms": 0,
+            })
+            yield {"event": "agent_done", "data": {"agent": "JINXUS_CORE", "success": True}}
+
+        else:
+            # 에이전트 실행
+            for task in subtasks:
+                agent_name = task["assigned_agent"]
+                if agent_name in self._agents:
+                    yield {"event": "agent_started", "data": {"agent": agent_name, "task_id": task["task_id"]}}
+
+            if execution_mode == "parallel":
+                results = await self._execute_parallel(subtasks)
+            else:
+                results = await self._execute_sequential(subtasks)
+
+            for r in results:
+                agents_used.append(r["agent_name"])
+                yield {"event": "agent_done", "data": {"agent": r["agent_name"], "success": r["success"], "score": r["success_score"]}}
+
+            # 결과 취합 후 스트리밍
+            if len(results) == 1:
+                aggregated = results[0]["output"]
+            else:
+                aggregated = await self._aggregate_results(user_input, results)
+
+            # 취합 결과를 청크로 스트리밍 (빠르게)
+            chunk_size = 50
+            for i in range(0, len(aggregated), chunk_size):
+                yield {"event": "message", "data": {"content": aggregated[i:i+chunk_size], "chunk": True}}
+                await asyncio.sleep(0.01)  # 프론트가 받을 수 있게 약간의 딜레이
+
+        # === 4. 메모리 저장 ===
+        for result in results:
+            if result["agent_name"] != "JINXUS_CORE":
+                await self._memory.log_agent_stat(
+                    main_task_id=task_id,
+                    agent_name=result["agent_name"],
+                    instruction=user_input,
+                    success=result["success"],
+                    success_score=result["success_score"],
+                    duration_ms=result["duration_ms"],
+                    failure_reason=result.get("failure_reason"),
+                )
+
+        # 단기기억 저장
+        final_response = results[0]["output"] if results else ""
+        await self._memory.save_short_term(session_id, "assistant", final_response[:500], {"task_id": task_id})
 
         # 완료 이벤트
         yield {
             "event": "done",
             "data": {
-                "task_id": result["task_id"],
-                "agents_used": result["agents_used"],
-                "success": result["success"],
+                "task_id": task_id,
+                "agents_used": list(set(agents_used)) if agents_used else ["JINXUS_CORE"],
+                "success": all(r["success"] for r in results) if results else True,
             },
         }

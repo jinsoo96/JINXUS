@@ -189,6 +189,7 @@ class JinxMemory:
         failure_patterns: str,
         improvement_applied: str,
         score_before: Optional[float] = None,
+        ab_test_score: Optional[float] = None,
     ) -> str:
         """개선 이력 저장"""
         return await self._meta.log_improvement(
@@ -200,6 +201,7 @@ class JinxMemory:
             failure_patterns,
             improvement_applied,
             score_before,
+            ab_test_score,
         )
 
     async def get_improve_history(
@@ -207,6 +209,35 @@ class JinxMemory:
     ) -> list[dict]:
         """개선 이력 조회"""
         return await self._meta.get_improve_history(agent_name, limit)
+
+    # ===== A/B 테스트 =====
+
+    async def log_ab_test(
+        self,
+        agent_name: str,
+        old_score: float,
+        new_score: float,
+        winner: str,
+        test_count: int,
+    ) -> str:
+        """A/B 테스트 결과 저장"""
+        return await self._meta.log_ab_test(
+            agent_name, old_score, new_score, winner, test_count
+        )
+
+    async def get_successful_tasks(
+        self, agent_name: str, limit: int = 10
+    ) -> list[dict]:
+        """성공한 작업 목록 조회 (테스트 케이스용)"""
+        return await self._meta.get_successful_tasks(agent_name, limit)
+
+    async def get_prompt_versions(self, agent_name: str) -> list[dict]:
+        """프롬프트 버전 목록 조회"""
+        return await self._meta.get_prompt_history(agent_name)
+
+    async def activate_prompt_version(self, agent_name: str, version: str) -> bool:
+        """특정 프롬프트 버전 활성화"""
+        return await self._meta.activate_prompt_version(agent_name, version)
 
     # ===== 전체 통계 =====
 

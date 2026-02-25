@@ -30,7 +30,7 @@ class Scheduler(JinxTool):
         self._task_callback: Optional[Callable] = None
         self._jobs: dict[str, dict] = {}  # 메모리 내 작업 정보
 
-    def initialize(self, task_callback: Callable) -> None:
+    def initialize(self, task_callback: Callable = None) -> None:
         """스케줄러 초기화
 
         Args:
@@ -40,6 +40,12 @@ class Scheduler(JinxTool):
         if self._scheduler is None:
             self._scheduler = AsyncIOScheduler()
             self._task_callback = task_callback
+            self._scheduler.start()
+
+    def _ensure_initialized(self) -> None:
+        """스케줄러가 초기화되지 않았으면 자동 초기화"""
+        if self._scheduler is None:
+            self._scheduler = AsyncIOScheduler()
             self._scheduler.start()
 
     def shutdown(self) -> None:
@@ -62,13 +68,9 @@ class Scheduler(JinxTool):
         """
         self._start_timer()
 
+        # 자동 초기화 (콜백 없이 기본 동작)
         if not self._scheduler:
-            return ToolResult(
-                success=False,
-                output=None,
-                error="Scheduler not initialized",
-                duration_ms=self._get_duration_ms(),
-            )
+            self._ensure_initialized()
 
         action = input_data.get("action")
         if not action:
@@ -166,14 +168,27 @@ class Scheduler(JinxTool):
             duration_ms=self._get_duration_ms(),
         )
 
+    def _find_job_id_by_name(self, name: str) -> Optional[str]:
+        """이름으로 job_id 찾기"""
+        for job_id, job_info in self._jobs.items():
+            if job_info.get("name") == name:
+                return job_id
+        return None
+
     async def _remove_job(self, input_data: dict) -> ToolResult:
         """스케줄 작업 삭제"""
         job_id = input_data.get("job_id")
+        name = input_data.get("name")
+
+        # name으로 job_id 찾기
+        if not job_id and name:
+            job_id = self._find_job_id_by_name(name)
+
         if not job_id:
             return ToolResult(
                 success=False,
                 output=None,
-                error="job_id is required",
+                error="job_id or name is required",
                 duration_ms=self._get_duration_ms(),
             )
 
@@ -217,11 +232,16 @@ class Scheduler(JinxTool):
     async def _pause_job(self, input_data: dict) -> ToolResult:
         """작업 일시 중지"""
         job_id = input_data.get("job_id")
+        name = input_data.get("name")
+
+        if not job_id and name:
+            job_id = self._find_job_id_by_name(name)
+
         if not job_id:
             return ToolResult(
                 success=False,
                 output=None,
-                error="job_id is required",
+                error="job_id or name is required",
                 duration_ms=self._get_duration_ms(),
             )
 
@@ -246,11 +266,16 @@ class Scheduler(JinxTool):
     async def _resume_job(self, input_data: dict) -> ToolResult:
         """작업 재개"""
         job_id = input_data.get("job_id")
+        name = input_data.get("name")
+
+        if not job_id and name:
+            job_id = self._find_job_id_by_name(name)
+
         if not job_id:
             return ToolResult(
                 success=False,
                 output=None,
-                error="job_id is required",
+                error="job_id or name is required",
                 duration_ms=self._get_duration_ms(),
             )
 

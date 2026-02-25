@@ -93,7 +93,7 @@ class FileManager(JinxTool):
             elif action == "list":
                 return await self._list_dir(path)
             elif action == "move":
-                dest = input_data.get("dest")
+                dest = input_data.get("dest") or input_data.get("destination")
                 if not dest:
                     return ToolResult(
                         success=False,
@@ -102,6 +102,16 @@ class FileManager(JinxTool):
                         duration_ms=self._get_duration_ms(),
                     )
                 return await self._move(path, Path(dest).expanduser())
+            elif action == "copy":
+                dest = input_data.get("dest") or input_data.get("destination")
+                if not dest:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error="dest is required for copy action",
+                        duration_ms=self._get_duration_ms(),
+                    )
+                return await self._copy(path, Path(dest).expanduser())
             elif action == "mkdir":
                 return await self._mkdir(path)
             else:
@@ -280,6 +290,41 @@ class FileManager(JinxTool):
             output={
                 "path": str(path),
                 "action": "created",
+            },
+            duration_ms=self._get_duration_ms(),
+        )
+
+    async def _copy(self, src: Path, dest: Path) -> ToolResult:
+        """파일/디렉토리 복사"""
+        if not src.exists():
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Source not found: {src}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        if not self._is_path_allowed(dest):
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Destination not allowed: {dest}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if src.is_file():
+            shutil.copy2(str(src), str(dest))
+        else:
+            shutil.copytree(str(src), str(dest))
+
+        return ToolResult(
+            success=True,
+            output={
+                "source": str(src),
+                "destination": str(dest),
+                "action": "copied",
             },
             duration_ms=self._get_duration_ms(),
         )

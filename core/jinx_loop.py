@@ -1,5 +1,6 @@
-"""JinxLoop - 자가 강화 엔진"""
+"""JinxLoop - 자가 강화 엔진 + A/B 테스트"""
 import json
+import logging
 from typing import Optional
 from datetime import datetime
 
@@ -7,6 +8,8 @@ from anthropic import Anthropic
 
 from config import get_settings
 from memory import get_jinx_memory
+
+logger = logging.getLogger(__name__)
 
 
 class JinxLoop:
@@ -112,19 +115,41 @@ class JinxLoop:
             feedback_list=feedback_list,
         )
 
-        # 5. 새 버전 생성
+        new_prompt = improvement["new_prompt"]
+
+        # 5. A/B 테스트 실행
+        ab_result = await self.run_ab_test(
+            agent_name=agent_name,
+            old_prompt=old_content,
+            new_prompt=new_prompt,
+        )
+
+        # 6. A/B 테스트 결과에 따라 적용 여부 결정
+        if ab_result["winner"] == "old":
+            # 기존 프롬프트가 더 좋으면 적용 안 함
+            logger.info(f"[JinxLoop] {agent_name}: A/B 테스트 실패, 변경 미적용")
+            return {
+                "improve_id": None,
+                "agent_name": agent_name,
+                "old_version": old_version,
+                "new_version": None,
+                "change_reason": "A/B 테스트 미통과",
+                "ab_result": ab_result,
+                "applied": False,
+            }
+
+        # 7. 새 버전 생성 및 저장
         new_version = self._increment_version(old_version)
 
-        # 6. 프롬프트 저장
         await self._memory.save_prompt_version(
             agent_name=agent_name,
             version=new_version,
-            prompt_content=improvement["new_prompt"],
+            prompt_content=new_prompt,
             change_reason=improvement["change_reason"],
             is_active=True,
         )
 
-        # 7. 개선 이력 저장
+        # 8. 개선 이력 저장
         improve_id = await self._memory.log_improvement(
             target_agent=agent_name,
             trigger_type=trigger_type,
@@ -134,6 +159,12 @@ class JinxLoop:
             failure_patterns=json.dumps(failure_patterns),
             improvement_applied=improvement["change_reason"],
             score_before=performance.get("avg_score"),
+            ab_test_score=ab_result["new_score"],
+        )
+
+        logger.info(
+            f"[JinxLoop] {agent_name}: {old_version} -> {new_version} "
+            f"(A/B: {ab_result['old_score']:.2f} -> {ab_result['new_score']:.2f})"
         )
 
         return {
@@ -143,6 +174,8 @@ class JinxLoop:
             "new_version": new_version,
             "change_reason": improvement["change_reason"],
             "failure_patterns": failure_patterns,
+            "ab_result": ab_result,
+            "applied": True,
         }
 
     async def check_auto_improve(self, agent_name: str) -> bool:
@@ -277,6 +310,226 @@ JSON으로 응답해:
                 "new_prompt": old_prompt or f"{agent_name} 기본 프롬프트",
                 "change_reason": "파싱 실패로 변경 없음",
             }
+
+    async def run_ab_test(
+        self,
+        agent_name: str,
+        old_prompt: str,
+        new_prompt: str,
+        test_cases: Optional[list[dict]] = None,
+    ) -> dict:
+        """A/B 테스트 실행
+
+        Args:
+            agent_name: 테스트할 에이전트
+            old_prompt: 기존 프롬프트
+            new_prompt: 새 프롬프트
+            test_cases: 테스트 케이스 목록 [{input, expected_output}]
+
+        Returns:
+            A/B 테스트 결과
+        """
+        # 테스트 케이스 없으면 과거 작업에서 가져옴
+        if not test_cases:
+            test_cases = await self._get_test_cases(agent_name)
+
+        if not test_cases:
+            logger.info(f"[A/B] {agent_name}: 테스트 케이스 없음, 새 프롬프트 바로 적용")
+            return {
+                "winner": "new",
+                "reason": "no_test_cases",
+                "old_score": 0,
+                "new_score": 0,
+            }
+
+        old_scores = []
+        new_scores = []
+
+        for case in test_cases[:5]:  # 최대 5개 케이스
+            test_input = case.get("input", "")
+            expected = case.get("expected_output", "")
+
+            # 기존 프롬프트 테스트
+            old_response = await self._run_with_prompt(
+                prompt=old_prompt,
+                user_input=test_input,
+            )
+            old_score = await self._score_response(old_response, expected, test_input)
+            old_scores.append(old_score)
+
+            # 새 프롬프트 테스트
+            new_response = await self._run_with_prompt(
+                prompt=new_prompt,
+                user_input=test_input,
+            )
+            new_score = await self._score_response(new_response, expected, test_input)
+            new_scores.append(new_score)
+
+            logger.info(f"[A/B] 케이스: old={old_score:.2f}, new={new_score:.2f}")
+
+        avg_old = sum(old_scores) / len(old_scores) if old_scores else 0
+        avg_new = sum(new_scores) / len(new_scores) if new_scores else 0
+
+        # 새 버전이 10% 이상 개선되어야 승리
+        improvement_threshold = 0.1
+        if avg_new > avg_old * (1 + improvement_threshold):
+            winner = "new"
+            reason = f"새 프롬프트가 {((avg_new - avg_old) / max(avg_old, 0.01)) * 100:.1f}% 개선"
+        elif avg_old > avg_new * (1 + improvement_threshold):
+            winner = "old"
+            reason = f"기존 프롬프트가 더 좋음 (new: {avg_new:.2f} < old: {avg_old:.2f})"
+        else:
+            winner = "new"  # 비슷하면 새 버전 적용 (변화 시도)
+            reason = "비슷한 성능, 새 프롬프트 시도"
+
+        result = {
+            "winner": winner,
+            "reason": reason,
+            "old_score": avg_old,
+            "new_score": avg_new,
+            "test_count": len(test_cases),
+        }
+
+        # A/B 테스트 결과 저장
+        await self._memory.log_ab_test(
+            agent_name=agent_name,
+            old_score=avg_old,
+            new_score=avg_new,
+            winner=winner,
+            test_count=len(test_cases),
+        )
+
+        logger.info(f"[A/B] {agent_name} 결과: {winner} 승리 ({reason})")
+        return result
+
+    async def _get_test_cases(self, agent_name: str) -> list[dict]:
+        """에이전트의 테스트 케이스 가져오기
+
+        과거 성공한 작업들 중에서 테스트 케이스 추출
+        """
+        # 과거 성공 작업에서 샘플링
+        successful_tasks = await self._memory.get_successful_tasks(
+            agent_name=agent_name,
+            limit=10,
+        )
+
+        test_cases = []
+        for task in successful_tasks:
+            if task.get("input") and task.get("output"):
+                test_cases.append({
+                    "input": task["input"],
+                    "expected_output": task["output"],
+                })
+
+        return test_cases
+
+    async def _run_with_prompt(self, prompt: str, user_input: str) -> str:
+        """특정 프롬프트로 테스트 실행"""
+        system_prompt = prompt if prompt else "도움이 되는 AI 비서입니다."
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_input}],
+        )
+
+        return response.content[0].text
+
+    async def _score_response(
+        self,
+        response: str,
+        expected: str,
+        original_input: str,
+    ) -> float:
+        """응답 품질 점수 (0-1)
+
+        Claude를 사용하여 응답 품질 평가
+        """
+        if not expected:
+            # 예상 출력 없으면 기본 점수
+            return 0.5
+
+        eval_prompt = f"""다음 응답의 품질을 평가해줘.
+
+## 원본 요청
+{original_input[:500]}
+
+## 예상 출력
+{expected[:500]}
+
+## 실제 응답
+{response[:500]}
+
+## 평가 기준
+- 정확성: 예상 출력과 의미적으로 일치하는가
+- 완성도: 요청에 충분히 답변했는가
+- 품질: 명확하고 유용한가
+
+0.0 ~ 1.0 사이의 점수만 숫자로 응답해. (예: 0.85)
+"""
+
+        try:
+            eval_response = self._client.messages.create(
+                model="claude-sonnet-4-20250514",  # 평가는 sonnet으로
+                max_tokens=50,
+                messages=[{"role": "user", "content": eval_prompt}],
+            )
+            score_text = eval_response.content[0].text.strip()
+            # 숫자만 추출
+            import re
+            score_match = re.search(r"(0\.\d+|1\.0|0|1)", score_text)
+            if score_match:
+                return float(score_match.group(1))
+            return 0.5
+        except Exception as e:
+            logger.warning(f"점수 평가 실패: {e}")
+            return 0.5
+
+    async def rollback_prompt(self, agent_name: str) -> dict:
+        """프롬프트 롤백 (이전 버전으로)
+
+        Returns:
+            롤백 결과
+        """
+        versions = await self._memory.get_prompt_versions(agent_name)
+
+        if len(versions) < 2:
+            return {
+                "success": False,
+                "reason": "롤백할 이전 버전 없음",
+            }
+
+        # 현재 활성 버전
+        current = next((v for v in versions if v.get("is_active")), None)
+        # 이전 버전 (현재 다음으로 최신)
+        previous = next(
+            (v for v in versions if not v.get("is_active")),
+            None,
+        )
+
+        if not previous:
+            return {
+                "success": False,
+                "reason": "이전 버전 없음",
+            }
+
+        # 이전 버전 활성화
+        await self._memory.activate_prompt_version(
+            agent_name=agent_name,
+            version=previous["version"],
+        )
+
+        logger.info(
+            f"[Rollback] {agent_name}: {current['version']} -> {previous['version']}"
+        )
+
+        return {
+            "success": True,
+            "from_version": current["version"],
+            "to_version": previous["version"],
+            "reason": "롤백 완료",
+        }
 
     def _increment_version(self, version: str) -> str:
         """버전 증가"""

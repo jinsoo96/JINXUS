@@ -4,12 +4,17 @@ LangGraph 패턴 적용:
 - retry 로직 (최대 3회, 지수 백오프)
 - reflect (반성 → 개선점 도출)
 - memory_write (장기기억 저장)
+
+코드 실행 방식:
+- 복잡한 작업: Claude Code CLI (프로젝트, 패키지, 멀티파일)
+- 간단한 작업: python3 직접 실행 (빠른 스크립트)
 """
 import asyncio
 import tempfile
 import uuid
 import time
 import re
+import logging
 from typing import Optional
 from pathlib import Path
 
@@ -17,6 +22,9 @@ from anthropic import Anthropic
 
 from config import get_settings
 from memory import get_jinx_memory
+from tools.code_executor import CodeExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class JXCoder:
@@ -38,6 +46,29 @@ class JXCoder:
         self._model = settings.claude_model
         self._memory = get_jinx_memory()
         self._prompt_version = "v1.0"
+        self._code_executor = CodeExecutor()
+
+    def _is_complex_task(self, instruction: str) -> bool:
+        """복잡한 작업인지 판단 (Claude Code CLI 사용 여부)
+
+        복잡한 작업:
+        - 패키지 설치 필요
+        - 파일 생성/수정 필요
+        - 프로젝트 구조 생성
+        - FastAPI, Django 등 프레임워크 작업
+        """
+        complex_keywords = [
+            "프로젝트", "서버", "API", "FastAPI", "Django", "Flask",
+            "설치", "install", "pip", "패키지", "라이브러리",
+            "파일 만들", "파일 생성", "저장", "write",
+            "폴더", "디렉토리", "구조",
+            "테스트", "pytest", "unittest",
+            "크롤링", "스크래핑", "웹",
+            "데이터베이스", "DB", "SQL", "MongoDB",
+            "여러 파일", "모듈", "클래스 분리",
+        ]
+        instruction_lower = instruction.lower()
+        return any(kw.lower() in instruction_lower for kw in complex_keywords)
 
     def _get_system_prompt(self) -> str:
         return """너는 JX_CODER야. 주인님을 모시는 JINXUS의 코딩 전문가.
@@ -137,7 +168,91 @@ class JXCoder:
     async def _execute(
         self, instruction: str, context: list, memory_context: list, last_error: str = None
     ) -> dict:
-        """단일 실행 시도"""
+        """단일 실행 시도
+
+        복잡한 작업: Claude Code CLI 사용
+        간단한 작업: 코드 생성 후 python3 직접 실행
+        """
+        # 복잡한 작업은 Claude Code CLI로 처리
+        if self._is_complex_task(instruction):
+            return await self._execute_with_claude_code(instruction, last_error)
+
+        # 간단한 작업은 기존 방식 (코드 생성 + python3)
+        return await self._execute_simple(instruction, context, memory_context, last_error)
+
+    async def _execute_with_claude_code(
+        self, instruction: str, last_error: str = None
+    ) -> dict:
+        """복잡한 작업: Claude Code CLI 사용"""
+        logger.info(f"[JX_CODER] 복잡한 작업 → Claude Code CLI 사용")
+
+        error_context = ""
+        if last_error:
+            error_context = f"\n\n이전 시도 오류: {last_error}"
+
+        prompt = f"""주인님의 요청을 완수해줘:
+{instruction}
+{error_context}
+
+필요한 패키지 설치, 파일 생성, 코드 작성 및 실행을 모두 수행해.
+작업이 완료되면 결과를 명확히 출력해."""
+
+        try:
+            result = await self._code_executor.run({"prompt": prompt})
+
+            if result.success:
+                output_data = result.output or {}
+                code_output = output_data.get("code_output", "")
+                files_created = output_data.get("files_created", [])
+                working_dir = output_data.get("working_dir", "")
+
+                file_list = ""
+                if files_created:
+                    file_list = f"\n\n## 생성된 파일\n" + "\n".join(
+                        f"- {f}" for f in files_created
+                    )
+
+                output = f"""주인님, 작업이 완료되었습니다.
+
+## Claude Code 실행 결과
+```
+{code_output[:3000]}
+```
+{file_list}
+
+작업 디렉토리: {working_dir}
+"""
+                return {
+                    "success": True,
+                    "score": 0.95,
+                    "output": output,
+                    "error": None,
+                    "code": None,
+                    "working_dir": working_dir,
+                }
+            else:
+                return {
+                    "success": False,
+                    "score": 0.3,
+                    "output": f"Claude Code 실행 오류:\n{result.error}",
+                    "error": result.error,
+                    "code": None,
+                }
+
+        except Exception as e:
+            logger.error(f"[JX_CODER] Claude Code 실행 실패: {e}")
+            return {
+                "success": False,
+                "score": 0.2,
+                "output": f"Claude Code 실행 중 오류: {e}",
+                "error": str(e),
+                "code": None,
+            }
+
+    async def _execute_simple(
+        self, instruction: str, context: list, memory_context: list, last_error: str = None
+    ) -> dict:
+        """간단한 작업: 코드 생성 후 python3 직접 실행"""
         # 이전 실패가 있으면 프롬프트에 포함
         error_context = ""
         if last_error:
