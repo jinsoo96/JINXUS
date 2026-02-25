@@ -36,7 +36,7 @@
 ### 인프라
 - **컨테이너**: Docker (Redis, Qdrant)
 - **포트**:
-  - 프론트엔드: 3000
+  - 프론트엔드: 1818
   - 백엔드 API: 9000
   - Redis: 6379
   - Qdrant: 6333
@@ -189,7 +189,7 @@ npm install
 npm run dev
 
 # 4. 접속
-# 프론트엔드: http://localhost:3000
+# 프론트엔드: http://localhost:1818
 # API: http://localhost:9000
 # Swagger: http://localhost:9000/docs
 ```
