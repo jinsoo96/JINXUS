@@ -1,4 +1,6 @@
 """JINXUS FastAPI 서버"""
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,18 +17,34 @@ from api.routers import (
     improve_router,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작/종료 시 실행"""
+    settings = get_settings()
+
     # 시작 시
     orchestrator = get_orchestrator()
     await orchestrator.initialize()
     print("JINXUS initialized successfully")
 
+    # 텔레그램 봇 시작 (토큰이 있으면)
+    telegram_task = None
+    if settings.telegram_bot_token:
+        try:
+            from channels.telegram_bot import start_telegram_bot
+            telegram_task = asyncio.create_task(start_telegram_bot())
+            print(f"Telegram bot started: @JINXUS_bot")
+        except Exception as e:
+            logger.warning(f"Telegram bot failed to start: {e}")
+
     yield
 
     # 종료 시
+    if telegram_task:
+        telegram_task.cancel()
     print("JINXUS shutting down")
 
 

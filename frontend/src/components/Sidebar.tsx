@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { MessageSquare, Bot, Brain, Settings } from 'lucide-react';
 
@@ -16,14 +17,18 @@ export default function Sidebar() {
   return (
     <aside className="w-64 bg-dark-card border-r border-dark-border flex flex-col">
       {/* 로고 */}
-      <div className="p-6 border-b border-dark-border">
+      <div className="p-4 border-b border-dark-border">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white font-bold text-lg">J</span>
-          </div>
+          <Image
+            src="/jinxus-mascot.png"
+            alt="JINXUS"
+            width={72}
+            height={72}
+            className="rounded-xl"
+          />
           <div>
-            <h2 className="font-semibold">JINXUS</h2>
-            <p className="text-xs text-zinc-500">v1.0.0</p>
+            <h2 className="font-semibold text-lg">JINXUS</h2>
+            <p className="text-xs text-zinc-500">v1.1.0</p>
           </div>
         </div>
       </div>

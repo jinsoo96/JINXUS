@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { chatApi, feedbackApi } from '@/lib/api';
-import { Send, ThumbsUp, ThumbsDown, Bot, User, Loader2 } from 'lucide-react';
+import { Send, ThumbsUp, ThumbsDown, User, Loader2 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 
 export default function ChatTab() {
@@ -82,13 +83,21 @@ export default function ChatTab() {
         className={`flex gap-4 ${isUser ? 'flex-row-reverse' : ''}`}
       >
         {/* 아바타 */}
-        <div
-          className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-            isUser ? 'bg-primary' : 'bg-zinc-700'
-          }`}
-        >
-          {isUser ? <User size={20} /> : <Bot size={20} />}
-        </div>
+        {isUser ? (
+          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 bg-primary">
+            <User size={20} />
+          </div>
+        ) : (
+          <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
+            <Image
+              src="/jinxus-mascot.png"
+              alt="JINXUS"
+              width={40}
+              height={40}
+              className="w-full h-full object-cover object-top scale-150"
+            />
+          </div>
+        )}
 
         {/* 메시지 내용 */}
         <div
@@ -149,7 +158,13 @@ export default function ChatTab() {
         {messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
-              <Bot size={64} className="mx-auto text-zinc-600 mb-4" />
+              <Image
+                src="/jinxus-mascot.png"
+                alt="JINXUS"
+                width={150}
+                height={150}
+                className="mx-auto mb-4 rounded-2xl"
+              />
               <h2 className="text-xl font-semibold text-zinc-400 mb-2">
                 안녕하세요, 주인님
               </h2>
@@ -163,8 +178,14 @@ export default function ChatTab() {
         )}
         {isLoading && (
           <div className="flex gap-4">
-            <div className="w-10 h-10 rounded-full bg-zinc-700 flex items-center justify-center">
-              <Bot size={20} />
+            <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
+              <Image
+                src="/jinxus-mascot.png"
+                alt="JINXUS"
+                width={40}
+                height={40}
+                className="w-full h-full object-cover object-top scale-150"
+              />
             </div>
             <div className="flex items-center gap-2 text-zinc-400">
               <Loader2 size={20} className="animate-spin" />
