@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+.next/
+out/
+build/
+dist/
+.npm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend build
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+
+# Misc
+*.tmp
+.cache/
+server.log
+frontend.log
+nohup.out

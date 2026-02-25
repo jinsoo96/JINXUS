@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  jinxus:
+    build: .
+    ports:
+      - "9000:9000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - qdrant
+    volumes:
+      - ./data:/app/data
+      - ./prompts:/app/prompts
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  redis_data:
+  qdrant_data:
