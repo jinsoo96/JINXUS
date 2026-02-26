@@ -2,12 +2,13 @@
 
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
-import { MessageSquare, Bot, Brain, Settings } from 'lucide-react';
+import { MessageSquare, Bot, Brain, ScrollText, Settings } from 'lucide-react';
 
 const tabs = [
   { id: 'chat', label: '채팅', icon: MessageSquare },
   { id: 'agents', label: '에이전트', icon: Bot },
   { id: 'memory', label: '메모리', icon: Brain },
+  { id: 'logs', label: '로그', icon: ScrollText },
   { id: 'settings', label: '설정', icon: Settings },
 ] as const;
 

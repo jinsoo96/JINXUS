@@ -10,6 +10,8 @@ router = APIRouter(prefix="/task", tags=["task"])
 
 # 작업 저장소 (실제로는 Redis나 DB 사용 권장)
 _tasks: Dict[str, dict] = {}
+# asyncio Task 추적 (실제 취소용)
+_running_tasks: Dict[str, asyncio.Task] = {}
 
 
 async def _run_task(task_id: str, message: str, session_id: str):
@@ -21,6 +23,10 @@ async def _run_task(task_id: str, message: str, session_id: str):
 
         result = await orchestrator.run_task(message, session_id)
 
+        # 취소된 경우 무시
+        if _tasks[task_id]["status"] == "cancelled":
+            return
+
         _tasks[task_id].update({
             "status": "completed",
             "result": result["response"],
@@ -28,12 +34,21 @@ async def _run_task(task_id: str, message: str, session_id: str):
             "completed_at": result["completed_at"],
         })
 
+    except asyncio.CancelledError:
+        _tasks[task_id].update({
+            "status": "cancelled",
+            "result": "작업이 사용자에 의해 취소되었습니다.",
+            "completed_at": None,
+        })
     except Exception as e:
         _tasks[task_id].update({
             "status": "failed",
             "result": str(e),
             "completed_at": None,
         })
+    finally:
+        # 완료 후 추적에서 제거
+        _running_tasks.pop(task_id, None)
 
 
 @router.post("", response_model=TaskResponse)
@@ -63,7 +78,9 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
         "completed_at": None,
     }
 
-    background_tasks.add_task(_run_task, task_id, request.message, session_id)
+    # asyncio.Task로 추적하여 취소 가능하게
+    task = asyncio.create_task(_run_task(task_id, request.message, session_id))
+    _running_tasks[task_id] = task
 
     return TaskResponse(
         task_id=task_id,
@@ -92,19 +109,32 @@ async def get_task_status(task_id: str):
 
 @router.delete("/{task_id}")
 async def cancel_task(task_id: str):
-    """작업 취소"""
+    """작업 취소 - 실행 중인 작업 강제 중지"""
     if task_id not in _tasks:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = _tasks[task_id]
+    task_info = _tasks[task_id]
 
-    if task["status"] == "completed":
+    if task_info["status"] == "completed":
         raise HTTPException(status_code=400, detail="Task already completed")
 
-    # 실제 취소 로직 (복잡한 구현 필요)
-    _tasks[task_id]["status"] = "cancelled"
+    if task_info["status"] == "cancelled":
+        raise HTTPException(status_code=400, detail="Task already cancelled")
 
-    return {"task_id": task_id, "status": "cancelled"}
+    # 실행 중인 asyncio Task 취소
+    running_task = _running_tasks.get(task_id)
+    if running_task and not running_task.done():
+        running_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(running_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    _tasks[task_id]["status"] = "cancelled"
+    _tasks[task_id]["result"] = "작업이 사용자에 의해 취소되었습니다."
+    _running_tasks.pop(task_id, None)
+
+    return {"task_id": task_id, "status": "cancelled", "message": "작업이 취소되었습니다."}
 
 
 @router.get("")

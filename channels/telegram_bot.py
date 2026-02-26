@@ -48,6 +48,15 @@ class TelegramBot:
             return True
         return user_id == self._authorized_user_id
 
+    def _escape_markdown(self, text: str) -> str:
+        """텔레그램 마크다운 특수문자 이스케이프"""
+        # 텔레그램 Markdown 파싱 에러 방지
+        # 특수문자를 그대로 표시하도록 처리
+        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in escape_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
+
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일반 메시지 처리 → JINXUS_CORE 실행"""
         if not update.effective_user or not update.message:
@@ -82,14 +91,10 @@ class TelegramBot:
             # 처리 중 메시지 삭제
             await thinking_msg.delete()
 
-            # 텔레그램 4096자 제한 처리
+            # 텔레그램 4096자 제한 처리 (plain text로 전송 - 마크다운 파싱 에러 방지)
             for i in range(0, len(response), 4000):
                 chunk = response[i:i+4000]
-                await context.bot.send_message(
-                    chat_id,
-                    chunk,
-                    parse_mode="Markdown",
-                )
+                await context.bot.send_message(chat_id, chunk)
 
         except Exception as e:
             logger.error(f"Telegram message handling error: {e}")
@@ -123,17 +128,18 @@ class TelegramBot:
 
             status = await self._orchestrator.get_system_status()
 
+            agents_list = ', '.join(status.get('active_agents', [])) or '없음'
             status_text = (
-                f"**JINXUS 시스템 상태**\n\n"
+                f"[JINXUS 시스템 상태]\n\n"
                 f"상태: {status.get('status', 'unknown')}\n"
                 f"가동 시간: {status.get('uptime_seconds', 0)}초\n"
                 f"Redis: {'연결됨' if status.get('redis_connected') else '연결 안됨'}\n"
                 f"Qdrant: {'연결됨' if status.get('qdrant_connected') else '연결 안됨'}\n"
                 f"처리된 작업: {status.get('total_tasks_processed', 0)}개\n"
-                f"활성 에이전트: {', '.join(status.get('active_agents', []))}"
+                f"활성 에이전트: {agents_list}"
             )
 
-            await update.message.reply_text(status_text, parse_mode="Markdown")
+            await update.message.reply_text(status_text)
 
         except Exception as e:
             await update.message.reply_text(f"상태 조회 오류: {e}")
@@ -153,12 +159,12 @@ class TelegramBot:
 
             agents = self._orchestrator.get_agents()
 
-            agents_text = "**등록된 에이전트**\n\n"
+            agents_text = "[등록된 에이전트]\n\n"
             for agent_name in agents:
                 status = await self._orchestrator.get_agent_status(agent_name)
-                agents_text += f"- {agent_name} (v{status.get('prompt_version', '1.0')})\n"
+                agents_text += f"• {agent_name} (v{status.get('prompt_version', '1.0')})\n"
 
-            await update.message.reply_text(agents_text, parse_mode="Markdown")
+            await update.message.reply_text(agents_text)
 
         except Exception as e:
             await update.message.reply_text(f"에이전트 조회 오류: {e}")
@@ -191,13 +197,13 @@ class TelegramBot:
                 await update.message.reply_text("검색 결과가 없습니다.")
                 return
 
-            memory_text = f"**'{query}' 검색 결과**\n\n"
+            memory_text = f"['{query}' 검색 결과]\n\n"
             for r in results:
                 summary = r.get("summary", "")[:100]
                 agent = r.get("agent_name", "UNKNOWN")
-                memory_text += f"- [{agent}] {summary}...\n\n"
+                memory_text += f"• [{agent}] {summary}...\n\n"
 
-            await update.message.reply_text(memory_text, parse_mode="Markdown")
+            await update.message.reply_text(memory_text)
 
         except Exception as e:
             await update.message.reply_text(f"메모리 검색 오류: {e}")
@@ -271,7 +277,6 @@ async def send_notification(message: str):
         await bot.send_message(
             chat_id=settings.telegram_authorized_user_id,
             text=message,
-            parse_mode="Markdown",
         )
     except Exception as e:
         logger.error(f"Failed to send Telegram notification: {e}")

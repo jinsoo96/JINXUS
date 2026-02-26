@@ -5,6 +5,7 @@ from .agents import router as agents_router
 from .memory import router as memory_router
 from .status import router as status_router
 from .improve import router as improve_router
+from .logs import router as logs_router
 
 __all__ = [
     "chat_router",
@@ -14,4 +15,5 @@ __all__ = [
     "memory_router",
     "status_router",
     "improve_router",
+    "logs_router",
 ]

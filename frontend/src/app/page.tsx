@@ -7,6 +7,7 @@ import Sidebar from '@/components/Sidebar';
 import ChatTab from '@/components/tabs/ChatTab';
 import AgentsTab from '@/components/tabs/AgentsTab';
 import MemoryTab from '@/components/tabs/MemoryTab';
+import LogsTab from '@/components/tabs/LogsTab';
 import SettingsTab from '@/components/tabs/SettingsTab';
 
 export default function Home() {
@@ -33,6 +34,8 @@ export default function Home() {
         return <AgentsTab />;
       case 'memory':
         return <MemoryTab />;
+      case 'logs':
+        return <LogsTab />;
       case 'settings':
         return <SettingsTab />;
       default:

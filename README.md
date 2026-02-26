@@ -61,7 +61,25 @@ JINXUS는 **LangGraph 패턴**을 적용한 멀티 에이전트 AI 비서 시스
 - Node.js 18+
 - Docker
 
-### 1. 클론 & 환경 설정
+### 방법 1: 자동 설치 (권장)
+
+```bash
+git clone https://github.com/jinsoo96/JINXUS.git
+cd JINXUS
+
+# 자동 설치 (의존성, Docker, tmux 등 모두 설치)
+chmod +x setup.sh && ./setup.sh
+
+# .env 파일에 API 키 설정
+vim .env
+
+# 서버 시작 (24시간 운영)
+./start.sh
+```
+
+### 방법 2: 수동 설치
+
+#### 1. 클론 & 환경 설정
 
 ```bash
 git clone https://github.com/jinsoo96/JINXUS.git
@@ -86,7 +104,7 @@ TELEGRAM_AUTHORIZED_USER_ID=your-user-id
 GITHUB_TOKEN=ghp_...
 ```
 
-### 2. 인프라 실행 (Docker)
+#### 2. 인프라 실행 (Docker)
 
 ```bash
 # Redis (단기기억)
@@ -96,7 +114,7 @@ docker run -d --name jinxus-redis -p 6379:6379 redis:7-alpine
 docker run -d --name jinxus-qdrant -p 6333:6333 qdrant/qdrant
 ```
 
-### 3. 백엔드 실행
+#### 3. 백엔드 실행
 
 ```bash
 # 의존성 설치
@@ -109,7 +127,7 @@ pip install -e .
 python main.py
 ```
 
-### 4. 프론트엔드 실행
+#### 4. 프론트엔드 실행
 
 ```bash
 cd frontend
@@ -117,13 +135,55 @@ npm install
 npm run dev
 ```
 
-### 5. 접속
+### 접속
 
 | 서비스 | URL |
 |--------|-----|
 | 웹 UI | http://localhost:1818 |
 | API 서버 | http://localhost:9000 |
 | API 문서 | http://localhost:9000/docs |
+
+---
+
+## 🌙 24시간 운영 설정
+
+데스크탑에서 JINXUS를 24시간 돌리고 밖에서 텔레그램으로 사용하려면:
+
+### 1. 서버 시작 (tmux 자동)
+
+```bash
+# 서버 시작 (백엔드 + 프론트엔드 tmux 세션으로)
+./start.sh
+
+# 또는 수동으로
+tmux new -s jinxus
+python3 main.py
+# Ctrl+B, D 로 분리 (detach)
+```
+
+### 2. 맥 잠자기 해제
+
+```
+시스템 설정 → 에너지 → 잠자기: 안 함
+```
+
+### 3. tmux 관리 명령어
+
+| 명령어 | 설명 |
+|--------|------|
+| `tmux ls` | 세션 목록 |
+| `tmux attach -t jinxus` | 세션 붙기 |
+| `Ctrl+B, D` | 세션 분리 (터미널 닫아도 유지) |
+| `Ctrl+B, n` | 다음 윈도우 (backend ↔ frontend) |
+| `./stop.sh` | 서버 종료 |
+
+### 4. 결과
+
+```
+데스크탑 켜둠 + 서버 실행 중
+    ↓
+밖에서 텔레그램으로 JINXUS 사용 가능!
+```
 
 ---
 

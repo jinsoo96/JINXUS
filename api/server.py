@@ -15,6 +15,7 @@ from api.routers import (
     memory_router,
     status_router,
     improve_router,
+    logs_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(status_router)
     app.include_router(improve_router)
+    app.include_router(logs_router)
 
     @app.get("/")
     async def root():

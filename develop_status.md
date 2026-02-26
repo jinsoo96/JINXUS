@@ -1,6 +1,6 @@
 # JINXUS 개발 현황
 
-> 마지막 업데이트: 2026-02-26 (4차)
+> 마지막 업데이트: 2026-02-26 (6차)
 
 ---
 
@@ -56,6 +56,7 @@
 - [x] `/memory` - 메모리 검색/관리
 - [x] `/status` - 시스템 상태
 - [x] `/improve` - 수동 자가 강화
+- [x] `/logs` - 작업 로그 조회 (에이전트별 필터, 페이지네이션)
 
 ### JINXUS_CORE (총괄 지휘관)
 - [x] 명령 분해 (decompose) + 강화된 JSON 파싱
@@ -121,6 +122,8 @@
 - [x] 설정 페이지 (시스템 상태, 인프라 연결)
 - [x] 반응형 사이드바 네비게이션
 - [x] Zustand 상태 관리
+- [x] **로그 탭** - 작업 이력 조회, 에이전트별 필터링
+- [x] **마스코트 UI** - 채팅 아바타, 사이드바 로고
 - [ ] SSE 스트리밍 실시간 연동 (백엔드 준비됨)
 - [ ] 개선 이력 시각화
 - [ ] 디자인 커스터마이징 (색상 테마 등)
@@ -148,7 +151,7 @@
 | TAVILY_API_KEY | ✅ 설정됨 |
 | GITHUB_TOKEN | ✅ 설정됨 |
 | TELEGRAM_BOT_TOKEN | ✅ 설정됨 |
-| TELEGRAM_AUTHORIZED_USER_ID | ⚠️ 설정 필요 |
+| TELEGRAM_AUTHORIZED_USER_ID | ✅ 설정됨 |
 | Redis | ✅ Docker 실행 중 |
 | Qdrant | ✅ Docker 실행 중 |
 
@@ -193,11 +196,16 @@ JINXUS/
 │   ├── scheduler.py          # APScheduler 실제 연동
 │   └── file_manager.py       # 파일 조작 (copy 추가)
 ├── api/                       # FastAPI 라우터
+│   ├── routers/
+│   │   └── logs.py            # 로그 조회 API [NEW]
 ├── frontend/                  # Next.js 프론트엔드
 ├── main.py                    # FastAPI 서버
-├── pyproject.toml             # CLI 엔트리포인트 [NEW]
-├── requirements.txt           # (python-telegram-bot 추가)
-├── .env.example               # (텔레그램 설정 추가)
+├── pyproject.toml             # CLI 엔트리포인트
+├── requirements.txt           # Python 의존성
+├── setup.sh                   # 자동 설치 스크립트 [NEW]
+├── start.sh                   # 서버 시작 스크립트 [NEW]
+├── stop.sh                    # 서버 중지 스크립트 [NEW]
+├── .env.example               # 환경변수 예시
 └── develop_status.md          # 이 파일
 ```
 
@@ -210,13 +218,20 @@ JINXUS/
 docker run -d --name jinxus-redis -p 6379:6379 redis:7-alpine
 docker run -d --name jinxus-qdrant -p 6333:6333 qdrant/qdrant
 
-# 2. 백엔드 실행
+# 2. 백엔드 실행 (tmux로 24시간 유지)
 cd /path/to/JINXUS
 pip3 install -r requirements.txt
 pip3 install -e .  # CLI 명령어 등록
-python3 main.py
 
-# 3. 프론트엔드 실행 (별도 터미널)
+# 방법 A: tmux 사용 (추천 - 터미널 닫아도 유지)
+tmux new -s jinxus
+python3 main.py
+# Ctrl+B, D 로 분리 (detach)
+
+# 방법 B: nohup 사용 (간단)
+nohup python3 main.py > /tmp/jinxus.log 2>&1 &
+
+# 3. 프론트엔드 실행 (별도 터미널 또는 tmux 세션)
 cd frontend
 npm install
 npm run dev
@@ -230,6 +245,18 @@ jinxus --interactive  # 대화형 모드
 # 프론트엔드: http://localhost:1818
 # API: http://localhost:9000
 # Swagger: http://localhost:9000/docs
+```
+
+### 24시간 운영 설정 (맥)
+
+```bash
+# 잠자기 방지 (시스템 설정에서도 가능)
+# 시스템 설정 → 에너지 → 잠자기 안 함
+
+# tmux 세션 관리
+tmux ls                     # 세션 목록
+tmux attach -s jinxus       # 세션 다시 붙기
+tmux kill-session -s jinxus # 세션 종료
 ```
 
 ---
@@ -316,11 +343,89 @@ memory/meta_store.py     # A/B 테스트 테이블
 memory/jinx_memory.py    # A/B 테스트 메서드
 tools/scheduler.py       # 이름 기반 조회
 tools/file_manager.py    # copy 기능
+api/routers/logs.py      # [신규] 로그 조회 API
+frontend/src/components/tabs/LogsTab.tsx  # [신규] 로그 탭 UI
 ```
 
 ---
 
 ## 변경 이력
+
+### 2026-02-26 (7차) - 24시간 운영 설정 + 로그/작업 관리 API
+
+**자동화 스크립트 추가:**
+- `setup.sh` - 원클릭 설치 (의존성, Docker, tmux 자동 설치)
+- `start.sh` - 서버 시작 (tmux 세션으로 24시간 운영)
+- `stop.sh` - 서버 중지
+
+**사용법:**
+```bash
+# 새 데스크탑에서 처음 설치
+chmod +x setup.sh && ./setup.sh
+
+# 서버 시작
+./start.sh
+
+# 서버 중지
+./stop.sh
+```
+
+**24시간 운영 설정:**
+- tmux 설치 및 세션 생성 (`tmux new -s jinxus`)
+- 서버가 tmux 세션에서 실행되어 터미널 닫아도 유지
+- 맥 잠자기 해제 필요: `시스템 설정 → 에너지 → 잠자기 안 함` (수동 설정)
+
+**tmux 사용법:**
+```bash
+# 세션 목록 확인
+tmux ls
+
+# 세션 다시 붙기
+tmux attach -s jinxus
+
+# 세션 분리 (detach)
+# Ctrl+B 누른 후 D
+
+# 세션 종료
+tmux kill-session -s jinxus
+```
+
+**로그 관리 API 추가:**
+- `DELETE /logs/{log_id}` - 로그 단일 삭제
+- `DELETE /logs` - 로그 일괄 삭제 (body에 log_ids 배열)
+- `DELETE /logs/agent/{agent_name}` - 에이전트별 로그 전체 삭제
+- `POST /logs/cleanup` - 오래된 로그 정리 (days, keep_failures 옵션)
+  - keep_failures=true 시 실패 로그는 보존 (JinxLoop 학습용)
+
+**작업 취소 API 개선:**
+- `DELETE /task/{task_id}` - 실행 중인 작업 강제 중지
+- asyncio.Task 추적하여 실제 작업 cancel 구현
+- 취소 시 상태 및 결과 메시지 업데이트
+
+**프론트엔드 UI 기능 추가:**
+- 로그 탭에서 개별/선택/일괄 삭제 가능
+- 오래된 로그 정리 모달 (실패 로그 유지 옵션)
+- 채팅 탭에 히스토리 삭제 버튼
+
+**수정된 파일:**
+- `memory/meta_store.py` - 로그 삭제 메서드 추가
+- `api/routers/logs.py` - 삭제 API 엔드포인트 추가
+- `api/routers/task.py` - 작업 취소 로직 개선
+- `frontend/src/components/tabs/LogsTab.tsx` - 삭제 UI 추가
+- `frontend/src/components/tabs/ChatTab.tsx` - 히스토리 삭제 버튼 추가
+
+---
+
+### 2026-02-26 (6차) - 로그 탭 추가
+**백엔드:**
+- `/logs` API 엔드포인트 신규 추가
+- 에이전트별 필터링, 페이지네이션 지원
+- 작업 성공/실패, 소요 시간, 점수 반환
+
+**프론트엔드:**
+- 로그 탭 UI 구현 (`LogsTab.tsx`)
+- 성공/실패 아이콘, 에이전트 필터, 새로고침 버튼
+- 작업 기록 시간순 표시
 
 ### 2026-02-26 (5차) - UI 마스코트 적용
 **프론트엔드 UI:**

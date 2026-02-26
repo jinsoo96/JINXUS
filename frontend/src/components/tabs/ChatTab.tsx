@@ -4,13 +4,20 @@ import { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { chatApi, feedbackApi } from '@/lib/api';
-import { Send, ThumbsUp, ThumbsDown, User, Loader2 } from 'lucide-react';
+import { Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 
 export default function ChatTab() {
-  const { messages, addMessage, isLoading, setLoading, sessionId, setSessionId } = useAppStore();
+  const { messages, addMessage, isLoading, setLoading, sessionId, setSessionId, clearMessages } = useAppStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const handleClearChat = () => {
+    if (messages.length === 0) return;
+    if (confirm('채팅 히스토리를 삭제하시겠습니까?')) {
+      clearMessages();
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -153,6 +160,23 @@ export default function ChatTab() {
 
   return (
     <div className="h-full flex flex-col">
+      {/* 채팅 헤더 (메시지 있을 때만) */}
+      {messages.length > 0 && (
+        <div className="flex items-center justify-between mb-4 pb-3 border-b border-dark-border">
+          <div className="text-sm text-zinc-500">
+            {messages.length}개의 메시지
+          </div>
+          <button
+            onClick={handleClearChat}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-red-600/10 transition-colors"
+            title="채팅 히스토리 삭제"
+          >
+            <Trash2 size={14} />
+            히스토리 삭제
+          </button>
+        </div>
+      )}
+
       {/* 메시지 목록 */}
       <div className="flex-1 overflow-y-auto space-y-6 pb-4">
         {messages.length === 0 ? (

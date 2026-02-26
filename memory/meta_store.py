@@ -228,6 +228,102 @@ class MetaStore:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def get_recent_logs(
+        self,
+        agent_name: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """최근 작업 로그 조회"""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            if agent_name:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM agent_task_logs
+                    WHERE agent_name = ?
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (agent_name, limit, offset),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM agent_task_logs
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_logs_count(self, agent_name: Optional[str] = None) -> int:
+        """로그 총 개수"""
+        async with aiosqlite.connect(self._db_path) as db:
+            if agent_name:
+                cursor = await db.execute(
+                    "SELECT COUNT(*) FROM agent_task_logs WHERE agent_name = ?",
+                    (agent_name,),
+                )
+            else:
+                cursor = await db.execute("SELECT COUNT(*) FROM agent_task_logs")
+
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def delete_log(self, log_id: str) -> bool:
+        """로그 단일 삭제"""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM agent_task_logs WHERE id = ?",
+                (log_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_logs_bulk(self, log_ids: list[str]) -> int:
+        """로그 일괄 삭제"""
+        async with aiosqlite.connect(self._db_path) as db:
+            placeholders = ",".join("?" * len(log_ids))
+            cursor = await db.execute(
+                f"DELETE FROM agent_task_logs WHERE id IN ({placeholders})",
+                log_ids,
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def delete_logs_by_agent(self, agent_name: str) -> int:
+        """에이전트별 로그 전체 삭제"""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM agent_task_logs WHERE agent_name = ?",
+                (agent_name,),
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def delete_old_logs(self, days: int = 7, keep_failures: bool = True) -> int:
+        """오래된 로그 삭제 (실패 로그는 선택적 유지)"""
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            if keep_failures:
+                # 성공 로그만 삭제, 실패 로그는 유지
+                cursor = await db.execute(
+                    "DELETE FROM agent_task_logs WHERE created_at < ? AND success = 1",
+                    (cutoff,),
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM agent_task_logs WHERE created_at < ?",
+                    (cutoff,),
+                )
+            await db.commit()
+            return cursor.rowcount
+
     # ===== 프롬프트 버전 =====
 
     async def save_prompt_version(
