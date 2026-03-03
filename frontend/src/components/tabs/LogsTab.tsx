@@ -37,7 +37,7 @@ export default function LogsTab() {
         params.append('agent_name', filter);
       }
 
-      const res = await fetch(`http://localhost:9000/logs?${params}`);
+      const res = await fetch(`http://localhost:19000/logs?${params}`);
       const data: LogsResponse = await res.json();
       setLogs(data.logs);
       setTotal(data.total);
@@ -73,7 +73,7 @@ export default function LogsTab() {
     if (!confirm('이 로그를 삭제하시겠습니까?')) return;
 
     try {
-      const res = await fetch(`http://localhost:9000/logs/${logId}`, {
+      const res = await fetch(`http://localhost:19000/logs/${logId}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -90,7 +90,7 @@ export default function LogsTab() {
     if (!confirm(`선택한 ${selectedIds.size}개 로그를 삭제하시겠습니까?`)) return;
 
     try {
-      const res = await fetch('http://localhost:9000/logs', {
+      const res = await fetch('http://localhost:19000/logs', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ log_ids: Array.from(selectedIds) }),
@@ -106,7 +106,7 @@ export default function LogsTab() {
   // 오래된 로그 정리
   const handleCleanup = async () => {
     try {
-      const res = await fetch('http://localhost:9000/logs/cleanup', {
+      const res = await fetch('http://localhost:19000/logs/cleanup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ days: cleanupDays, keep_failures: keepFailures }),

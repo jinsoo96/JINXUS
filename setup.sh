@@ -124,11 +124,13 @@ fi
 # ===== 6. Python 의존성 설치 =====
 echo ""
 echo "📦 Python 의존성 설치 중..."
-pip3 install -r requirements.txt -q
+pip3 install -r backend/requirements.txt -q
 success "Python 의존성 설치 완료"
 
 # CLI 등록
+cd backend
 pip3 install -e . -q
+cd ..
 success "jinxus CLI 명령어 등록됨"
 
 # ===== 7. Docker 컨테이너 실행 =====
@@ -143,7 +145,7 @@ else
         docker start jinxus-redis
         success "Redis 컨테이너 시작됨"
     else
-        docker run -d --name jinxus-redis -p 6379:6379 redis:7-alpine
+        docker run -d --name jinxus-redis -p 16379:6379 redis:7-alpine
         success "Redis 컨테이너 생성 및 시작됨"
     fi
 fi
@@ -156,7 +158,7 @@ else
         docker start jinxus-qdrant
         success "Qdrant 컨테이너 시작됨"
     else
-        docker run -d --name jinxus-qdrant -p 6333:6333 qdrant/qdrant
+        docker run -d --name jinxus-qdrant -p 16333:6333 qdrant/qdrant
         success "Qdrant 컨테이너 생성 및 시작됨"
     fi
 fi
@@ -164,13 +166,13 @@ fi
 # ===== 8. .env 파일 확인 =====
 echo ""
 echo "🔐 환경 설정 확인 중..."
-if [ -f .env ]; then
+if [ -f backend/.env ]; then
     success ".env 파일 존재"
 else
-    if [ -f .env.example ]; then
-        cp .env.example .env
+    if [ -f backend/.env.example ]; then
+        cp backend/.env.example backend/.env
         warning ".env 파일 생성됨 - API 키 설정 필요!"
-        warning "vim .env 로 API 키를 입력해주세요"
+        warning "vim backend/.env 로 API 키를 입력해주세요"
     else
         error ".env.example 파일 없음"
     fi
@@ -200,7 +202,7 @@ echo "     ./start.sh"
 echo ""
 echo "  3. 접속"
 echo "     - 웹 UI: http://localhost:1818"
-echo "     - API: http://localhost:9000"
+echo "     - API: http://localhost:19000"
 echo ""
 echo "  4. CLI 사용"
 echo "     jinxus \"안녕?\""

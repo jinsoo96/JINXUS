@@ -2,6 +2,7 @@
 
 import { useAppStore } from '@/store/useAppStore';
 import { Activity, Wifi, WifiOff } from 'lucide-react';
+import TasksDropdown from './TasksDropdown';
 
 export default function Header() {
   const { systemStatus } = useAppStore();
@@ -57,10 +58,13 @@ export default function Header() {
           </div>
         )}
 
+        {/* 활성 작업 드롭다운 */}
+        <TasksDropdown />
+
         {/* 처리 작업 수 */}
         {systemStatus && (
           <div className="text-sm text-zinc-400">
-            작업: {systemStatus.total_tasks_processed}
+            완료: {systemStatus.total_tasks_processed}
           </div>
         )}
       </div>

@@ -13,7 +13,7 @@ interface AppState {
   agents: AgentInfo[];
 
   // 현재 탭
-  activeTab: 'chat' | 'agents' | 'memory' | 'logs' | 'settings';
+  activeTab: 'chat' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings';
 
   // 액션
   addMessage: (message: ChatMessage) => void;
@@ -25,6 +25,7 @@ interface AppState {
   // 데이터 로드
   loadSystemStatus: () => Promise<void>;
   loadAgents: () => Promise<void>;
+  fetchAgents: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -66,6 +67,16 @@ export const useAppStore = create<AppState>((set) => ({
       set({ agents: response.agents });
     } catch (error) {
       console.error('Failed to load agents:', error);
+    }
+  },
+
+  // fetchAgents는 loadAgents의 별칭
+  fetchAgents: async () => {
+    try {
+      const response = await agentApi.getAll();
+      set({ agents: response.agents });
+    } catch (error) {
+      console.error('Failed to fetch agents:', error);
     }
   },
 }));

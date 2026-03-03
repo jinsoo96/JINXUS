@@ -161,7 +161,7 @@ export default function SettingsTab() {
 
       {/* 버전 정보 */}
       <div className="text-center text-zinc-600 text-sm">
-        JINXUS v1.0.0 | LangGraph 패턴 적용 | 주인님의 충실한 AI 비서
+        JINXUS v1.1.0 | 에이전트 실행 로직 적용 | 주인님의 충실한 AI 비서
       </div>
     </div>
   );

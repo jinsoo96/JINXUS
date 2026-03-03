@@ -48,9 +48,13 @@ export interface MemorySearchResult {
   timestamp: string;
 }
 
-// 에이전트 정보
+// 에이전트 정보 (API 응답 형식)
 export interface AgentInfo {
   name: string;
-  description: string;
-  capabilities: string[];
+  prompt_version: string;
+  total_tasks: number;
+  success_rate: number;
+  avg_score: number;
+  avg_duration_ms: number;
+  recent_failures: number;
 }

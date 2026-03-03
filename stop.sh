@@ -36,9 +36,9 @@ fi
 
 # 포트 확인
 sleep 1
-if lsof -i :9000 > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠ 포트 9000 아직 사용 중 - 강제 종료 시도${NC}"
-    kill -9 $(lsof -t -i :9000) 2>/dev/null || true
+if lsof -i :19000 > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ 포트 19000 아직 사용 중 - 강제 종료 시도${NC}"
+    kill -9 $(lsof -t -i :19000) 2>/dev/null || true
 fi
 
 if lsof -i :1818 > /dev/null 2>&1; then

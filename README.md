@@ -71,7 +71,7 @@ cd JINXUS
 chmod +x setup.sh && ./setup.sh
 
 # .env 파일에 API 키 설정
-vim .env
+vim backend/.env
 
 # 서버 시작 (24시간 운영)
 ./start.sh
@@ -86,10 +86,10 @@ git clone https://github.com/jinsoo96/JINXUS.git
 cd JINXUS
 
 # 환경 변수 설정
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-`.env` 파일 수정:
+`backend/.env` 파일 수정:
 ```env
 # 필수
 ANTHROPIC_API_KEY=sk-ant-...
@@ -107,16 +107,18 @@ GITHUB_TOKEN=ghp_...
 #### 2. 인프라 실행 (Docker)
 
 ```bash
-# Redis (단기기억)
-docker run -d --name jinxus-redis -p 6379:6379 redis:7-alpine
+# Redis (단기기억) - 호스트 16379 → 컨테이너 6379
+docker run -d --name jinxus-redis -p 16379:6379 redis:7-alpine
 
-# Qdrant (장기기억)
-docker run -d --name jinxus-qdrant -p 6333:6333 qdrant/qdrant
+# Qdrant (장기기억) - 호스트 16333 → 컨테이너 6333
+docker run -d --name jinxus-qdrant -p 16333:6333 qdrant/qdrant
 ```
 
 #### 3. 백엔드 실행
 
 ```bash
+cd backend
+
 # 의존성 설치
 pip install -r requirements.txt
 
@@ -140,8 +142,8 @@ npm run dev
 | 서비스 | URL |
 |--------|-----|
 | 웹 UI | http://localhost:1818 |
-| API 서버 | http://localhost:9000 |
-| API 문서 | http://localhost:9000/docs |
+| API 서버 | http://localhost:19000 |
+| API 문서 | http://localhost:19000/docs |
 
 ---
 
@@ -157,7 +159,7 @@ npm run dev
 
 # 또는 수동으로
 tmux new -s jinxus
-python3 main.py
+cd backend && python3 main.py
 # Ctrl+B, D 로 분리 (detach)
 ```
 
@@ -240,7 +242,7 @@ jinxus --interactive
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   FastAPI Backend (:9000)                        │
+│                   FastAPI Backend (:19000)                        │
 │                                                                  │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
 │  │ JINXUS_CORE │───▶│ 전문 에이전트 │───▶│  JinxLoop   │         │
@@ -261,7 +263,7 @@ jinxus --interactive
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
 │  │    Redis     │  │   Qdrant     │  │   SQLite     │          │
 │  │  (단기기억)   │  │  (장기기억)   │  │  (메타저장)   │          │
-│  │    :6379     │  │    :6333     │  │   로컬 파일   │          │
+│  │    :16379     │  │    :16333     │  │   로컬 파일   │          │
 │  └──────────────┘  └──────────────┘  └──────────────┘          │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -344,21 +346,21 @@ JX_OPS는 안내만 하는 게 아니라 **실제로 실행**합니다:
 ### 채팅
 ```bash
 # 동기 채팅
-curl -X POST http://localhost:9000/chat/sync \
+curl -X POST http://localhost:19000/chat/sync \
   -H "Content-Type: application/json" \
   -d '{"message": "안녕?"}'
 
 # SSE 스트리밍
-curl http://localhost:9000/chat?message=안녕
+curl http://localhost:19000/chat?message=안녕
 ```
 
 ### 시스템 상태
 ```bash
-curl http://localhost:9000/status
+curl http://localhost:19000/status
 ```
 
 ### 전체 API 문서
-http://localhost:9000/docs (Swagger UI)
+http://localhost:19000/docs (Swagger UI)
 
 ---
 
@@ -366,41 +368,32 @@ http://localhost:9000/docs (Swagger UI)
 
 ```
 JINXUS/
-├── agents/                 # 에이전트 모듈
-│   ├── jinxus_core.py     # 총괄 지휘관 (SSE 스트리밍)
-│   ├── jx_coder.py        # 코드 전문가 (Claude Code CLI)
-│   ├── jx_researcher.py   # 리서치 전문가
-│   ├── jx_writer.py       # 글쓰기 전문가
-│   ├── jx_analyst.py      # 분석 전문가
-│   └── jx_ops.py          # 운영 전문가 (실제 실행)
+├── backend/                # Python 백엔드
+│   ├── jinxus/            # 메인 패키지
+│   │   ├── agents/        # 에이전트 (CORE + 5개 전문가)
+│   │   ├── api/           # FastAPI 라우터
+│   │   ├── core/          # 오케스트레이터, JinxLoop
+│   │   ├── hr/            # HR 시스템 (고용/해고/스폰)
+│   │   ├── memory/        # 3계층 메모리
+│   │   ├── tools/         # 도구 + MCP
+│   │   ├── channels/      # 텔레그램, CLI
+│   │   └── config/        # 설정
+│   ├── prompts/           # 프롬프트 템플릿
+│   ├── main.py
+│   └── requirements.txt
 │
-├── channels/               # 멀티채널
-│   ├── telegram_bot.py    # 텔레그램 봇
-│   └── cli.py             # CLI 인터페이스
+├── frontend/              # Next.js 프론트엔드
+│   └── src/components/    # UI 컴포넌트
 │
-├── core/                   # 핵심 로직
-│   ├── orchestrator.py    # 오케스트레이터
-│   ├── jinx_loop.py       # 자가 강화 (A/B 테스트)
-│   ├── context_guard.py   # 토큰 관리
-│   ├── model_router.py    # 모델 자동 선택
-│   └── plugin_loader.py   # 플러그인 로더
+├── docs/                  # 문서
+│   ├── 01_BLUEPRINT.md
+│   ├── 02_FEEDBACK_AND_ROADMAP.md
+│   ├── 03_DEVELOP_STATUS.md
+│   └── 04_REFACTORING_PLAN.md
 │
-├── memory/                 # 3계층 메모리
-│   ├── short_term.py      # Redis
-│   ├── long_term.py       # Qdrant
-│   └── meta_store.py      # SQLite
-│
-├── tools/                  # 플러그인 도구
-│   ├── code_executor.py   # 코드 실행
-│   ├── web_searcher.py    # 웹 검색
-│   ├── github_agent.py    # GitHub 연동
-│   ├── scheduler.py       # 스케줄러
-│   └── file_manager.py    # 파일 관리
-│
-├── frontend/               # Next.js 프론트엔드
-├── main.py                 # 서버 엔트리포인트
-├── pyproject.toml          # CLI 설정
-└── requirements.txt        # Python 의존성
+├── setup.sh               # 자동 설치
+├── start.sh               # 서버 시작
+└── stop.sh                # 서버 중지
 ```
 
 ---
@@ -413,8 +406,8 @@ MIT License
 
 <div align="center">
 
-**Made with ❤️ by jinsoo96**
+**Made with by jinsoo96**
 
-*"명령만 해. 나머지는 내가 다 한다."*
+Inspired by [@jangharye](https://github.com/jangharye)
 
 </div>
