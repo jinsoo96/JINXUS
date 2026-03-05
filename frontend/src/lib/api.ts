@@ -45,20 +45,23 @@ export interface StoredMessage {
 
 // SSE 이벤트 타입
 export interface SSEEvent {
-  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error';
+  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled';
   data: {
     task_id?: string;
     session_id?: string;
     agent?: string;
-    step?: string;         // manager_thinking
+    step?: string;           // manager_thinking
+    detail?: string;         // manager_thinking 상세
     subtasks_count?: number; // decompose_done
-    mode?: string;          // decompose_done
-    content?: string;       // message chunk
-    chunk?: boolean;        // message
-    score?: number;         // agent_done
+    mode?: string;           // decompose_done
+    content?: string;        // message chunk
+    chunk?: boolean;         // message
+    score?: number;          // agent_done
     agents_used?: string[];  // done
+    response?: string;       // done - full response
     success?: boolean;
     error?: string;
+    message?: string;        // cancelled, error 메시지
   };
 }
 
@@ -72,18 +75,20 @@ export const chatApi = {
     });
   },
 
-  // SSE 스트리밍 채팅 (POST + fetch)
+  // SSE 스트리밍 채팅 (POST + fetch) - AbortController 지원
   streamMessage: async (
     message: string,
     sessionId: string | undefined,
     onEvent: (event: SSEEvent) => void,
-    onError: (error: Error) => void
+    onError: (error: Error) => void,
+    abortController?: AbortController
   ): Promise<void> => {
     try {
       const response = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, session_id: sessionId }),
+        signal: abortController?.signal,
       });
 
       if (!response.ok) {
@@ -101,6 +106,12 @@ export const chatApi = {
       let currentEvent = 'message';
 
       while (true) {
+        // AbortController 체크
+        if (abortController?.signal.aborted) {
+          reader.cancel();
+          break;
+        }
+
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -125,6 +136,10 @@ export const chatApi = {
         }
       }
     } catch (error) {
+      // AbortError는 무시 (정상적인 취소)
+      if (error instanceof Error && error.name === 'AbortError') {
+        return;
+      }
       onError(error instanceof Error ? error : new Error('Stream error'));
     }
   },
@@ -144,6 +159,18 @@ export const chatApi = {
     return apiCall<{ success: boolean; message: string }>(`/chat/sessions/${sessionId}`, {
       method: 'DELETE',
     });
+  },
+
+  // SSE 스트리밍 취소
+  cancelStream: async (taskId: string): Promise<{ success: boolean; task_id: string; message: string }> => {
+    return apiCall<{ success: boolean; task_id: string; message: string }>(`/chat/cancel/${taskId}`, {
+      method: 'POST',
+    });
+  },
+
+  // 활성 스트림 목록
+  getActiveStreams: async (): Promise<{ active_streams: string[]; count: number }> => {
+    return apiCall<{ active_streams: string[]; count: number }>('/chat/active');
   },
 };
 
@@ -345,6 +372,43 @@ export const feedbackApi = {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId, score, comment }),
     });
+  },
+};
+
+// 로그 API
+export interface TaskLog {
+  id: string;
+  agent_name: string;
+  instruction: string;
+  success: boolean;
+  success_score: number;
+  duration_ms: number;
+  failure_reason: string | null;
+  created_at: string;
+}
+
+export interface LogsSummary {
+  total_tasks: number;
+  agent_stats: Record<string, {
+    total_tasks: number;
+    success_rate: number;
+    avg_duration_ms: number;
+  }>;
+}
+
+export const logsApi = {
+  // 로그 목록 조회
+  getLogs: async (agentName?: string, limit: number = 50, offset: number = 0): Promise<{ logs: TaskLog[]; total: number }> => {
+    const params = new URLSearchParams();
+    if (agentName) params.append('agent_name', agentName);
+    params.append('limit', String(limit));
+    params.append('offset', String(offset));
+    return apiCall<{ logs: TaskLog[]; total: number }>(`/logs?${params.toString()}`);
+  },
+
+  // 로그 요약 통계
+  getSummary: async (): Promise<LogsSummary> => {
+    return apiCall<LogsSummary>('/logs/summary');
   },
 };
 

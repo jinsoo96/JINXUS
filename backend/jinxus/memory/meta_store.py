@@ -26,6 +26,7 @@ class MetaStore:
                     main_task_id    TEXT,
                     agent_name      TEXT NOT NULL,
                     instruction     TEXT,
+                    output          TEXT,
                     success         INTEGER NOT NULL,
                     success_score   REAL,
                     duration_ms     INTEGER,
@@ -34,6 +35,12 @@ class MetaStore:
                     created_at      TEXT NOT NULL
                 )
             """)
+
+            # 기존 테이블에 output 컬럼 추가 (마이그레이션)
+            try:
+                await db.execute("ALTER TABLE agent_task_logs ADD COLUMN output TEXT")
+            except Exception:
+                pass  # 이미 존재하면 무시
 
             # 에이전트별 프롬프트 버전
             await db.execute("""
@@ -134,22 +141,26 @@ class MetaStore:
         duration_ms: int,
         failure_reason: Optional[str] = None,
         prompt_version: Optional[str] = None,
+        output: Optional[str] = None,
     ) -> str:
         """작업 로그 저장"""
         task_id = str(uuid.uuid4())
+        # output은 A/B 테스트용으로 500자까지만 저장 (DB 용량 절약)
+        truncated_output = output[:500] if output else None
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
                 INSERT INTO agent_task_logs
-                (id, main_task_id, agent_name, instruction, success, success_score,
+                (id, main_task_id, agent_name, instruction, output, success, success_score,
                  duration_ms, failure_reason, prompt_version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     main_task_id,
                     agent_name,
                     instruction,
+                    truncated_output,
                     1 if success else 0,
                     success_score,
                     duration_ms,
@@ -569,22 +580,119 @@ class MetaStore:
     async def get_successful_tasks(
         self, agent_name: str, limit: int = 10
     ) -> list[dict]:
-        """성공한 작업 목록 조회 (테스트 케이스용)"""
+        """성공한 작업 목록 조회 (테스트 케이스용)
+
+        A/B 테스트에서 사용: 과거 성공 작업의 input/output 쌍을 반환
+        """
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT instruction as input, success_score
+                SELECT instruction as input, output, success_score
                 FROM agent_task_logs
                 WHERE agent_name = ? AND success = 1 AND success_score >= 0.7
+                    AND output IS NOT NULL AND output != ''
                 ORDER BY success_score DESC, created_at DESC
                 LIMIT ?
                 """,
                 (agent_name, limit),
             )
             rows = await cursor.fetchall()
-            # 테스트 케이스 형식으로 반환 (output은 별도로 없으므로 빈값)
-            return [{"input": row["input"], "output": ""} for row in rows]
+            return [
+                {"input": row["input"], "output": row["output"]}
+                for row in rows
+            ]
+
+    # ===== 스케줄 작업 =====
+
+    async def save_scheduled_task(
+        self,
+        task_id: str,
+        name: str,
+        cron_expression: str,
+        task_prompt: str,
+        is_active: bool = True,
+        next_run_at: Optional[str] = None,
+    ) -> str:
+        """스케줄 작업 저장"""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO scheduled_tasks
+                (id, name, cron_expression, task_prompt, is_active, next_run_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    name,
+                    cron_expression,
+                    task_prompt,
+                    1 if is_active else 0,
+                    next_run_at,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            await db.commit()
+        return task_id
+
+    async def get_scheduled_tasks(self, active_only: bool = True) -> list[dict]:
+        """스케줄 작업 목록 조회"""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if active_only:
+                cursor = await db.execute(
+                    "SELECT * FROM scheduled_tasks WHERE is_active = 1"
+                )
+            else:
+                cursor = await db.execute("SELECT * FROM scheduled_tasks")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_scheduled_task(self, task_id: str) -> Optional[dict]:
+        """스케줄 작업 단일 조회"""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM scheduled_tasks WHERE id = ?",
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_scheduled_task_run(
+        self, task_id: str, last_run_at: str, next_run_at: Optional[str] = None
+    ) -> None:
+        """스케줄 작업 실행 기록 업데이트"""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                UPDATE scheduled_tasks
+                SET last_run_at = ?, next_run_at = ?
+                WHERE id = ?
+                """,
+                (last_run_at, next_run_at, task_id),
+            )
+            await db.commit()
+
+    async def delete_scheduled_task(self, task_id: str) -> bool:
+        """스케줄 작업 삭제"""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM scheduled_tasks WHERE id = ?",
+                (task_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def set_scheduled_task_active(self, task_id: str, is_active: bool) -> bool:
+        """스케줄 작업 활성화/비활성화"""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "UPDATE scheduled_tasks SET is_active = ? WHERE id = ?",
+                (1 if is_active else 0, task_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     # ===== 전체 통계 =====
 

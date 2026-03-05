@@ -10,8 +10,15 @@ from .code_executor import CodeExecutor
 from .web_searcher import WebSearcher
 from .file_manager import FileManager
 from .github_agent import GitHubAgent
+from .github_graphql import GitHubGraphQL
 from .scheduler import Scheduler
 from .hr_tool import HRTool
+from .system_manager import SystemManager
+from .prompt_version_manager import (
+    PromptVersionManager,
+    get_prompt_version_manager,
+    sync_all_prompts,
+)
 from .mcp_client import (
     MCPClient,
     MCPToolAdapter,
@@ -35,8 +42,13 @@ __all__ = [
     "WebSearcher",
     "FileManager",
     "GitHubAgent",
+    "GitHubGraphQL",
     "Scheduler",
     "HRTool",
+    "SystemManager",
+    "PromptVersionManager",
+    "get_prompt_version_manager",
+    "sync_all_prompts",
     "MCPClient",
     "MCPToolAdapter",
     "get_mcp_client",
@@ -69,8 +81,11 @@ def register_tools() -> dict[str, JinxTool]:
             "web_searcher": WebSearcher(),
             "file_manager": FileManager(),
             "github_agent": GitHubAgent(),
+            "github_graphql": GitHubGraphQL(),
             "scheduler": Scheduler(),
             "hr_tool": HRTool(),
+            "system_manager": SystemManager(),
+            "prompt_version_manager": PromptVersionManager(),
         }
         logger.info(f"기존 도구 {len(TOOL_REGISTRY)}개 등록됨")
 

@@ -1,16 +1,15 @@
 """JINXUS 에이전트 기반 클래스"""
 from abc import ABC, abstractmethod
-from typing import TypedDict, Any, Optional
+from typing import TypedDict, Optional
 from datetime import datetime
 import uuid
-import time
 
 from langgraph.graph import StateGraph, END
 from anthropic import Anthropic
 
 from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
-from jinxus.tools import get_tools_for_agent, ToolResult
+from jinxus.tools import get_tools_for_agent
 from jinxus.agents.state_tracker import get_state_tracker, GraphNode
 
 

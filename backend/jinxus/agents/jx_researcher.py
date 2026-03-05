@@ -25,6 +25,7 @@ from tavily import TavilyClient
 from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
 from jinxus.tools import get_dynamic_executor, DynamicToolExecutor
+from jinxus.agents.state_tracker import get_state_tracker, GraphNode
 
 
 class JXResearcher:
@@ -51,6 +52,9 @@ class JXResearcher:
         # 동적 도구 실행기 (MCP 포함)
         self._executor: Optional[DynamicToolExecutor] = None
         self._use_dynamic_tools = settings.use_dynamic_tools if hasattr(settings, 'use_dynamic_tools') else True
+        # 상태 추적기 (실시간 UI 연동)
+        self._state_tracker = get_state_tracker()
+        self._state_tracker.register_agent(self.name)
 
     def _get_executor(self) -> DynamicToolExecutor:
         """동적 도구 실행기 지연 로드"""
@@ -122,42 +126,61 @@ class JXResearcher:
         start_time = time.time()
         task_id = str(uuid.uuid4())
 
-        # === [receive] 과거 경험 로드 ===
-        memory_context = []
         try:
-            memory_context = self._memory.search_long_term(
-                agent_name=self.name,
-                query=instruction,
-                limit=3,
-            )
-        except Exception:
-            pass  # 메모리 실패해도 진행
+            # === [receive] 작업 시작 ===
+            self._state_tracker.start_task(self.name, instruction)
+            self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-        # === [plan] 실행 계획 ===
-        plan = {"strategy": "search_and_analyze", "instruction": instruction}
+            memory_context = []
+            try:
+                memory_context = self._memory.search_long_term(
+                    agent_name=self.name,
+                    query=instruction,
+                    limit=3,
+                )
+            except Exception:
+                pass  # 메모리 실패해도 진행
 
-        # === [execute] + [evaluate] + [retry] ===
-        result = await self._execute_with_retry(instruction, context, memory_context)
+            # === [plan] 실행 계획 ===
+            self._state_tracker.update_node(self.name, GraphNode.PLAN)
+            plan = {"strategy": "search_and_analyze", "instruction": instruction}
 
-        # === [reflect] 반성 ===
-        reflection = await self._reflect(instruction, result)
+            # === [execute] + [evaluate] + [retry] ===
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
+            self._state_tracker.update_tools(self.name, ["tavily", "brave-search"])
+            result = await self._execute_with_retry(instruction, context, memory_context)
 
-        # === [memory_write] 장기기억 저장 ===
-        await self._memory_write(task_id, instruction, result, reflection)
+            # === [evaluate] ===
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
-        # === [return_result] ===
-        duration_ms = int((time.time() - start_time) * 1000)
+            # === [reflect] 반성 ===
+            self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+            reflection = await self._reflect(instruction, result)
 
-        return {
-            "task_id": task_id,
-            "agent_name": self.name,
-            "success": result["success"],
-            "success_score": result["score"],
-            "output": result["output"],
-            "failure_reason": result.get("error"),
-            "duration_ms": duration_ms,
-            "reflection": reflection,
-        }
+            # === [memory_write] 장기기억 저장 ===
+            self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+            await self._memory_write(task_id, instruction, result, reflection)
+
+            # === [return_result] ===
+            self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return {
+                "task_id": task_id,
+                "agent_name": self.name,
+                "success": result["success"],
+                "success_score": result["score"],
+                "output": result["output"],
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+                "reflection": reflection,
+            }
+
+        except Exception as e:
+            self._state_tracker.set_error(self.name, str(e))
+            raise
+        finally:
+            self._state_tracker.complete_task(self.name)
 
     async def _execute_with_retry(
         self, instruction: str, context: list, memory_context: list

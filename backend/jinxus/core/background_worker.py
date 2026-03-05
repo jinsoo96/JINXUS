@@ -13,7 +13,7 @@
 import asyncio
 import uuid
 import logging
-from typing import Optional, Callable, Any
+from typing import Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -145,6 +145,23 @@ class BackgroundWorker:
             return True
 
         return False
+
+    async def clear_completed_tasks(self) -> int:
+        """완료된 작업 정리 (completed, failed, cancelled 상태 삭제)
+
+        Returns:
+            삭제된 작업 수
+        """
+        to_remove = []
+        for task_id, task in self._tasks.items():
+            if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+                to_remove.append(task_id)
+
+        for task_id in to_remove:
+            del self._tasks[task_id]
+
+        logger.info(f"[BackgroundWorker] 완료된 작업 {len(to_remove)}개 정리")
+        return len(to_remove)
 
     async def _worker_loop(self, worker_id: int):
         """워커 루프"""

@@ -4,7 +4,9 @@ import { useEffect } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
+import DashboardTab from '@/components/tabs/DashboardTab';
 import ChatTab from '@/components/tabs/ChatTab';
+import GraphTab from '@/components/tabs/GraphTab';
 import AgentsTab from '@/components/tabs/AgentsTab';
 import MemoryTab from '@/components/tabs/MemoryTab';
 import LogsTab from '@/components/tabs/LogsTab';
@@ -29,8 +31,12 @@ export default function Home() {
 
   const renderTab = () => {
     switch (activeTab) {
+      case 'dashboard':
+        return <DashboardTab />;
       case 'chat':
         return <ChatTab />;
+      case 'graph':
+        return <GraphTab />;
       case 'agents':
         return <AgentsTab />;
       case 'memory':
@@ -42,7 +48,7 @@ export default function Home() {
       case 'settings':
         return <SettingsTab />;
       default:
-        return <ChatTab />;
+        return <DashboardTab />;
     }
   };
 

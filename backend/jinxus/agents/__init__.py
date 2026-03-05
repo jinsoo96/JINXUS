@@ -4,6 +4,7 @@ from .jx_researcher import JXResearcher
 from .jx_writer import JXWriter
 from .jx_analyst import JXAnalyst
 from .jx_ops import JXOps
+from .js_persona import JSPersona
 
 __all__ = [
     "JinxusCore",
@@ -12,6 +13,7 @@ __all__ = [
     "JXWriter",
     "JXAnalyst",
     "JXOps",
+    "JSPersona",
 ]
 
 
@@ -30,6 +32,7 @@ def register_all_agents() -> dict:
             "JX_WRITER": JXWriter(),
             "JX_ANALYST": JXAnalyst(),
             "JX_OPS": JXOps(),
+            "JS_PERSONA": JSPersona(),
         }
 
     return AGENT_REGISTRY

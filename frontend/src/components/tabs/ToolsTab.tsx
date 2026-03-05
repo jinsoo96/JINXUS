@@ -157,7 +157,9 @@ export default function ToolsTab() {
                         <div className="font-semibold flex items-center gap-2">
                           {server.name}
                           {server.requires_api_key && (
-                            <Key size={12} className="text-zinc-500" title={`${server.requires_api_key} 필요`} />
+                            <span title={`${server.requires_api_key} 필요`}>
+                              <Key size={12} className="text-zinc-500" />
+                            </span>
                           )}
                         </div>
                         <div className="text-zinc-500 text-sm">

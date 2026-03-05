@@ -14,7 +14,7 @@ from jinxus.hr.models import (
     OrgChart,
     OrgNode,
 )
-from jinxus.hr.agent_factory import AgentFactory, DynamicAgent
+from jinxus.hr.agent_factory import AgentFactory
 
 logger = logging.getLogger(__name__)
 

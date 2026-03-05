@@ -1,7 +1,7 @@
 """Memory API - 메모리 검색 및 관리"""
 from fastapi import APIRouter, HTTPException, Query
 
-from jinxus.api.models import MemorySearchRequest, MemorySearchResponse, MemorySearchResult
+from jinxus.api.models import MemorySearchResponse, MemorySearchResult
 from jinxus.memory import get_jinx_memory
 
 router = APIRouter(prefix="/memory", tags=["memory"])

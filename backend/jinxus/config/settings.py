@@ -63,12 +63,17 @@ class Settings(BaseSettings):
         return Path(__file__).parent.parent
 
     @property
+    def backend_root(self) -> Path:
+        """backend 디렉토리 경로"""
+        return Path(__file__).parent.parent.parent
+
+    @property
     def prompts_dir(self) -> Path:
-        return self.project_root / "prompts"
+        return self.backend_root / "prompts"
 
     @property
     def data_dir(self) -> Path:
-        return self.project_root / "data"
+        return self.backend_root / "data"
 
     model_config = {
         "env_file": ".env",

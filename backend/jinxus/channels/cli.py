@@ -21,7 +21,6 @@ import asyncio
 import sys
 from typing import Optional
 
-from jinxus.config import get_settings
 from jinxus.core.orchestrator import get_orchestrator
 
 
@@ -51,6 +50,14 @@ async def run_cli(
         stdin_content = sys.stdin.read()
         if stdin_content.strip():
             message = f"{message}\n\n{stdin_content}"
+
+    # 특정 에이전트 지정 모드
+    if agent:
+        result = await _run_with_agent(agent, message)
+        if result:
+            print(result["output"])
+            print(f"\n[에이전트: {result['agent_name']}]", file=sys.stderr)
+        return
 
     # 스트리밍 모드
     if stream:
@@ -84,6 +91,43 @@ async def run_cli(
             print(f"\n[에이전트: {', '.join(agents_used)}]", file=sys.stderr)
 
 
+async def _run_with_agent(agent_name: str, message: str) -> Optional[dict]:
+    """특정 에이전트 직접 실행
+
+    Args:
+        agent_name: 에이전트 이름 (JX_CODER, JX_RESEARCHER 등)
+        message: 작업 지시
+
+    Returns:
+        에이전트 실행 결과 또는 None
+    """
+    from jinxus.agents import get_agent, register_all_agents
+
+    # 에이전트 이름 정규화 (대문자, JX_ 접두사)
+    normalized = agent_name.upper()
+    if not normalized.startswith("JX_") and not normalized.startswith("JS_"):
+        normalized = f"JX_{normalized}"
+
+    # 에이전트 레지스트리 초기화
+    register_all_agents()
+
+    # 에이전트 조회
+    agent = get_agent(normalized)
+    if not agent:
+        print(f"에이전트를 찾을 수 없음: {normalized}", file=sys.stderr)
+        print("사용 가능: JX_CODER, JX_RESEARCHER, JX_WRITER, JX_ANALYST, JX_OPS, JS_PERSONA", file=sys.stderr)
+        return None
+
+    print(f"[{normalized} 직접 실행...]", file=sys.stderr, flush=True)
+
+    try:
+        result = await agent.run(message)
+        return result
+    except Exception as e:
+        print(f"에이전트 실행 오류: {e}", file=sys.stderr)
+        return None
+
+
 def main():
     """CLI 진입점"""
     parser = argparse.ArgumentParser(
@@ -111,7 +155,7 @@ def main():
 
     parser.add_argument(
         "--agent", "-a",
-        help="특정 에이전트 지정 (미구현)",
+        help="특정 에이전트 직접 실행 (JX_CODER, JX_RESEARCHER, JS_PERSONA 등)",
     )
 
     parser.add_argument(

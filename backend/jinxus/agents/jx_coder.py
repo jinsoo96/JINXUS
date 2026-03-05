@@ -28,6 +28,7 @@ from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
 from jinxus.tools.code_executor import CodeExecutor
 from jinxus.tools import get_dynamic_executor, DynamicToolExecutor
+from jinxus.agents.state_tracker import get_state_tracker, GraphNode
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ class JXCoder:
         # 동적 도구 실행기 (MCP 포함: git, github, fetch 등)
         self._executor: Optional[DynamicToolExecutor] = None
         self._use_dynamic_tools = settings.use_dynamic_tools if hasattr(settings, 'use_dynamic_tools') else True
+        # 상태 추적기 (실시간 UI 연동)
+        self._state_tracker = get_state_tracker()
+        self._state_tracker.register_agent(self.name)
 
     def _get_executor(self) -> DynamicToolExecutor:
         """동적 도구 실행기 지연 로드"""
@@ -138,42 +142,61 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
         start_time = time.time()
         task_id = str(uuid.uuid4())
 
-        # === [receive] 과거 경험 로드 ===
-        memory_context = []
         try:
-            memory_context = self._memory.search_long_term(
-                agent_name=self.name,
-                query=instruction,
-                limit=3,
-            )
-        except Exception:
-            pass  # 메모리 실패해도 진행
+            # === [receive] 작업 시작 ===
+            self._state_tracker.start_task(self.name, instruction)
+            self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-        # === [plan] 실행 계획 ===
-        plan = {"strategy": "generate_and_execute", "instruction": instruction}
+            memory_context = []
+            try:
+                memory_context = self._memory.search_long_term(
+                    agent_name=self.name,
+                    query=instruction,
+                    limit=3,
+                )
+            except Exception:
+                pass  # 메모리 실패해도 진행
 
-        # === [execute] + [evaluate] + [retry] ===
-        result = await self._execute_with_retry(instruction, context, memory_context)
+            # === [plan] 실행 계획 ===
+            self._state_tracker.update_node(self.name, GraphNode.PLAN)
+            plan = {"strategy": "generate_and_execute", "instruction": instruction}
 
-        # === [reflect] 반성 ===
-        reflection = await self._reflect(instruction, result)
+            # === [execute] + [evaluate] + [retry] ===
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
+            result = await self._execute_with_retry(instruction, context, memory_context)
 
-        # === [memory_write] 장기기억 저장 ===
-        await self._memory_write(task_id, instruction, result, reflection)
+            # === [evaluate] 평가 ===
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
-        # === [return_result] ===
-        duration_ms = int((time.time() - start_time) * 1000)
+            # === [reflect] 반성 ===
+            self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+            reflection = await self._reflect(instruction, result)
 
-        return {
-            "task_id": task_id,
-            "agent_name": self.name,
-            "success": result["success"],
-            "success_score": result["score"],
-            "output": result["output"],
-            "failure_reason": result.get("error"),
-            "duration_ms": duration_ms,
-            "reflection": reflection,
-        }
+            # === [memory_write] 장기기억 저장 ===
+            self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+            await self._memory_write(task_id, instruction, result, reflection)
+
+            # === [return_result] ===
+            self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return {
+                "task_id": task_id,
+                "agent_name": self.name,
+                "success": result["success"],
+                "success_score": result["score"],
+                "output": result["output"],
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+                "reflection": reflection,
+            }
+
+        except Exception as e:
+            self._state_tracker.set_error(self.name, str(e))
+            raise
+        finally:
+            # 작업 완료 (성공/실패 무관)
+            self._state_tracker.complete_task(self.name)
 
     async def _execute_with_retry(
         self, instruction: str, context: list, memory_context: list
@@ -243,6 +266,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
     ) -> dict:
         """MCP 도구 사용 실행 (git, github, fetch, playwright 등)"""
         logger.info(f"[JX_CODER] MCP 도구 사용 → DynamicToolExecutor")
+        self._state_tracker.update_tools(self.name, ["mcp:git", "mcp:github", "mcp:fetch"])
 
         try:
             executor = self._get_executor()

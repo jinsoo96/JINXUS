@@ -2,10 +2,12 @@
 
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
-import { MessageSquare, Bot, Brain, ScrollText, Wrench, Settings } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, GitBranch, Bot, Brain, ScrollText, Wrench, Settings } from 'lucide-react';
 
 const tabs = [
+  { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
   { id: 'chat', label: '채팅', icon: MessageSquare },
+  { id: 'graph', label: '그래프', icon: GitBranch },
   { id: 'agents', label: '에이전트', icon: Bot },
   { id: 'memory', label: '메모리', icon: Brain },
   { id: 'logs', label: '로그', icon: ScrollText },

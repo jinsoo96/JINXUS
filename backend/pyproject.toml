@@ -15,6 +15,7 @@ authors = [
 
 [project.scripts]
 jinxus = "jinxus.channels.cli:main"
+jinxus-daemon = "jinxus.channels.daemon:main"
 
 [tool.setuptools.packages.find]
 include = ["jinxus", "jinxus.*"]

@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 
 from jinxus.api.models import AgentStatus, AgentListResponse
 from jinxus.core import get_orchestrator
-from jinxus.memory import get_jinx_memory
+from jinxus.memory.meta_store import get_meta_store
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -12,7 +12,6 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 async def list_agents():
     """에이전트 목록 및 성능 조회"""
     orchestrator = get_orchestrator()
-    memory = get_jinx_memory()
 
     if not orchestrator.is_initialized:
         await orchestrator.initialize()
@@ -72,18 +71,24 @@ async def get_agent_status(agent_name: str):
 
 
 @router.get("/{agent_name}/history")
-async def get_agent_history(agent_name: str, limit: int = 20):
-    """에이전트 작업 이력 조회"""
-    memory = get_jinx_memory()
+async def get_agent_history(agent_name: str, limit: int = 20, offset: int = 0):
+    """에이전트 작업 이력 조회 (SQLite에서 직접 조회)"""
+    meta_store = get_meta_store()
 
-    # 장기기억에서 해당 에이전트 작업 검색
-    # TODO: 더 나은 구현 필요
-    results = memory.search_long_term(agent_name, "", limit=limit)
+    # SQLite agent_task_logs 테이블에서 직접 조회 (벡터 검색보다 효율적)
+    logs = await meta_store.get_recent_logs(
+        agent_name=agent_name,
+        limit=limit,
+        offset=offset,
+    )
+    total = await meta_store.get_logs_count(agent_name=agent_name)
 
     return {
         "agent_name": agent_name,
-        "history": results,
-        "total": len(results),
+        "history": logs,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -111,13 +116,36 @@ async def get_agent_runtime_status(agent_name: str):
 @router.get("/runtime/all")
 async def get_all_runtime_status():
     """모든 에이전트 실시간 상태 조회"""
-    from jinxus.agents.state_tracker import get_state_tracker
+    from jinxus.agents.state_tracker import get_state_tracker, AgentRuntimeState, AgentStatus
 
+    orchestrator = get_orchestrator()
     tracker = get_state_tracker()
-    all_states = tracker.get_all_states()
+
+    # orchestrator에서 등록된 에이전트 목록 + JINXUS_CORE
+    registered_agents = orchestrator.get_agents() if orchestrator.is_initialized else []
+    # JINXUS_CORE를 맨 앞에 추가
+    all_agents = ["JINXUS_CORE"] + registered_agents
+
+    # 상태 추적기에 없는 에이전트는 기본 상태로 추가
+    result_agents = []
+    for agent_name in all_agents:
+        state = tracker.get_state(agent_name)
+        if state:
+            result_agents.append(state.to_dict())
+        else:
+            # 기본 idle 상태 반환
+            result_agents.append({
+                "name": agent_name,
+                "status": "idle",
+                "current_node": None,
+                "current_task": None,
+                "current_tools": [],
+                "last_update": None,
+                "error_message": None,
+            })
 
     return {
-        "agents": [state.to_dict() for state in all_states.values()],
+        "agents": result_agents,
         "working_count": len(tracker.get_working_agents()),
     }
 

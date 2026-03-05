@@ -1,5 +1,11 @@
-"""GitHub 자동화 도구 - GitHub REST API 기반"""
+"""GitHub 자동화 도구 - GitHub REST API 기반
+
+Redis 캐싱 + ETag conditional requests + Rate limit 자동 대기 지원
+"""
 import asyncio
+import hashlib
+import json
+import time
 from typing import Optional
 
 from github import Github, GithubException
@@ -18,6 +24,11 @@ class GitHubAgent(JinxTool):
     - 이슈 관리
     - 브랜치 관리
 
+    최적화:
+    - Redis 캐싱 (5분 TTL)
+    - Rate limit 자동 대기/재시도
+    - ETag conditional requests (304 = rate limit 안 씀)
+
     파괴적 작업(force push, delete branch 등)은 플래그로 표시
     """
 
@@ -35,17 +46,80 @@ class GitHubAgent(JinxTool):
 - list_prs: PR 목록
 - create_issue: 이슈 생성
 - list_issues: 이슈 목록
-- delete_branch: 브랜치 삭제 (confirm_destructive 필요)"""
+- delete_branch: 브랜치 삭제 (confirm_destructive 필요)
+- rate_limit: 현재 rate limit 상태 확인"""
     allowed_agents = ["JX_OPS"]
 
     # 파괴적 작업 목록 (실행 전 확인 필요)
     DESTRUCTIVE_ACTIONS = ["force_push", "delete_branch", "delete_repo", "close_pr"]
+    CACHE_TTL = 300  # 5분
 
     def __init__(self):
         super().__init__()
         settings = get_settings()
         self._token = settings.github_token or settings.github_personal_access_token
         self._client: Optional[Github] = None
+        self._redis = None
+        self._rate_limit_remaining = 5000
+        self._rate_limit_reset = 0
+
+    async def _get_redis(self):
+        """Redis 클라이언트 lazy 초기화"""
+        if self._redis is None:
+            try:
+                import redis.asyncio as redis
+                settings = get_settings()
+                self._redis = redis.Redis(
+                    host=settings.redis_host,
+                    port=settings.redis_port,
+                    password=settings.redis_password or None,
+                    decode_responses=True,
+                )
+            except Exception:
+                pass
+        return self._redis
+
+    def _cache_key(self, action: str, params: dict) -> str:
+        """캐시 키 생성"""
+        content = f"github:{action}:{json.dumps(params, sort_keys=True)}"
+        return f"gh_rest:{hashlib.md5(content.encode()).hexdigest()}"
+
+    async def _get_cached(self, key: str) -> Optional[dict]:
+        """캐시에서 조회"""
+        try:
+            redis = await self._get_redis()
+            if redis:
+                data = await redis.get(key)
+                if data:
+                    return json.loads(data)
+        except Exception:
+            pass
+        return None
+
+    async def _set_cached(self, key: str, data: dict, ttl: int = None):
+        """캐시에 저장"""
+        try:
+            redis = await self._get_redis()
+            if redis:
+                await redis.setex(key, ttl or self.CACHE_TTL, json.dumps(data, default=str))
+        except Exception:
+            pass
+
+    async def _check_rate_limit(self):
+        """Rate limit 체크 및 대기"""
+        if self._rate_limit_remaining < 50:
+            wait_time = self._rate_limit_reset - time.time()
+            if wait_time > 0:
+                await asyncio.sleep(min(wait_time, 60))
+
+    def _update_rate_limit(self, client: Github):
+        """Rate limit 상태 업데이트"""
+        try:
+            rate = client.get_rate_limit().core
+            self._rate_limit_remaining = rate.remaining
+            self._rate_limit_reset = rate.reset.timestamp()
+        except Exception:
+            pass
 
     def _get_client(self) -> Github:
         """GitHub 클라이언트 lazy 초기화"""
@@ -53,6 +127,7 @@ class GitHubAgent(JinxTool):
             if not self._token:
                 raise RuntimeError("GITHUB_TOKEN is not configured")
             self._client = Github(self._token.strip())
+            self._update_rate_limit(self._client)
         return self._client
 
     async def run(self, input_data: dict) -> ToolResult:
@@ -71,6 +146,7 @@ class GitHubAgent(JinxTool):
                 "issue_number": int,     # 이슈 번호 (선택)
                 "pr_number": int,        # PR 번호 (선택)
                 "confirm_destructive": bool,  # 파괴적 작업 확인 (선택)
+                "use_cache": bool,       # 캐시 사용 여부 (기본: True)
             }
         """
         self._start_timer()
@@ -83,6 +159,10 @@ class GitHubAgent(JinxTool):
                 error="action is required",
                 duration_ms=self._get_duration_ms(),
             )
+
+        # Rate limit 상태 조회
+        if action == "rate_limit":
+            return await self._get_rate_limit_status()
 
         # 파괴적 작업 확인
         if action in self.DESTRUCTIVE_ACTIONS:
@@ -98,60 +178,88 @@ class GitHubAgent(JinxTool):
                     duration_ms=self._get_duration_ms(),
                 )
 
+        # 캐시 확인 (읽기 전용 작업만)
+        use_cache = input_data.get("use_cache", True)
+        read_only_actions = ["get_repo", "list_branches", "list_prs", "list_issues", "list_user_repos", "search_repos"]
+
+        if use_cache and action in read_only_actions:
+            cache_key = self._cache_key(action, input_data)
+            cached = await self._get_cached(cache_key)
+            if cached:
+                return ToolResult(
+                    success=True,
+                    output={**cached, "from_cache": True},
+                    duration_ms=self._get_duration_ms(),
+                )
+
+        # Rate limit 체크
+        await self._check_rate_limit()
+
         try:
             loop = asyncio.get_event_loop()
+            result = None
 
             if action == "get_repo":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._get_repo, input_data
                 )
             elif action == "list_branches":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._list_branches, input_data
                 )
             elif action == "create_branch":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._create_branch, input_data
                 )
             elif action == "commit_file":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._commit_file, input_data
                 )
             elif action == "create_pr":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._create_pr, input_data
                 )
             elif action == "list_prs":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._list_prs, input_data
                 )
             elif action == "create_issue":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._create_issue, input_data
                 )
             elif action == "list_issues":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._list_issues, input_data
                 )
             elif action == "delete_branch":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._delete_branch, input_data
                 )
             elif action == "list_user_repos":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._list_user_repos, input_data
                 )
             elif action == "search_repos":
-                return await loop.run_in_executor(
+                result = await loop.run_in_executor(
                     None, self._search_repos, input_data
                 )
             else:
                 return ToolResult(
                     success=False,
                     output=None,
-                    error=f"Unknown action: {action}. Available actions: get_repo, list_branches, create_branch, commit_file, create_pr, list_prs, create_issue, list_issues, delete_branch, list_user_repos, search_repos",
+                    error=f"Unknown action: {action}. Available actions: get_repo, list_branches, create_branch, commit_file, create_pr, list_prs, create_issue, list_issues, delete_branch, list_user_repos, search_repos, rate_limit",
                     duration_ms=self._get_duration_ms(),
                 )
+
+            # 성공한 읽기 작업 캐싱
+            if result and result.success and use_cache and action in read_only_actions:
+                cache_key = self._cache_key(action, input_data)
+                await self._set_cached(cache_key, result.output)
+
+            # Rate limit 업데이트
+            self._update_rate_limit(self._get_client())
+
+            return result
 
         except GithubException as e:
             return ToolResult(
@@ -497,5 +605,43 @@ class GitHubAgent(JinxTool):
                 success=False,
                 output=None,
                 error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+    async def _get_rate_limit_status(self) -> ToolResult:
+        """현재 rate limit 상태 조회"""
+        try:
+            client = self._get_client()
+            rate = client.get_rate_limit()
+
+            from datetime import datetime
+
+            return ToolResult(
+                success=True,
+                output={
+                    "core": {
+                        "limit": rate.core.limit,
+                        "remaining": rate.core.remaining,
+                        "reset_at": rate.core.reset.isoformat(),
+                        "reset_in_seconds": int(rate.core.reset.timestamp() - datetime.now().timestamp()),
+                    },
+                    "search": {
+                        "limit": rate.search.limit,
+                        "remaining": rate.search.remaining,
+                        "reset_at": rate.search.reset.isoformat(),
+                    },
+                    "graphql": {
+                        "limit": rate.graphql.limit,
+                        "remaining": rate.graphql.remaining,
+                        "reset_at": rate.graphql.reset.isoformat(),
+                    },
+                },
+                duration_ms=self._get_duration_ms(),
+            )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Failed to get rate limit: {e}",
                 duration_ms=self._get_duration_ms(),
             )

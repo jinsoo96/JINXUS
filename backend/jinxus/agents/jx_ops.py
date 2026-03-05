@@ -23,6 +23,8 @@ from jinxus.memory import get_jinx_memory
 from jinxus.tools.github_agent import GitHubAgent
 from jinxus.tools.scheduler import Scheduler
 from jinxus.tools.file_manager import FileManager
+from jinxus.tools.system_manager import SystemManager
+from jinxus.agents.state_tracker import get_state_tracker, GraphNode
 
 
 class JXOps:
@@ -49,6 +51,11 @@ class JXOps:
         self._github = GitHubAgent()
         self._scheduler = Scheduler()
         self._file_manager = FileManager()
+        self._system_manager = SystemManager()
+
+        # 상태 추적기 (실시간 UI 연동)
+        self._state_tracker = get_state_tracker()
+        self._state_tracker.register_agent(self.name)
 
     def _get_system_prompt(self) -> str:
         return """너는 JX_OPS야. 주인님을 모시는 JINXUS의 운영 전문가.
@@ -81,54 +88,80 @@ class JXOps:
         start_time = time.time()
         task_id = str(uuid.uuid4())
 
-        # === [receive] 과거 경험 로드 ===
-        memory_context = []
         try:
-            memory_context = self._memory.search_long_term(
-                agent_name=self.name,
-                query=instruction,
-                limit=3,
-            )
-        except Exception:
-            pass  # 메모리 실패해도 진행
+            # === [receive] 작업 시작 ===
+            self._state_tracker.start_task(self.name, instruction)
+            self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-        # === [plan] 작업 유형 판단 ===
-        task_type = self._determine_task_type(instruction)
-        is_destructive = self._is_destructive(instruction)
-        plan = {
-            "strategy": "ops_guide",
-            "task_type": task_type,
-            "is_destructive": is_destructive,
-            "instruction": instruction
-        }
+            memory_context = []
+            try:
+                memory_context = self._memory.search_long_term(
+                    agent_name=self.name,
+                    query=instruction,
+                    limit=3,
+                )
+            except Exception:
+                pass  # 메모리 실패해도 진행
 
-        # === [execute] + [evaluate] + [retry] ===
-        result = await self._execute_with_retry(instruction, context, memory_context, task_type, is_destructive)
+            # === [plan] 작업 유형 판단 ===
+            self._state_tracker.update_node(self.name, GraphNode.PLAN)
+            task_type = self._determine_task_type(instruction)
+            is_destructive = self._is_destructive(instruction)
+            plan = {
+                "strategy": "ops_guide",
+                "task_type": task_type,
+                "is_destructive": is_destructive,
+                "instruction": instruction
+            }
 
-        # === [reflect] 반성 ===
-        reflection = await self._reflect(instruction, result)
+            # === [execute] + [evaluate] + [retry] ===
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
+            self._state_tracker.update_tools(self.name, ["github", "scheduler", "file_manager"])
+            result = await self._execute_with_retry(instruction, context, memory_context, task_type, is_destructive)
 
-        # === [memory_write] 장기기억 저장 ===
-        await self._memory_write(task_id, instruction, result, reflection)
+            # === [evaluate] ===
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
-        # === [return_result] ===
-        duration_ms = int((time.time() - start_time) * 1000)
+            # === [reflect] 반성 ===
+            self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+            reflection = await self._reflect(instruction, result)
 
-        return {
-            "task_id": task_id,
-            "agent_name": self.name,
-            "success": result["success"],
-            "success_score": result["score"],
-            "output": result["output"],
-            "failure_reason": result.get("error"),
-            "duration_ms": duration_ms,
-            "reflection": reflection,
-        }
+            # === [memory_write] 장기기억 저장 ===
+            self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+            await self._memory_write(task_id, instruction, result, reflection)
+
+            # === [return_result] ===
+            self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return {
+                "task_id": task_id,
+                "agent_name": self.name,
+                "success": result["success"],
+                "success_score": result["score"],
+                "output": result["output"],
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+                "reflection": reflection,
+            }
+
+        except Exception as e:
+            self._state_tracker.set_error(self.name, str(e))
+            raise
+        finally:
+            self._state_tracker.complete_task(self.name)
 
     def _determine_task_type(self, instruction: str) -> str:
         """작업 유형 판단"""
         instruction_lower = instruction.lower()
-        if any(k in instruction_lower for k in ["파일", "폴더", "디렉토리", "복사", "이동", "삭제"]):
+        # 시스템 관리 (세션, 작업, 메모리 관리)
+        if any(k in instruction_lower for k in [
+            "세션", "session", "작업 지워", "작업 삭제", "작업 취소",
+            "메모리", "기억", "통계", "상태", "status",
+            "완료된", "실패한", "정리", "prune", "clear"
+        ]):
+            return "system"
+        elif any(k in instruction_lower for k in ["파일", "폴더", "디렉토리", "복사", "이동"]):
             return "file"
         elif any(k in instruction_lower for k in ["git", "github", "커밋", "푸시", "풀"]):
             return "github"
@@ -202,7 +235,9 @@ class JXOps:
             }
 
         # 작업 유형별 실제 실행
-        if task_type == "github":
+        if task_type == "system":
+            return await self._execute_system(instruction)
+        elif task_type == "github":
             return await self._execute_github(instruction)
         elif task_type == "schedule":
             return await self._execute_schedule(instruction)
@@ -366,6 +401,87 @@ JSON 형식으로만 응답해:
                 "output": f"주인님, 스케줄 작업 중 오류가 발생했습니다.\n\n오류: {result.error}",
                 "error": result.error,
                 "task_type": "schedule",
+                "is_destructive": False,
+            }
+
+    async def _execute_system(self, instruction: str) -> dict:
+        """시스템 관리 작업 실행 (세션, 작업, 메모리 관리)"""
+        # Claude에게 시스템 작업 분석 요청
+        analysis_prompt = f"""다음 시스템 관리 요청을 분석해서 실행할 작업을 JSON으로 알려줘.
+
+요청: {instruction}
+
+사용 가능한 action:
+- list_sessions: 세션 목록 조회
+- clear_session: 특정 세션 삭제 (session_id 필요)
+- clear_all_sessions: 모든 세션 삭제
+- list_tasks: 백그라운드 작업 목록
+- clear_completed_tasks: 완료된 작업 정리
+- cancel_task: 작업 취소 (task_id 필요)
+- get_memory_stats: 메모리 통계 (agent_name 선택)
+- prune_memories: 저품질 기억 정리 (agent_name 선택)
+- delete_memory: 특정 기억 삭제 (agent_name, task_id 필요)
+- get_agent_stats: 에이전트 성능 통계 (agent_name 선택, days 선택)
+- get_system_status: 시스템 전체 상태
+
+JSON 형식으로만 응답해:
+```json
+{{"action": "clear_completed_tasks"}}
+```
+
+```json
+{{"action": "get_agent_stats", "agent_name": "JX_CODER", "days": 7}}
+```
+
+```json
+{{"action": "clear_session", "session_id": "telegram_123456"}}
+```"""
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": analysis_prompt}],
+        )
+
+        response_text = response.content[0].text
+
+        # JSON 파싱
+        try:
+            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+            if json_match:
+                params = json.loads(json_match.group(1))
+            else:
+                params = json.loads(response_text)
+        except json.JSONDecodeError:
+            return {
+                "success": True,
+                "score": 0.7,
+                "output": f"주인님, 시스템 관리 요청을 분석했습니다.\n\n{response_text}",
+                "error": None,
+                "task_type": "system",
+                "is_destructive": False,
+            }
+
+        # 실제 시스템 작업 실행
+        result = await self._system_manager.run(params)
+
+        if result.success:
+            output_str = result.output if isinstance(result.output, str) else json.dumps(result.output, ensure_ascii=False, indent=2)
+            return {
+                "success": True,
+                "score": 0.95,
+                "output": f"주인님, 시스템 관리 작업을 완료했습니다.\n\n작업: {params.get('action')}\n결과:\n```json\n{output_str}\n```",
+                "error": None,
+                "task_type": "system",
+                "is_destructive": False,
+            }
+        else:
+            return {
+                "success": False,
+                "score": 0.3,
+                "output": f"주인님, 시스템 관리 작업 중 오류가 발생했습니다.\n\n오류: {result.error}",
+                "error": result.error,
+                "task_type": "system",
                 "is_destructive": False,
             }
 

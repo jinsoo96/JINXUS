@@ -478,6 +478,22 @@ class ToolResult:
 - SQLite에 작업 영속화 (재시작 시 복구)
 - 입력: `{ action: "add|remove|list", cron, task_prompt }`
 
+**`system_manager`** — JX_OPS 전용 (v1.2.0 추가)
+- JINXUS 시스템 관리 도구
+- 세션 관리: list_sessions, clear_session, clear_all_sessions
+- 작업 관리: list_tasks, clear_completed_tasks, cancel_task
+- 메모리 관리: get_memory_stats, prune_memories, delete_memory
+- 통계: get_agent_stats, get_system_status
+- 텔레그램에서 자연어로 시스템 관리 가능
+- 입력: `{ action, session_id?, task_id?, agent_name?, days? }`
+
+**`prompt_version_manager`** — JX_OPS 전용 (v1.2.1 추가)
+- 프롬프트 버전 관리 도구
+- 파일과 SQLite DB 간 동기화
+- 버전 히스토리 관리 (versions/ 디렉토리 자동 백업)
+- 롤백 지원 (특정 버전으로 되돌리기)
+- 입력: `{ action: "sync|list|get|rollback|save", agent_name?, version?, prompt_content?, change_reason? }`
+
 ---
 
 ### 4-5. JinxAPI (인터페이스)
@@ -941,8 +957,12 @@ jinxus/
 │   ├── base.py                          # JinxTool 추상 기반 클래스 + ToolResult
 │   ├── code_executor.py                 # Claude Code CLI subprocess 실행
 │   ├── web_searcher.py                  # Tavily API 웹 검색
-│   ├── file_jinxus_core.py                  # 파일시스템 CRUD
+│   ├── file_manager.py                  # 파일시스템 CRUD
 │   ├── github_agent.py                  # GitHub REST API 자동화
+│   ├── github_graphql.py                # GitHub GraphQL API (rate limit 최적화)
+│   ├── cache_manager.py                 # 범용 캐시 매니저 (Redis 기반)
+│   ├── system_manager.py                # 세션/작업/메모리/캐시 관리
+│   ├── prompt_version_manager.py        # 프롬프트 버전 관리
 │   └── scheduler.py                     # APScheduler 반복 작업
 │
 ├── api/
@@ -1033,16 +1053,34 @@ jinxus/
 | `/improve/history` API | 에이전트별 개선 이력 조회 |
 | 자동 트리거 | 성공률 임계치 미달 시 자동 강화 실행 |
 
-### Phase 5 — 고도화 + XGEN 연동 (목표: 진짜 비서)
+### Phase 5 — 고도화 (목표: 진짜 비서) — 진행 중
 
-| 작업 | 완료 기준 |
-|---|---|
-| 주기적 메모리 pruning | JinxLoop 실행 시 저품질 벡터 자동 정리 |
-| 스케줄 작업 | "매일 9시에 뉴스 요약" 동작 |
-| 알림 연동 | Slack/텔레그램 webhook으로 완료 보고 |
-| 웹 UI | React 채팅 + 에이전트별 상태 대시보드 |
-| XGEN 파인튜닝 파이프라인 | 누적 데이터 → XGEN에 파인튜닝 투입 |
-| K8s 배포 | docker-compose → K3s 전환 |
+| 작업 | 완료 기준 | 상태 |
+|---|---|---|
+| 텔레그램 자연어 시스템 관리 | "세션 지워", "작업 삭제" 등 자연어 명령 | ✅ 완료 |
+| `system_manager` 도구 | 세션/작업/메모리 관리 API | ✅ 완료 |
+| 알림 연동 | 텔레그램 완료 보고 (Task API + BackgroundWorker + 스케줄러) | ✅ 완료 |
+| 웹 UI | React 채팅 + 에이전트별 상태 대시보드 | ✅ 완료 |
+| 백그라운드 작업 | /bg 명령으로 긴 작업 비동기 처리 | ✅ 완료 |
+| 스케줄 작업 영속화 | SQLite 저장, 서버 재시작 시 복구, 텔레그램 알림 | ✅ 완료 |
+| 프롬프트 버전 동기화 | 파일↔DB 동기화, 버전 관리, 롤백 지원 | ✅ 완료 |
+| `prompt_version_manager` 도구 | 프롬프트 버전 관리 API | ✅ 완료 |
+| API Rate Limit 최적화 | GitHub GraphQL + Redis 캐싱 + TTL jitter | ✅ 완료 |
+| 범용 캐시 시스템 | GitHub/Brave/MCP/Web 캐싱, 네임스페이스 분리 | ✅ 완료 |
+| `cache_manager` 도구 | 캐시 통계 조회, 캐시 정리 (system_manager 통합) | ✅ 완료 |
+| JinxLoop A/B 테스트 | 프롬프트 개선 시 신/구 버전 비교 후 자동 채택 | ✅ 완료 |
+| Thinking Panel UI | 작업 진행상황 실시간 로그 표시 + 중지 버튼 | ✅ 완료 |
+| SSE 스트리밍 취소 | POST /chat/cancel/{task_id} 백엔드 완전 취소 | ✅ 완료 |
+| 주기적 메모리 pruning | 벡터 5만개 이상 시 자동 정리 | ⏸️ 보류 (5만개 이상 시 논의) |
+
+### Phase 6 — 장기 목표 (우선순위 낮음)
+
+| 작업 | 완료 기준 | 상태 |
+|---|---|---|
+| XGEN 파인튜닝 파이프라인 | 누적 데이터 → 모델 파인튜닝 | 📋 계획 |
+| K8s 배포 | docker-compose → K3s 전환 | 📋 계획 |
+| Multi-tenant 지원 | 여러 사용자 지원 | 📋 계획 |
+| 음성 인터페이스 | STT/TTS 연동 | 📋 계획 |
 
 ---
 
@@ -1431,6 +1469,6 @@ Pruning 규칙 (10번 강화 주기마다 1회 실행)
 
 ---
 
-*마지막 업데이트: 2026년 2월*  
+*마지막 업데이트: 2026년 3월*  
 *설계자: 진수 (jinsoo96)*  
 *이 문서 하나로 JINXUS를 처음부터 다시 만들 수 있어야 한다.*

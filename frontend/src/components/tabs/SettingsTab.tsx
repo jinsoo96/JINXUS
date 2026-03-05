@@ -40,8 +40,8 @@ export default function SettingsTab() {
                   systemStatus?.status === 'running' ? 'bg-green-400' : 'bg-red-400'
                 }`}
               ></span>
-              <span className="font-semibold capitalize">
-                {systemStatus?.status || '-'}
+              <span className="font-semibold">
+                {systemStatus?.status === 'running' ? '정상' : systemStatus?.status || '-'}
               </span>
             </div>
           </div>

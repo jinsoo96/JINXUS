@@ -23,8 +23,8 @@
 | Phase 1 (뼈대) | ✅ 완료 | 동작함 | **85%** |
 | Phase 2 (전체 에이전트) | ✅ 완료 | 구조는 있음 | **70%** |
 | Phase 3 (장기기억) | ✅ 완료 | 연결은 됨 | **80%** |
-| Phase 4 (JinxLoop) | ⚠️ 부분 | 피드백 저장만 됨 | **40%** |
-| Phase 5 (프론트엔드) | ⚠️ 부분 | UI는 있음 | **60%** |
+| Phase 4 (JinxLoop) | ✅ 완료 | A/B 테스트 완성 (2026-03-03) | **90%** |
+| Phase 5 (프론트엔드) | ✅ 완료 | Thinking Panel + SSE 취소 완성 (2026-03-03) | **85%** |
 
 ### 잘 된 것 (진짜로)
 
@@ -176,21 +176,32 @@ async def _aggregate_results(self, user_input: str, results: list[AgentResult]) 
 
 ---
 
-#### 문제 5: JinxLoop A/B 테스트가 미완성
+#### ~~문제 5: JinxLoop A/B 테스트가 미완성~~ ✅ 해결됨 (2026-03-03)
 
-**develop_status.md:**
+**구현 완료:**
 ```
-- [ ] A/B 테스트 실제 실행
+- [x] A/B 테스트 실제 실행
 ```
 
-지금 JinxLoop은:
+JinxLoop A/B 테스트 전체 구현 완료:
 1. 피드백 받음 ✅
 2. 실패 패턴 분석 ✅
 3. 프롬프트 개선안 생성 ✅
 4. 새 버전 저장 ✅
-5. **A/B 비교 실행** ❌ — 새 프롬프트를 만들어놓고 기존이랑 실제로 비교를 안 함
+5. **A/B 비교 실행** ✅ — `run_ab_test()` 메서드로 구현 완료
 
-이게 없으면 JinxLoop이 "개선을 했는지 안 했는지 검증이 안 되는" 상태. 오히려 이상한 방향으로 프롬프트가 바뀔 수도 있음.
+**구현 위치:**
+- `core/jinx_loop.py`: `run_ab_test()`, `_get_test_cases()`, `_run_with_prompt()`, `_score_response()`
+- `memory/meta_store.py`: `log_ab_test()`, `get_successful_tasks()` DB 메서드
+- `memory/jinx_memory.py`: 파사드 메서드
+- DB 테이블: `ab_test_logs` 스키마
+
+**작동 방식:**
+1. 성공한 과거 작업에서 테스트 케이스 추출 (success_score >= 0.7)
+2. 기존 프롬프트 vs 새 프롬프트로 동일 작업 실행
+3. Claude가 두 응답의 품질 점수 평가
+4. 10% 이상 개선 시에만 새 프롬프트 채택
+5. A/B 테스트 결과 `ab_test_logs` 테이블에 저장
 
 ---
 
@@ -553,12 +564,14 @@ def select_model(agent_name: str, instruction: str) -> str:
 
 **Week 2 — JX_OPS 실제 구현**
 
-| 일자 | 작업 | 파일 |
-|------|------|------|
-| Day 1~2 | `github_agent.py` 실제 PyGithub 연동 | `tools/github_agent.py` |
-| Day 3 | `scheduler.py` APScheduler 실제 등록 | `tools/scheduler.py` |
-| Day 4 | `file_manager.py` 실제 파일 조작 | `tools/file_manager.py` |
-| Day 5 | JX_OPS에 실제 툴 연결 | `agents/jx_ops.py` |
+| 일자 | 작업 | 파일 | 상태 |
+|------|------|------|------|
+| Day 1~2 | `github_agent.py` 실제 PyGithub 연동 | `tools/github_agent.py` | ✅ 완료 |
+| Day 3 | `scheduler.py` APScheduler 실제 등록 + SQLite 영속화 | `tools/scheduler.py` | ✅ 완료 |
+| Day 4 | `file_manager.py` 실제 파일 조작 | `tools/file_manager.py` | ✅ 완료 |
+| Day 5 | JX_OPS에 실제 툴 연결 | `agents/jx_ops.py` | ✅ 완료 |
+| 추가 | `system_manager.py` 시스템 관리 | `tools/system_manager.py` | ✅ 완료 |
+| 추가 | `prompt_version_manager.py` 프롬프트 버전 관리 | `tools/prompt_version_manager.py` | ✅ 완료 |
 
 ---
 
@@ -612,18 +625,23 @@ UI에 보여줄 것:
 
 ### 다음 3개월 (고도화)
 
-**Telegram 알림 연동**
+**Telegram 알림 연동** ✅ 완료
 
 ```
 진수 시나리오:
 "매일 오전 9시에 AI 트렌드 뉴스 요약해서 텔레그램으로 보내줘"
 
-→ JX_OPS가 APScheduler에 등록
-→ 매일 9시 JX_RESEARCHER가 검색 실행
-→ JX_WRITER가 요약 작성
-→ Telegram Bot API로 진수에게 전송
+→ JX_OPS가 APScheduler에 등록 ✅
+→ 매일 시간에 스케줄 작업 실행 ✅
+→ JINXUS_CORE가 작업 처리 ✅
+→ 결과를 Telegram으로 진수에게 전송 ✅
 
-.env에 TELEGRAM_BOT_TOKEN이 이미 있음 → 연동만 하면 됨
+구현 완료:
+- scheduler.py: SQLite 영속화, 서버 재시작 시 자동 복구
+- telegram_bot.py: get_telegram_send_func() 스케줄러 알림 연동
+- server.py: 서버 시작 시 스케줄러 자동 복구 + JINXUS_CORE 콜백 연결
+- task.py: Task API 알림 (시작/완료/실패 시 텔레그램 전송)
+- server.py: set_telegram_notify() 호출하여 Task API 알림 연결
 ```
 
 **데이터 사이언스 특화 기능**
@@ -1161,6 +1179,6 @@ JINXUS:
 
 ---
 
-*마지막 업데이트: 2026년 2월 26일*
+*마지막 업데이트: 2026년 3월 3일*
 *기반 소스: jinsoo96/JINXUS (jinxus_core.py, jx_coder.py, orchestrator.py, develop_status.md)*
 *섹션 5 추가: 멀티채널(텔레그램/CLI/Daemon) + 플러그인 시스템 설계*

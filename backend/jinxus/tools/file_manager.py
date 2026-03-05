@@ -1,8 +1,6 @@
 """파일 관리 도구 - 로컬 파일시스템 CRUD"""
-import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from .base import JinxTool, ToolResult
 from jinxus.config import get_settings

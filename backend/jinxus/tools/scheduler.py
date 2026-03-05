@@ -1,6 +1,6 @@
 """스케줄러 도구 - APScheduler 기반 반복 작업 관리"""
 import uuid
-import asyncio
+import logging
 from typing import Optional, Callable
 from datetime import datetime
 
@@ -8,7 +8,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .base import JinxTool, ToolResult
-from jinxus.config import get_settings
+from jinxus.memory.meta_store import get_meta_store
+
+logger = logging.getLogger(__name__)
 
 
 class Scheduler(JinxTool):
@@ -28,19 +30,29 @@ class Scheduler(JinxTool):
         super().__init__()
         self._scheduler: Optional[AsyncIOScheduler] = None
         self._task_callback: Optional[Callable] = None
+        self._notification_callback: Optional[Callable] = None  # 알림용
         self._jobs: dict[str, dict] = {}  # 메모리 내 작업 정보
+        self._meta_store = get_meta_store()
 
-    def initialize(self, task_callback: Callable = None) -> None:
+    def initialize(
+        self,
+        task_callback: Callable = None,
+        notification_callback: Callable = None,
+    ) -> None:
         """스케줄러 초기화
 
         Args:
             task_callback: 스케줄된 작업 실행 시 호출될 콜백
-                          async def callback(task_prompt: str) -> None
+                          async def callback(task_prompt: str) -> str
+            notification_callback: 작업 완료 알림 콜백
+                          async def callback(message: str) -> None
         """
         if self._scheduler is None:
             self._scheduler = AsyncIOScheduler()
             self._task_callback = task_callback
+            self._notification_callback = notification_callback
             self._scheduler.start()
+            logger.info("Scheduler initialized")
 
     def _ensure_initialized(self) -> None:
         """스케줄러가 초기화되지 않았으면 자동 초기화"""
@@ -48,11 +60,109 @@ class Scheduler(JinxTool):
             self._scheduler = AsyncIOScheduler()
             self._scheduler.start()
 
+    async def restore_from_db(self) -> int:
+        """서버 재시작 시 SQLite에서 스케줄 작업 복구
+
+        Returns:
+            복구된 작업 수
+        """
+        self._ensure_initialized()
+
+        tasks = await self._meta_store.get_scheduled_tasks(active_only=True)
+        restored = 0
+
+        for task in tasks:
+            try:
+                task_id = task["id"]
+                name = task["name"]
+                cron_expr = task["cron_expression"]
+                task_prompt = task["task_prompt"]
+
+                trigger = CronTrigger.from_crontab(cron_expr)
+
+                # 클로저에서 task_id 캡처를 위한 함수 생성
+                def make_job_func(tid: str, prompt: str, jname: str):
+                    async def job_func():
+                        await self._execute_scheduled_task(tid, prompt, jname)
+                    return job_func
+
+                self._scheduler.add_job(
+                    make_job_func(task_id, task_prompt, name),
+                    trigger=trigger,
+                    id=task_id,
+                    name=name,
+                )
+
+                # 메모리에 정보 저장
+                self._jobs[task_id] = {
+                    "id": task_id,
+                    "name": name,
+                    "cron": cron_expr,
+                    "task_prompt": task_prompt,
+                    "is_active": True,
+                    "created_at": task.get("created_at"),
+                }
+
+                # next_run_at 업데이트
+                next_run = trigger.get_next_fire_time(None, datetime.now())
+                if next_run:
+                    await self._meta_store.update_scheduled_task_run(
+                        task_id, task.get("last_run_at", ""), next_run.isoformat()
+                    )
+
+                restored += 1
+                logger.info(f"Restored scheduled task: {name} ({task_id[:8]})")
+
+            except Exception as e:
+                logger.error(f"Failed to restore task {task.get('name')}: {e}")
+
+        logger.info(f"Restored {restored} scheduled tasks from database")
+        return restored
+
+    async def _execute_scheduled_task(
+        self, task_id: str, task_prompt: str, task_name: str
+    ) -> None:
+        """스케줄된 작업 실행"""
+        logger.info(f"Executing scheduled task: {task_name}")
+
+        result_message = None
+        try:
+            if self._task_callback:
+                result_message = await self._task_callback(task_prompt)
+            else:
+                logger.warning("No task callback set, skipping task execution")
+                return
+        except Exception as e:
+            logger.error(f"Scheduled task failed: {task_name} - {e}")
+            result_message = f"작업 실패: {str(e)}"
+
+        # 실행 기록 업데이트
+        try:
+            job = self._scheduler.get_job(task_id)
+            next_run = None
+            if job and job.next_run_time:
+                next_run = job.next_run_time.isoformat()
+
+            await self._meta_store.update_scheduled_task_run(
+                task_id, datetime.utcnow().isoformat(), next_run
+            )
+        except Exception as e:
+            logger.error(f"Failed to update task run record: {e}")
+
+        # 텔레그램 알림
+        if self._notification_callback:
+            try:
+                notification = f"📅 스케줄 작업 완료: {task_name}\n\n{result_message or '완료'}"
+                await self._notification_callback(notification)
+            except Exception as e:
+                logger.error(f"Failed to send notification: {e}")
+
     def shutdown(self) -> None:
         """스케줄러 종료"""
         if self._scheduler:
             self._scheduler.shutdown()
             self._scheduler = None
+            logger.info("Scheduler shutdown")
 
     async def run(self, input_data: dict) -> ToolResult:
         """스케줄 작업 관리
@@ -135,13 +245,16 @@ class Scheduler(JinxTool):
                 duration_ms=self._get_duration_ms(),
             )
 
+        next_run = trigger.get_next_fire_time(None, datetime.now())
+
         # 작업 등록
-        async def job_func():
-            if self._task_callback:
-                await self._task_callback(task_prompt)
+        def make_job_func(tid: str, prompt: str, jname: str):
+            async def job_func():
+                await self._execute_scheduled_task(tid, prompt, jname)
+            return job_func
 
         self._scheduler.add_job(
-            job_func,
+            make_job_func(job_id, task_prompt, name),
             trigger=trigger,
             id=job_id,
             name=name,
@@ -157,13 +270,27 @@ class Scheduler(JinxTool):
             "created_at": datetime.utcnow().isoformat(),
         }
 
+        # SQLite에 저장 (영속화)
+        try:
+            await self._meta_store.save_scheduled_task(
+                task_id=job_id,
+                name=name,
+                cron_expression=cron_expr,
+                task_prompt=task_prompt,
+                is_active=True,
+                next_run_at=next_run.isoformat() if next_run else None,
+            )
+            logger.info(f"Scheduled task saved: {name} ({job_id[:8]})")
+        except Exception as e:
+            logger.error(f"Failed to save scheduled task to DB: {e}")
+
         return ToolResult(
             success=True,
             output={
                 "job_id": job_id,
                 "name": name,
                 "cron": cron_expr,
-                "next_run": str(trigger.get_next_fire_time(None, datetime.now())),
+                "next_run": str(next_run),
             },
             duration_ms=self._get_duration_ms(),
         )
@@ -195,6 +322,13 @@ class Scheduler(JinxTool):
         try:
             self._scheduler.remove_job(job_id)
             self._jobs.pop(job_id, None)
+
+            # SQLite에서도 삭제
+            try:
+                await self._meta_store.delete_scheduled_task(job_id)
+                logger.info(f"Scheduled task deleted: {job_id[:8]}")
+            except Exception as e:
+                logger.error(f"Failed to delete scheduled task from DB: {e}")
 
             return ToolResult(
                 success=True,
@@ -250,6 +384,12 @@ class Scheduler(JinxTool):
             if job_id in self._jobs:
                 self._jobs[job_id]["is_active"] = False
 
+            # SQLite 상태 업데이트
+            try:
+                await self._meta_store.set_scheduled_task_active(job_id, False)
+            except Exception as e:
+                logger.error(f"Failed to update task status in DB: {e}")
+
             return ToolResult(
                 success=True,
                 output={"job_id": job_id, "action": "paused"},
@@ -283,6 +423,12 @@ class Scheduler(JinxTool):
             self._scheduler.resume_job(job_id)
             if job_id in self._jobs:
                 self._jobs[job_id]["is_active"] = True
+
+            # SQLite 상태 업데이트
+            try:
+                await self._meta_store.set_scheduled_task_active(job_id, True)
+            except Exception as e:
+                logger.error(f"Failed to update task status in DB: {e}")
 
             return ToolResult(
                 success=True,

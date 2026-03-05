@@ -1,7 +1,6 @@
 """JINXUS API 응답 모델"""
 from pydantic import BaseModel, Field
-from typing import Optional, Any
-from datetime import datetime
+from typing import Optional
 
 
 class TaskResponse(BaseModel):

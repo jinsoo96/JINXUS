@@ -13,6 +13,7 @@ from anthropic import Anthropic
 
 from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
+from jinxus.agents.state_tracker import get_state_tracker, GraphNode
 
 
 class JXWriter:
@@ -34,6 +35,9 @@ class JXWriter:
         self._model = settings.claude_model
         self._memory = get_jinx_memory()
         self._prompt_version = "v1.0"
+        # 상태 추적기 (실시간 UI 연동)
+        self._state_tracker = get_state_tracker()
+        self._state_tracker.register_agent(self.name)
 
     def _get_system_prompt(self) -> str:
         return """너는 JX_WRITER야. 주인님을 모시는 JINXUS의 글쓰기 전문가.
@@ -63,43 +67,61 @@ class JXWriter:
         start_time = time.time()
         task_id = str(uuid.uuid4())
 
-        # === [receive] 과거 경험 로드 ===
-        memory_context = []
         try:
-            memory_context = self._memory.search_long_term(
-                agent_name=self.name,
-                query=instruction,
-                limit=3,
-            )
-        except Exception:
-            pass  # 메모리 실패해도 진행
+            # === [receive] 작업 시작 ===
+            self._state_tracker.start_task(self.name, instruction)
+            self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-        # === [plan] 문서 유형 판단 ===
-        doc_type = self._determine_doc_type(instruction)
-        plan = {"strategy": "write_document", "doc_type": doc_type, "instruction": instruction}
+            memory_context = []
+            try:
+                memory_context = self._memory.search_long_term(
+                    agent_name=self.name,
+                    query=instruction,
+                    limit=3,
+                )
+            except Exception:
+                pass  # 메모리 실패해도 진행
 
-        # === [execute] + [evaluate] + [retry] ===
-        result = await self._execute_with_retry(instruction, context, memory_context, doc_type)
+            # === [plan] 문서 유형 판단 ===
+            self._state_tracker.update_node(self.name, GraphNode.PLAN)
+            doc_type = self._determine_doc_type(instruction)
+            plan = {"strategy": "write_document", "doc_type": doc_type, "instruction": instruction}
 
-        # === [reflect] 반성 ===
-        reflection = await self._reflect(instruction, result)
+            # === [execute] + [evaluate] + [retry] ===
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
+            result = await self._execute_with_retry(instruction, context, memory_context, doc_type)
 
-        # === [memory_write] 장기기억 저장 ===
-        await self._memory_write(task_id, instruction, result, reflection)
+            # === [evaluate] ===
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
-        # === [return_result] ===
-        duration_ms = int((time.time() - start_time) * 1000)
+            # === [reflect] 반성 ===
+            self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+            reflection = await self._reflect(instruction, result)
 
-        return {
-            "task_id": task_id,
-            "agent_name": self.name,
-            "success": result["success"],
-            "success_score": result["score"],
-            "output": result["output"],
-            "failure_reason": result.get("error"),
-            "duration_ms": duration_ms,
-            "reflection": reflection,
-        }
+            # === [memory_write] 장기기억 저장 ===
+            self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+            await self._memory_write(task_id, instruction, result, reflection)
+
+            # === [return_result] ===
+            self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return {
+                "task_id": task_id,
+                "agent_name": self.name,
+                "success": result["success"],
+                "success_score": result["score"],
+                "output": result["output"],
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+                "reflection": reflection,
+            }
+
+        except Exception as e:
+            self._state_tracker.set_error(self.name, str(e))
+            raise
+        finally:
+            self._state_tracker.complete_task(self.name)
 
     def _determine_doc_type(self, instruction: str) -> str:
         """문서 유형 판단"""

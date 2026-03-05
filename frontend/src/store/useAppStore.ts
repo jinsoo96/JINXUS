@@ -13,7 +13,7 @@ interface AppState {
   agents: AgentInfo[];
 
   // 현재 탭
-  activeTab: 'chat' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings';
+  activeTab: 'dashboard' | 'chat' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings';
 
   // 액션
   addMessage: (message: ChatMessage) => void;

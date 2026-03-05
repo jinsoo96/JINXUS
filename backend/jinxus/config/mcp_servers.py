@@ -65,7 +65,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         command="npx",
         args=["-y", "@modelcontextprotocol/server-brave-search"],
         env={"BRAVE_API_KEY": os.getenv("BRAVE_API_KEY", "")},
-        allowed_agents=["JX_RESEARCHER"],
+        allowed_agents=[],  # 모든 에이전트 사용 가능
         enabled=True,  # 항상 활성화 (API 키 없으면 연결 안 됨)
         description="Brave 웹 검색",
         requires_api_key="BRAVE_API_KEY",
@@ -79,7 +79,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         name="fetch",
         command="npx",
         args=["-y", "mcp-fetch-server"],
-        allowed_agents=["JX_RESEARCHER", "JX_CODER"],
+        allowed_agents=[],  # 모든 에이전트 사용 가능
         enabled=True,
         description="웹 콘텐츠 가져오기",
     ),

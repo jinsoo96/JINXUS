@@ -4,7 +4,7 @@
 """
 import uuid
 import logging
-from typing import Optional, Dict, Any
+from typing import Any
 
 from jinxus.hr.models import HireSpec, AgentRole
 

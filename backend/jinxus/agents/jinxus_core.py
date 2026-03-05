@@ -13,8 +13,9 @@ from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
 from jinxus.core.context_guard import guard_results, guard_context
 from jinxus.core.model_router import select_model_for_core
-from jinxus.tools import get_all_tools_info
+from jinxus.tools import get_all_tools_info, WebSearcher
 from jinxus.hr import get_communicator, Message, MessageType, DelegatedTask
+from jinxus.agents.state_tracker import get_state_tracker, GraphNode, AgentStatus
 
 
 class SubTask(TypedDict):
@@ -92,11 +93,18 @@ class JinxusCore:
         self._agents = {}  # 에이전트 레지스트리
         self._graph = self._build_graph()
 
+        # 웹 검색 도구 (CORE 직접 사용)
+        self._web_searcher = WebSearcher()
+
         # 통신 시스템 초기화
         self._communicator = get_communicator()
         self._communicator.register_agent(self.name)
         self._communicator.set_message_handler(self.name, self._handle_message)
         self._delegation_callbacks = {}  # task_id -> callback
+
+        # 상태 추적기 (실시간 UI 연동)
+        self._state_tracker = get_state_tracker()
+        self._state_tracker.register_agent(self.name)
 
     def register_agent(self, agent) -> None:
         """에이전트 등록"""
@@ -206,6 +214,10 @@ class JinxusCore:
 
     async def _intake_node(self, state: ManagerState) -> ManagerState:
         """진수 입력 수신 및 컨텍스트 로드"""
+        # 상태 추적: 작업 시작
+        self._state_tracker.start_task(self.name, state["user_input"][:100])
+        self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
+
         user_input = state["user_input"]
         session_id = state["session_id"]
 
@@ -229,6 +241,9 @@ class JinxusCore:
 
     async def _decompose_node(self, state: ManagerState) -> ManagerState:
         """명령을 서브태스크로 분해"""
+        # 상태 추적: 계획 단계
+        self._state_tracker.update_node(self.name, GraphNode.PLAN)
+
         user_input = state["user_input"]
         memory_context = state.get("memory_context", [])
         conversation_history = state.get("conversation_history", [])
@@ -268,6 +283,9 @@ class JinxusCore:
 
     async def _dispatch_node(self, state: ManagerState) -> ManagerState:
         """서브태스크를 에이전트에게 전달 및 실행"""
+        # 상태 추적: 실행 단계
+        self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
+
         subtasks = state["subtasks"]
         execution_mode = state["execution_mode"]
         progress_callback = state.get("progress_callback")
@@ -313,6 +331,9 @@ class JinxusCore:
 
     async def _aggregate_node(self, state: ManagerState) -> ManagerState:
         """에이전트 결과 취합 (context_guard 적용)"""
+        # 상태 추적: 평가 단계
+        self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
+
         results = guard_results(state["dispatch_results"])  # 토큰 폭탄 방지
         user_input = state["user_input"]
 
@@ -332,6 +353,9 @@ class JinxusCore:
 
     async def _reflect_node(self, state: ManagerState) -> ManagerState:
         """전체 작업 반성"""
+        # 상태 추적: 반성 단계
+        self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+
         results = state["dispatch_results"]
 
         # 각 에이전트 성능 평가
@@ -351,6 +375,9 @@ class JinxusCore:
 
     async def _memory_write_node(self, state: ManagerState) -> ManagerState:
         """장기기억에 작업 결과 저장"""
+        # 상태 추적: 메모리 저장 단계
+        self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+
         results = state["dispatch_results"]
         task_id = state["task_id"]
 
@@ -365,12 +392,16 @@ class JinxusCore:
                     success_score=result["success_score"],
                     duration_ms=result["duration_ms"],
                     failure_reason=result.get("failure_reason"),
+                    output=result.get("output"),  # A/B 테스트용
                 )
 
         return state
 
     async def _respond_node(self, state: ManagerState) -> ManagerState:
         """최종 응답 생성"""
+        # 상태 추적: 결과 반환 단계
+        self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
+
         aggregated = state["aggregated_output"]
 
         # 단기기억에 응답 저장
@@ -380,6 +411,9 @@ class JinxusCore:
             aggregated,
             {"task_id": state["task_id"]},
         )
+
+        # 상태 추적: 작업 완료
+        self._state_tracker.complete_task(self.name)
 
         return {
             **state,
@@ -515,11 +549,73 @@ class JinxusCore:
                 "duration_ms": 0,
             }
 
+    async def _needs_external_info(self, user_input: str) -> bool:
+        """외부 정보(웹 검색)가 필요한 질문인지 빠르게 판단"""
+        check_prompt = f"""이 질문에 답하려면 실시간 외부 정보가 필요한가?
+
+질문: "{user_input}"
+
+A) yes - 날씨, 뉴스, 주가, 검색, 최신 정보 등 외부 데이터 필요
+B) no - 일반 지식, 대화, 의견 등 내 지식으로 충분
+
+yes 또는 no 한 단어만 답해."""
+
+        try:
+            response = self._client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=5,
+                messages=[{"role": "user", "content": check_prompt}],
+            )
+            return "yes" in response.content[0].text.strip().lower()
+        except Exception:
+            return False
+
+    async def _quick_web_search(self, query: str) -> str:
+        """빠른 웹 검색 (Brave Search MCP 우선, Tavily 폴백)"""
+        try:
+            # 1차: Brave Search MCP 시도
+            from jinxus.tools import get_mcp_client
+            mcp_client = get_mcp_client()
+
+            if mcp_client.is_connected("brave-search"):
+                result = await mcp_client.call_tool(
+                    "brave-search",
+                    "brave_web_search",
+                    {"query": query, "count": 5}
+                )
+                if result.success and result.output:
+                    return f"\n\n[웹 검색 결과]\n{result.output[:1000]}\n"
+
+            # 2차: Tavily 폴백
+            result = await self._web_searcher.run({
+                "query": query,
+                "max_results": 5,
+                "search_depth": "basic",
+                "auto_expand": False,
+            })
+            if result.success and result.output:
+                results = result.output.get("results", [])
+                if results:
+                    search_summary = "\n".join(
+                        f"- {r.get('title', '')}: {r.get('content', '')[:200]}"
+                        for r in results[:3]
+                    )
+                    return f"\n\n[웹 검색 결과]\n{search_summary}\n"
+            return ""
+        except Exception as e:
+            return ""
+
     async def _generate_direct_response(self, user_input: str, conversation_history: list = None) -> str:
         """직접 응답 생성 (에이전트 불필요한 경우)
 
         대화 기록이 있으면 Claude messages 형식으로 변환하여 전달
+        필요시 웹 검색 결과 포함
         """
+        # 외부 정보 필요 여부 확인 및 검색
+        search_context = ""
+        if await self._needs_external_info(user_input):
+            search_context = await self._quick_web_search(user_input)
+
         # 대화 기록을 Claude messages 형식으로 변환
         messages = []
         if conversation_history:
@@ -527,8 +623,12 @@ class JinxusCore:
                 role = "user" if msg.get("role") == "user" else "assistant"
                 messages.append({"role": role, "content": msg.get("content", "")})
 
-        # 현재 입력 추가
-        messages.append({"role": "user", "content": user_input})
+        # 검색 결과가 있으면 질문에 포함
+        final_input = user_input
+        if search_context:
+            final_input = f"{user_input}\n{search_context}"
+
+        messages.append({"role": "user", "content": final_input})
 
         response = self._client.messages.create(
             model=self._model,
@@ -605,7 +705,8 @@ class JinxusCore:
 ## 가용 에이전트 (주인님을 위해 일하는 부하들)
 - JX_CODER: 코드 작성, 실행, 디버깅
 - JX_RESEARCHER: 웹 검색, 정보 분석, 요약
-- JX_WRITER: 글쓰기, 문서화, 자소서
+- JX_WRITER: 일반 글쓰기, 문서화, 보고서
+- JS_PERSONA: 진수 전용 자소서/포트폴리오 (개인화된 글쓰기)
 - JX_ANALYST: 데이터 분석, 시각화, 통계
 - JX_OPS: 파일, GitHub, 스케줄 관리
 
@@ -659,9 +760,22 @@ class JinxusCore:
 |----------|----------|
 | JX_CODER | 코드 작성/실행/디버깅, 복잡한 프로그래밍 |
 | JX_RESEARCHER | 웹 검색/정보 분석/요약, 뉴스/논문 |
-| JX_WRITER | 문서/자소서/보고서 작성 |
+| JX_WRITER | 일반 문서/보고서/이메일 작성 |
+| JS_PERSONA | **진수 전용 자소서/포트폴리오** (진수 스타일, 과거 경험 참조) |
 | JX_ANALYST | 데이터 분석/시각화/통계 |
-| JX_OPS | 파일/GitHub/스케줄 관리 |
+| JX_OPS | 파일/GitHub/스케줄 관리, **시스템 관리(세션삭제/작업관리/메모리정리)** |
+
+## 에이전트 선택 기준
+- 웹 검색/정보 조회 → JX_RESEARCHER
+- 코드 작성/실행/디버깅 → JX_CODER
+- 자소서/포트폴리오 (진수 전용) → JS_PERSONA
+- 일반 문서 작성 → JX_WRITER
+- 데이터 분석/시각화 → JX_ANALYST
+- 파일/시스템/스케줄 관리 → JX_OPS
+
+## 중요: 외부 정보 필요하면 검색해라
+- 날씨, 뉴스, 주가 등 실시간 정보 → 검색 필요 → JX_RESEARCHER
+- "모르겠다"는 변명 금지, 검색해서 알려줘라
 {mcp_tools_str}
 
 ## 지시
@@ -745,8 +859,10 @@ class JinxusCore:
 입력: "{user_input}"
 
 이게 뭐야?
-A) 일상 대화/잡담/인사/감정표현/단순질문 → "chat"
-B) 실제 작업이 필요한 요청 (코드작성, 검색, 분석, 파일작업, 문서작성 등) → "task"
+A) 일상 대화/잡담/인사/감정표현 (외부 정보 전혀 불필요) → "chat"
+B) 작업이 필요한 요청 또는 외부 정보가 필요한 질문 → "task"
+
+핵심 기준: 답변에 웹 검색, 코드 실행, 파일 접근 등 도구가 필요하면 무조건 "task"
 
 chat 또는 task 한 단어만 답해."""
 
@@ -855,17 +971,26 @@ chat 또는 task 한 단어만 답해."""
         # 시작 이벤트
         yield {"event": "start", "data": {"task_id": task_id, "session_id": session_id}}
 
+        # === 상태 추적: 작업 시작 ===
+        self._state_tracker.start_task(self.name, user_input[:100])
+        self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
+
         # === 1. intake (메모리 로드) ===
-        yield {"event": "manager_thinking", "data": {"step": "intake"}}
+        yield {"event": "manager_thinking", "data": {"step": "intake", "detail": "대화 기록 로드 중..."}}
 
         conversation_history = await self._memory.get_short_term(session_id, limit=10)
+        yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"대화 기록 {len(conversation_history)}개 로드"}}
+
         memory_context = self._memory.search_all_memories(user_input, limit=5)
+        yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"관련 기억 {len(memory_context)}개 검색 완료"}}
         await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
 
         # === 2. decompose (명령 분해) ===
-        yield {"event": "manager_thinking", "data": {"step": "decompose"}}
+        self._state_tracker.update_node(self.name, GraphNode.PLAN)
+        yield {"event": "manager_thinking", "data": {"step": "decompose", "detail": "명령 분석 중..."}}
 
         decompose_prompt = self._get_decompose_prompt(user_input, memory_context, conversation_history)
+        yield {"event": "manager_thinking", "data": {"step": "decompose", "detail": "에이전트 배정 결정 중..."}}
         response = self._client.messages.create(
             model=self._model,
             max_tokens=2048,
@@ -894,7 +1019,19 @@ chat 또는 task 한 단어만 답해."""
 
         if len(subtasks) == 1 and subtasks[0]["assigned_agent"] == "DIRECT":
             # 직접 응답: 진짜 스트리밍
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
             yield {"event": "agent_started", "data": {"agent": "JINXUS_CORE"}}
+
+            # 외부 정보 필요 시 웹 검색 먼저 수행
+            search_context = ""
+            yield {"event": "manager_thinking", "data": {"step": "check", "detail": "외부 정보 필요 여부 확인 중..."}}
+            if await self._needs_external_info(user_input):
+                yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "Brave Search로 웹 검색 중..."}}
+                search_context = await self._quick_web_search(user_input)
+                if search_context:
+                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 수집 완료 ✓"}}
+                else:
+                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 없음, 내부 지식 사용"}}
 
             # 모델 라우팅: 단순 대화는 sonnet, 복잡한 작업은 opus
             selected_model = select_model_for_core(user_input)
@@ -905,7 +1042,12 @@ chat 또는 task 한 단어만 답해."""
                 for msg in conversation_history[-10:]:
                     role = "user" if msg.get("role") == "user" else "assistant"
                     messages.append({"role": role, "content": msg.get("content", "")})
-            messages.append({"role": "user", "content": user_input})
+
+            # 검색 결과가 있으면 질문에 포함
+            final_input = user_input
+            if search_context:
+                final_input = f"{user_input}\n{search_context}"
+            messages.append({"role": "user", "content": final_input})
 
             # messages.stream() 사용하여 토큰 단위 스트리밍
             full_response = ""
@@ -929,9 +1071,11 @@ chat 또는 task 한 단어만 답해."""
                 "duration_ms": 0,
             })
             yield {"event": "agent_done", "data": {"agent": "JINXUS_CORE", "success": True}}
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
         else:
             # 에이전트 실행
+            self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
             for task in subtasks:
                 agent_name = task["assigned_agent"]
                 if agent_name in self._agents:
@@ -946,6 +1090,8 @@ chat 또는 task 한 단어만 답해."""
                 agents_used.append(r["agent_name"])
                 yield {"event": "agent_done", "data": {"agent": r["agent_name"], "success": r["success"], "score": r["success_score"]}}
 
+            self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
+
             # 결과 취합 후 스트리밍
             if len(results) == 1:
                 aggregated = results[0]["output"]
@@ -959,6 +1105,8 @@ chat 또는 task 한 단어만 답해."""
                 await asyncio.sleep(0.01)  # 프론트가 받을 수 있게 약간의 딜레이
 
         # === 4. 메모리 저장 ===
+        self._state_tracker.update_node(self.name, GraphNode.REFLECT)
+        self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
         for result in results:
             if result["agent_name"] != "JINXUS_CORE":
                 await self._memory.log_agent_stat(
@@ -969,6 +1117,7 @@ chat 또는 task 한 단어만 답해."""
                     success_score=result["success_score"],
                     duration_ms=result["duration_ms"],
                     failure_reason=result.get("failure_reason"),
+                    output=result.get("output"),  # A/B 테스트용
                 )
 
         # 단기기억 저장
@@ -976,6 +1125,7 @@ chat 또는 task 한 단어만 답해."""
         await self._memory.save_short_term(session_id, "assistant", final_response[:500], {"task_id": task_id})
 
         # 완료 이벤트
+        self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
         yield {
             "event": "done",
             "data": {
@@ -984,3 +1134,4 @@ chat 또는 task 한 단어만 답해."""
                 "success": all(r["success"] for r in results) if results else True,
             },
         }
+        self._state_tracker.complete_task(self.name)

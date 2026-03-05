@@ -19,7 +19,7 @@ class WebSearcher(JinxTool):
 
     name = "web_searcher"
     description = "Tavily API를 통해 웹을 검색하고 결과를 분석합니다"
-    allowed_agents = ["JX_RESEARCHER"]
+    allowed_agents = []  # 모든 에이전트 사용 가능
     input_schema = {
         "type": "object",
         "properties": {

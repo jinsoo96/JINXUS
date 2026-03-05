@@ -39,19 +39,65 @@ async def lifespan(app: FastAPI):
 
     # 텔레그램 봇 시작 (토큰이 있으면)
     telegram_task = None
+    telegram_send_func = None
     if settings.telegram_bot_token:
         try:
-            from jinxus.channels.telegram_bot import start_telegram_bot
+            from jinxus.channels.telegram_bot import start_telegram_bot, get_telegram_send_func
             telegram_task = asyncio.create_task(start_telegram_bot())
+            telegram_send_func = get_telegram_send_func()
             print(f"Telegram bot started: @JINXUS_bot")
+
+            # Task API에 텔레그램 알림 연결
+            from jinxus.api.routers.task import set_telegram_notify
+            set_telegram_notify(telegram_send_func)
+            print("Task API: Telegram notifications connected")
         except Exception as e:
             logger.warning(f"Telegram bot failed to start: {e}")
+
+    # 프롬프트 버전 동기화
+    try:
+        from jinxus.tools import sync_all_prompts
+        sync_result = await sync_all_prompts()
+        print(f"Prompt versions synced: {sync_result.get('count', 0)} agents")
+    except Exception as e:
+        logger.error(f"Failed to sync prompts: {e}")
+
+    # 스케줄러 초기화 및 복구
+    try:
+        from jinxus.tools import TOOL_REGISTRY
+
+        scheduler = TOOL_REGISTRY.get("scheduler")
+        if scheduler:
+            # 스케줄된 작업 실행 콜백 (JINXUS_CORE로 처리)
+            async def task_callback(task_prompt: str) -> str:
+                from jinxus.agents import get_jinxus_core
+                jinxus_core = get_jinxus_core()
+                result = await jinxus_core.run(task_prompt, session_id="scheduled_task")
+                return result.get("response", "완료")
+
+            scheduler.initialize(
+                task_callback=task_callback,
+                notification_callback=telegram_send_func,
+            )
+            restored = await scheduler.restore_from_db()
+            print(f"Scheduler initialized, restored {restored} tasks")
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {e}")
 
     yield
 
     # 종료 시
     from jinxus.core.background_worker import stop_background_worker
     await stop_background_worker()
+
+    # 스케줄러 종료
+    try:
+        from jinxus.tools import TOOL_REGISTRY
+        scheduler = TOOL_REGISTRY.get("scheduler")
+        if scheduler:
+            scheduler.shutdown()
+    except Exception as e:
+        logger.error(f"Failed to shutdown scheduler: {e}")
 
     if telegram_task:
         telegram_task.cancel()

@@ -1,7 +1,6 @@
 """JINXUS API 요청 모델"""
 from pydantic import BaseModel, Field
 from typing import Optional
-from enum import Enum
 
 
 class ChatRequest(BaseModel):

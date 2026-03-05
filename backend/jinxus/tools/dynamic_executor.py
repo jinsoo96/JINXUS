@@ -10,7 +10,7 @@ MCP 도구 포함 모든 도구를 자동으로 활용 가능.
 """
 import json
 import logging
-from typing import Optional, Any
+from typing import Optional
 from dataclasses import dataclass, field
 
 from anthropic import Anthropic
@@ -49,6 +49,34 @@ class DynamicToolExecutor:
             system_prompt="너는 리서치 전문가야..."
         )
     """
+
+    # MCP 도구 선택 가이드라인 (잘못된 도구 선택 방지)
+    TOOL_SELECTION_GUIDE = """
+
+## 도구 선택 가이드라인 (중요!)
+
+### GitHub 관련 작업
+- GitHub 레포지토리 조회/분석: `mcp__github__*` 도구 사용
+- GitHub 이슈/PR 관련: `mcp__github__*` 도구 사용
+- **절대로** `mcp__filesystem__*` 도구로 GitHub 작업하지 마라 (권한 오류 발생)
+
+### 파일 시스템 작업
+- 로컬 파일 읽기/쓰기: `mcp__filesystem__*` 도구 사용
+- 단, 허용된 경로만 접근 가능 (/ 루트 접근 불가)
+
+### 웹 검색/크롤링
+- 웹 검색: `mcp__brave_search__*` 도구 사용
+- 웹페이지 내용 가져오기: `mcp__fetch__*` 도구 사용
+- 브라우저 자동화: `mcp__playwright__*` 도구 사용
+
+### Git 작업
+- git commit, push, branch: `mcp__git__*` 도구 사용
+
+### 도구 선택 원칙
+1. 작업 목적에 맞는 도구 선택
+2. 에러 발생 시 다른 도구로 폴백 시도
+3. 확실하지 않으면 먼저 목록 조회 도구 사용 (list_*, get_* 등)
+"""
 
     def __init__(
         self,
@@ -144,6 +172,9 @@ class DynamicToolExecutor:
         tools = self._get_available_tools()
         tool_schemas = self._build_tool_schemas()
 
+        # 도구 선택 가이드라인 추가 (MCP 도구 잘못 선택 방지)
+        enhanced_system_prompt = system_prompt + self.TOOL_SELECTION_GUIDE
+
         # 도구가 없으면 일반 대화
         if not tool_schemas:
             response = self._client.messages.create(
@@ -174,7 +205,7 @@ class DynamicToolExecutor:
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=4096,
-                system=system_prompt,
+                system=enhanced_system_prompt,
                 messages=messages,
                 tools=tool_schemas,
             )

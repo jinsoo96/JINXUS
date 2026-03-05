@@ -16,7 +16,6 @@
     /tasks    - 백그라운드 작업 목록
     /cancel   - 작업 취소
 """
-import asyncio
 import logging
 from typing import Optional
 
@@ -51,15 +50,6 @@ class TelegramBot:
         if self._authorized_user_id == 0:
             return True
         return user_id == self._authorized_user_id
-
-    def _escape_markdown(self, text: str) -> str:
-        """텔레그램 마크다운 특수문자 이스케이프"""
-        # 텔레그램 Markdown 파싱 에러 방지
-        # 특수문자를 그대로 표시하도록 처리
-        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-        for char in escape_chars:
-            text = text.replace(char, f'\\{char}')
-        return text
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일반 메시지 처리 → JINXUS_CORE 실행"""
@@ -566,6 +556,17 @@ async def start_telegram_bot():
     await bot.start()
 
 
+def get_telegram_send_func():
+    """텔레그램 알림 전송 함수 반환 (스케줄러용)
+
+    Returns:
+        async def(message: str) -> None
+    """
+    async def send_func(message: str) -> None:
+        await send_notification(message)
+    return send_func
+
+
 async def send_notification(message: str, image_paths: list[str] = None):
     """텔레그램으로 알림 전송 (텍스트 + 이미지)
 
@@ -611,63 +612,3 @@ async def send_notification(message: str, image_paths: list[str] = None):
         logger.error(f"Failed to send Telegram notification: {e}")
 
 
-async def send_photo(image_path: str, caption: str = None):
-    """텔레그램으로 이미지 전송
-
-    Args:
-        image_path: 이미지 파일 경로
-        caption: 이미지 캡션 (선택, 최대 1024자)
-    """
-    settings = get_settings()
-    if not settings.telegram_bot_token or not settings.telegram_authorized_user_id:
-        return False
-
-    try:
-        from telegram import Bot
-        bot = Bot(token=settings.telegram_bot_token)
-
-        with open(image_path, 'rb') as photo:
-            await bot.send_photo(
-                chat_id=settings.telegram_authorized_user_id,
-                photo=photo,
-                caption=caption[:1024] if caption else None,
-            )
-        return True
-
-    except FileNotFoundError:
-        logger.error(f"Image not found: {image_path}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to send photo: {e}")
-        return False
-
-
-async def send_document(file_path: str, caption: str = None):
-    """텔레그램으로 파일 전송
-
-    Args:
-        file_path: 파일 경로
-        caption: 파일 캡션 (선택)
-    """
-    settings = get_settings()
-    if not settings.telegram_bot_token or not settings.telegram_authorized_user_id:
-        return False
-
-    try:
-        from telegram import Bot
-        bot = Bot(token=settings.telegram_bot_token)
-
-        with open(file_path, 'rb') as doc:
-            await bot.send_document(
-                chat_id=settings.telegram_authorized_user_id,
-                document=doc,
-                caption=caption[:1024] if caption else None,
-            )
-        return True
-
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to send document: {e}")
-        return False

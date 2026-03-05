@@ -2,7 +2,6 @@
 
 외부 MCP 서버들을 JINXUS 도구 시스템과 통합한다.
 """
-import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -69,10 +68,7 @@ class MCPClient:
             return False
 
         try:
-            # 디버그 로그 파일에 직접 기록
-            with open("/tmp/mcp_debug.log", "a") as f:
-                f.write(f"[{config.name}] 연결 시도: {config.command} {config.args}\n")
-                f.flush()
+            logger.debug(f"MCP 서버 연결 시도: {config.name} ({config.command} {config.args})")
 
             server_params = self._StdioServerParameters(
                 command=config.command,
@@ -86,9 +82,7 @@ class MCPClient:
             )
             stdio, write = stdio_transport
 
-            with open("/tmp/mcp_debug.log", "a") as f:
-                f.write(f"[{config.name}] stdio 연결됨, 세션 초기화 중...\n")
-                f.flush()
+            logger.debug(f"MCP 서버 stdio 연결됨: {config.name}")
 
             # 세션 생성 및 초기화
             session = await self._exit_stack.enter_async_context(
@@ -110,16 +104,10 @@ class MCPClient:
             ]
 
             logger.info(f"MCP 서버 연결됨: {config.name} (도구 {len(self._tools_cache[config.name])}개)")
-            with open("/tmp/mcp_debug.log", "a") as f:
-                f.write(f"[{config.name}] 연결 완료 - 도구 {len(self._tools_cache[config.name])}개\n")
-                f.flush()
             return True
 
         except Exception as e:
             logger.error(f"MCP 서버 연결 실패 ({config.name}): {e}")
-            with open("/tmp/mcp_debug.log", "a") as f:
-                f.write(f"[{config.name}] 연결 실패: {e}\n")
-                f.flush()
             return False
 
     async def list_tools(self, server_name: str = None) -> list[dict]:
@@ -229,7 +217,22 @@ class MCPToolAdapter(JinxTool):
     """MCP 서버를 JINXUS 도구로 감싸는 어댑터
 
     기존 JinxTool 인터페이스와 호환되게 MCP 도구를 노출한다.
+    자동 캐싱 지원 (읽기 전용 도구만)
     """
+
+    # 캐싱 가능한 MCP 도구 패턴 (읽기 전용)
+    CACHEABLE_PATTERNS = [
+        "get_", "list_", "search_", "read_", "fetch_", "query_",
+        "brave_web_search",  # Brave 검색
+        "get_file_contents", "read_file", "list_directory",  # Filesystem
+        "list_repos", "get_repo", "get_file", "get_issue", "get_pr",  # GitHub
+    ]
+
+    # 캐싱 제외 (쓰기 작업)
+    NON_CACHEABLE_PATTERNS = [
+        "create_", "update_", "delete_", "write_", "push_", "commit_",
+        "navigate", "click", "type", "screenshot",  # Playwright (동적)
+    ]
 
     def __init__(
         self,
@@ -248,24 +251,79 @@ class MCPToolAdapter(JinxTool):
         self.name = f"mcp:{server_name}:{tool_name}"
         self.description = description or f"MCP 도구 ({server_name}/{tool_name})"
         self.allowed_agents = allowed_agents or []
-        # MCP 도구의 실제 input_schema (Claude tool_use용)
         self.input_schema = input_schema or {
             "type": "object",
             "properties": {},
             "required": [],
         }
 
+        # 캐싱 가능 여부 사전 계산
+        self._is_cacheable = self._check_cacheable()
+
+    def _check_cacheable(self) -> bool:
+        """이 도구가 캐싱 가능한지 확인"""
+        tool_lower = self._tool_name.lower()
+
+        # 제외 패턴 먼저 체크
+        for pattern in self.NON_CACHEABLE_PATTERNS:
+            if pattern in tool_lower:
+                return False
+
+        # 캐싱 가능 패턴 체크
+        for pattern in self.CACHEABLE_PATTERNS:
+            if pattern in tool_lower:
+                return True
+
+        # 기본값: 캐싱 안 함 (안전)
+        return False
+
+    def _make_cache_id(self, input_data: dict) -> str:
+        """캐시 식별자 생성"""
+        import json
+        import hashlib
+        content = f"{self._server_name}:{self._tool_name}:{json.dumps(input_data, sort_keys=True)}"
+        return hashlib.md5(content.encode()).hexdigest()
+
     async def run(self, input_data: dict) -> ToolResult:
-        """MCP 도구 실행"""
+        """MCP 도구 실행 (캐싱 지원)"""
         self._start_timer()
 
+        use_cache = input_data.pop("use_cache", True)  # 캐시 사용 여부
+
+        # 캐시 확인
+        if self._is_cacheable and use_cache:
+            try:
+                from .cache_manager import cache_get, cache_set
+
+                cache_id = self._make_cache_id(input_data)
+                cached = await cache_get("mcp", cache_id)
+
+                if cached:
+                    return ToolResult(
+                        success=True,
+                        output={**cached, "from_cache": True},
+                        duration_ms=self._get_duration_ms(),
+                    )
+            except Exception:
+                pass  # 캐시 실패해도 계속 진행
+
+        # 실제 MCP 호출
         result = await self._mcp_client.call_tool(
             self._server_name,
             self._tool_name,
             input_data,
         )
 
-        # 기존 duration 유지 (이미 계산됨)
+        # 성공한 결과 캐싱
+        if self._is_cacheable and use_cache and result.success:
+            try:
+                from .cache_manager import cache_set
+
+                cache_id = self._make_cache_id(input_data)
+                await cache_set("mcp", cache_id, result.output)
+            except Exception:
+                pass
+
         return result
 
 

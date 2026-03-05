@@ -6,9 +6,10 @@ import { useAppStore } from '@/store/useAppStore';
 import { chatApi, feedbackApi, type ChatSession, type SSEEvent } from '@/lib/api';
 import {
   Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2,
-  MessageSquare, Clock, Globe, RefreshCw, ChevronDown
+  MessageSquare, Clock, Globe, RefreshCw, ChevronDown, Brain
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
+import ThinkingPanel, { type ThinkingLog } from '@/components/ThinkingPanel';
 
 export default function ChatTab() {
   const { messages, addMessage, isLoading, setLoading, sessionId, setSessionId, clearMessages } = useAppStore();
@@ -19,6 +20,53 @@ export default function ChatTab() {
   const [showSessions, setShowSessions] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // AbortController for SSE cancellation on unmount
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Thinking Panel 상태
+  const [thinkingLogs, setThinkingLogs] = useState<ThinkingLog[]>([]);
+  const [showThinking, setShowThinking] = useState(true);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+
+  // Thinking 로그 추가 헬퍼
+  const addThinkingLog = (step: string, detail?: string, agent?: string, status?: 'running' | 'done' | 'error') => {
+    setThinkingLogs(prev => [...prev, {
+      id: `${Date.now()}-${Math.random()}`,
+      timestamp: new Date(),
+      step,
+      detail,
+      agent,
+      status,
+    }]);
+  };
+
+  // 작업 중지 (SSE 스트리밍 취소)
+  const handleStopTask = async () => {
+    if (!currentTaskId) return;
+    try {
+      // 1. 프론트엔드 SSE 연결 즉시 중단
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+
+      // 2. 백엔드에 취소 알림 (비동기로)
+      const result = await chatApi.cancelStream(currentTaskId);
+      if (result.success) {
+        addThinkingLog('cancelled', '사용자가 작업을 중지했습니다', undefined, 'error');
+      } else {
+        addThinkingLog('cancelled', result.message, undefined, 'error');
+      }
+      setLoading(false);
+      setCurrentTaskId(null);
+    } catch (error) {
+      console.error('Failed to cancel stream:', error);
+      // 실패해도 UI는 중지
+      setLoading(false);
+      setCurrentTaskId(null);
+    }
+  };
 
   // 세션 목록 로드
   const loadSessions = async () => {
@@ -74,9 +122,30 @@ export default function ChatTab() {
     }
   };
 
-  const handleClearChat = () => {
-    if (messages.length === 0) return;
+  const handleClearChat = async () => {
+    if (messages.length === 0 && !isLoading) return;
     if (confirm('현재 채팅을 삭제하시겠습니까?')) {
+      // 1. SSE 연결 즉시 중단
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+
+      // 2. 백엔드에 취소 알림
+      if (currentTaskId) {
+        try {
+          await chatApi.cancelStream(currentTaskId);
+        } catch (e) {
+          console.warn('Cancel failed:', e);
+        }
+      }
+
+      // 3. 모든 상태 초기화
+      setLoading(false);
+      setStreamingContent('');
+      setCurrentAgent(null);
+      setCurrentTaskId(null);
+      setThinkingLogs([]);
       clearMessages();
       setSessionId('');
     }
@@ -85,6 +154,26 @@ export default function ChatTab() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  // 컴포넌트 마운트 시 잔여 상태 정리 & 언마운트 시 SSE 정리
+  useEffect(() => {
+    // 이전 세션의 잔여 상태가 있으면 정리
+    if (isLoading && !currentTaskId) {
+      console.warn('Cleaning up stale loading state');
+      setLoading(false);
+      setStreamingContent('');
+      setCurrentAgent(null);
+    }
+
+    // 컴포넌트 언마운트 시 SSE 연결 정리
+    return () => {
+      if (abortControllerRef.current) {
+        console.log('ChatTab unmount: aborting SSE connection');
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     scrollToBottom();
@@ -108,10 +197,18 @@ export default function ChatTab() {
     setStreamingContent('');
     setCurrentAgent(null);
 
+    // Thinking 초기화
+    setThinkingLogs([]);
+    setCurrentTaskId(null);
+    addThinkingLog('start', '작업 시작', undefined, 'running');
+
     let fullResponse = '';
     let agentsUsed: string[] = [];
     let taskId = '';
     let newSessionId = sessionId;
+
+    // 새 AbortController 생성
+    abortControllerRef.current = new AbortController();
 
     try {
       await chatApi.streamMessage(
@@ -121,17 +218,32 @@ export default function ChatTab() {
           switch (event.event) {
             case 'start':
               taskId = event.data.task_id || '';
+              setCurrentTaskId(taskId);
               if (event.data.session_id && !sessionId) {
                 newSessionId = event.data.session_id;
                 setSessionId(event.data.session_id);
               }
+              addThinkingLog('start', `Task: ${taskId.slice(0, 8)}...`);
               break;
+
+            case 'manager_thinking':
+              addThinkingLog(event.data.step || 'thinking', event.data.detail, undefined, 'running');
+              break;
+
+            case 'decompose_done':
+              addThinkingLog('decompose', `${event.data.subtasks_count}개 서브태스크 (${event.data.mode})`, undefined, 'done');
+              break;
+
             case 'agent_started':
               setCurrentAgent(event.data.agent || null);
+              addThinkingLog('agent_started', event.data.task_id?.slice(0, 8), event.data.agent, 'running');
               break;
+
             case 'agent_done':
               if (event.data.agent) {
                 agentsUsed.push(event.data.agent);
+                const score = event.data.score ? ` (점수: ${event.data.score.toFixed(1)})` : '';
+                addThinkingLog('agent_done', event.data.success ? `완료${score}` : '실패', event.data.agent, event.data.success ? 'done' : 'error');
               }
               setCurrentAgent(null);
               break;
@@ -145,14 +257,25 @@ export default function ChatTab() {
             case 'done':
               fullResponse = event.data.response || fullResponse;
               agentsUsed = event.data.agents_used || agentsUsed;
+              addThinkingLog('done', '응답 완료', undefined, 'done');
               break;
             case 'error':
+              addThinkingLog('error', event.data.error, undefined, 'error');
               throw new Error(event.data.error || 'Unknown error');
+
+            case 'cancelled':
+              addThinkingLog('cancelled', event.data.message || '작업 취소됨', undefined, 'error');
+              // 취소 시 스트리밍 중지
+              setLoading(false);
+              setCurrentTaskId(null);
+              return; // 이벤트 루프 종료
           }
         },
         (error) => {
+          addThinkingLog('error', error.message, undefined, 'error');
           throw error;
-        }
+        },
+        abortControllerRef.current
       );
 
       // 스트리밍 완료 후 메시지 추가
@@ -167,10 +290,12 @@ export default function ChatTab() {
 
       setStreamingContent('');
       addMessage(assistantMessage);
+      setCurrentTaskId(null);
 
     } catch (error) {
       // 스트리밍 실패 시 동기 API로 폴백
       console.warn('Streaming failed, falling back to sync:', error);
+      addThinkingLog('fallback', '동기 API로 재시도', undefined, 'running');
 
       try {
         const response = await chatApi.sendMessage(userMessage.content, sessionId || undefined);
@@ -191,6 +316,7 @@ export default function ChatTab() {
         setStreamingContent('');
         addMessage(assistantMessage);
       } catch (syncError) {
+        addThinkingLog('error', syncError instanceof Error ? syncError.message : '알 수 없는 오류', undefined, 'error');
         const errorMessage: ChatMessage = {
           id: Date.now().toString(),
           role: 'assistant',
@@ -204,6 +330,8 @@ export default function ChatTab() {
     } finally {
       setLoading(false);
       setCurrentAgent(null);
+      setCurrentTaskId(null);
+      abortControllerRef.current = null;
     }
   };
 
@@ -347,7 +475,28 @@ export default function ChatTab() {
 
                 {/* 새 대화 버튼 */}
                 <button
-                  onClick={() => {
+                  onClick={async () => {
+                    // 1. SSE 연결 즉시 중단
+                    if (abortControllerRef.current) {
+                      abortControllerRef.current.abort();
+                      abortControllerRef.current = null;
+                    }
+
+                    // 2. 백엔드에 취소 알림
+                    if (currentTaskId) {
+                      try {
+                        await chatApi.cancelStream(currentTaskId);
+                      } catch (e) {
+                        console.warn('Cancel failed:', e);
+                      }
+                    }
+
+                    // 3. 모든 상태 초기화
+                    setLoading(false);
+                    setStreamingContent('');
+                    setCurrentAgent(null);
+                    setCurrentTaskId(null);
+                    setThinkingLogs([]);
                     clearMessages();
                     setSessionId('');
                     setShowSessions(false);
@@ -413,20 +562,40 @@ export default function ChatTab() {
           </div>
         </div>
 
-        {messages.length > 0 && (
+        <div className="flex items-center gap-2">
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearChat}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-red-600/10 transition-colors"
+              title="현재 채팅 삭제"
+            >
+              <Trash2 size={14} />
+              삭제
+            </button>
+          )}
+
+          {/* Thinking Panel 토글 */}
           <button
-            onClick={handleClearChat}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-red-600/10 transition-colors"
-            title="현재 채팅 삭제"
+            onClick={() => setShowThinking(!showThinking)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              showThinking
+                ? 'bg-primary/20 text-primary'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+            title="Thinking Log 토글"
           >
-            <Trash2 size={14} />
-            삭제
+            <Brain size={14} className={isLoading ? 'animate-pulse' : ''} />
+            로그
           </button>
-        )}
+        </div>
       </div>
 
-      {/* 메시지 목록 */}
-      <div className="flex-1 overflow-y-auto space-y-6 pb-4">
+      {/* 채팅 + Thinking 패널 래퍼 */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* 채팅 영역 */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* 메시지 목록 */}
+          <div className="flex-1 overflow-y-auto space-y-6 pb-4 pr-2">
         {messages.length === 0 && !streamingContent ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
@@ -525,6 +694,19 @@ export default function ChatTab() {
           Ctrl+Enter로 전송 | 실시간 스트리밍 | 텔레그램 대화도 여기서 확인
         </p>
       </form>
+        </div>
+
+        {/* Thinking Panel */}
+        {showThinking && (
+          <ThinkingPanel
+            logs={thinkingLogs}
+            isActive={isLoading}
+            taskId={currentTaskId}
+            onStop={handleStopTask}
+            onClose={() => setShowThinking(false)}
+          />
+        )}
+      </div>
     </div>
   );
 }
