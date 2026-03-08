@@ -1,0 +1,55 @@
+name: jinxus
+
+services:
+  jinxus:
+    build: .
+    container_name: jinxus-backend
+    ports:
+      - "19000:19000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JINXUS_PORT=19000
+      - JINXUS_DEBUG=false
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./data:/app/data
+      - ./prompts:/app/prompts
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    volumes:
+      - jinxus_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "16333:6333"
+    volumes:
+      - jinxus_qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  jinxus_redis_data:
+  jinxus_qdrant_data:
