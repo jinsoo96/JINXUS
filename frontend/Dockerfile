@@ -7,7 +7,7 @@ RUN npm ci
 
 COPY . .
 
-ENV NEXT_PUBLIC_API_URL=http://jinxus:19000
+ENV NEXT_PUBLIC_API_URL=http://jinxus-backend:19000
 RUN npm run build
 
 FROM node:20-alpine AS runner

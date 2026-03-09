@@ -1,9 +1,9 @@
-"""Chat API - SSE 스트리밍 채팅 + 히스토리 관리"""
+"""Chat API - SSE 스트리밍 + WebSocket 채팅 + 히스토리 관리"""
 import asyncio
 import json
 import logging
 from typing import Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from sse_starlette.sse import EventSourceResponse
 
 from jinxus.api.models import ChatRequest
@@ -212,3 +212,81 @@ async def delete_session(session_id: str):
         "success": True,
         "message": f"세션 '{session_id}' 삭제 완료",
     }
+
+
+@router.websocket("/ws")
+async def websocket_chat(websocket: WebSocket):
+    """WebSocket 채팅 엔드포인트 — 양방향 실시간 통신
+
+    클라이언트 → 서버: {"message": str, "session_id": str}
+    서버 → 클라이언트: SSE와 동일한 이벤트 형식 {"event": str, "data": dict}
+    클라이언트 취소: {"action": "cancel", "task_id": str}
+    """
+    await websocket.accept()
+    logger.info("WebSocket 연결 수락")
+
+    orchestrator = get_orchestrator()
+    if not orchestrator.is_initialized:
+        await orchestrator.initialize()
+
+    current_task: asyncio.Task | None = None
+    cancel_event = asyncio.Event()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            data = json.loads(raw)
+
+            # 취소 요청 처리
+            if data.get("action") == "cancel":
+                cancel_event.set()
+                if current_task and not current_task.done():
+                    current_task.cancel()
+                await websocket.send_text(json.dumps(
+                    {"event": "cancelled", "data": {"message": "작업 취소됨"}},
+                    ensure_ascii=False,
+                ))
+                cancel_event.clear()
+                continue
+
+            message = data.get("message", "")
+            session_id = data.get("session_id")
+
+            if not message:
+                continue
+
+            cancel_event.clear()
+
+            async def stream_to_ws():
+                try:
+                    async for event in orchestrator.run_task_stream(message, session_id):
+                        if cancel_event.is_set():
+                            await websocket.send_text(json.dumps(
+                                {"event": "cancelled", "data": {"message": "사용자 취소"}},
+                                ensure_ascii=False,
+                            ))
+                            return
+
+                        await websocket.send_text(json.dumps(
+                            {"event": event["event"], "data": event["data"]},
+                            ensure_ascii=False,
+                        ))
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"WebSocket 스트림 오류: {e}")
+                    await websocket.send_text(json.dumps(
+                        {"event": "error", "data": {"error": str(e)}},
+                        ensure_ascii=False,
+                    ))
+
+            current_task = asyncio.create_task(stream_to_ws())
+            await current_task
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket 연결 종료")
+    except Exception as e:
+        logger.error(f"WebSocket 오류: {e}")
+    finally:
+        if current_task and not current_task.done():
+            current_task.cancel()

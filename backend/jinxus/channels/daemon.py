@@ -65,7 +65,7 @@ class JinxusDaemon:
             execution_callback=self._execute_scheduled_task
         )
 
-        self._start_time = datetime.utcnow()
+        self._start_time = datetime.now()
         logger.info("JINXUS Daemon 초기화 완료")
 
     async def start(self) -> None:
@@ -265,7 +265,7 @@ class JinxusDaemon:
         """데몬 상태 조회"""
         uptime = None
         if self._start_time:
-            uptime = (datetime.utcnow() - self._start_time).total_seconds()
+            uptime = (datetime.now() - self._start_time).total_seconds()
 
         return {
             "running": self._running,

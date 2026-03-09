@@ -1,8 +1,8 @@
 #!/bin/bash
 # JINXUS 프론트엔드 재빌드 + 재시작 스크립트
-# 사용: ./rebuild.sh [port] (기본: 1818)
+# 사용: ./rebuild.sh [port] (기본: 5000)
 
-PORT=${1:-1818}
+PORT=${1:-5000}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
@@ -26,14 +26,16 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# 서버 시작
+# 서버 시작 (0.0.0.0 바인딩으로 원격 접속 허용)
 echo "[JINXUS] 포트 $PORT에서 서버 시작..."
-nohup npx next start -p $PORT > /tmp/jinxus-frontend.log 2>&1 &
+nohup npx next start -p $PORT -H 0.0.0.0 > /tmp/jinxus-frontend.log 2>&1 &
 sleep 2
 
 # 확인
 if ss -tlnp | grep -q ":$PORT"; then
-  echo "[JINXUS] 프론트엔드 재빌드 완료! http://localhost:$PORT"
+  echo "[JINXUS] 프론트엔드 재빌드 완료!"
+  echo "  로컬:     http://localhost:$PORT"
+  echo "  Tailscale: http://100.75.83.105:$PORT"
 else
   echo "[JINXUS] 서버 시작 실패. 로그: /tmp/jinxus-frontend.log"
   exit 1

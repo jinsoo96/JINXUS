@@ -51,8 +51,39 @@ class GitHubAgent(JinxTool):
 - create_issue: 이슈 생성
 - list_issues: 이슈 목록
 - delete_branch: 브랜치 삭제 (confirm_destructive 필요)
+- list_commits: 최근 커밋 목록 조회 (repo 파라미터, 예: "owner/repo", branch 선택, limit 선택)
+- get_contents: 파일/디렉토리 내용 조회 (repo, path 파라미터. 디렉토리면 파일 목록, 파일이면 내용 반환)
+- get_file: 특정 파일의 전체 내용 조회 (repo, path 파라미터)
 - rate_limit: 현재 rate limit 상태 확인"""
-    allowed_agents = ["JX_OPS"]
+    allowed_agents = ["JX_OPS", "JX_RESEARCHER"]
+
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "수행할 GitHub 작업",
+                "enum": [
+                    "list_user_repos", "search_repos", "get_repo",
+                    "list_commits", "list_branches", "create_branch",
+                    "commit_file", "create_pr", "list_prs",
+                    "create_issue", "list_issues", "delete_branch",
+                    "get_contents", "get_file", "rate_limit",
+                ],
+            },
+            "repo": {"type": "string", "description": "owner/repo 형식 (예: jinsoo96/JINXUS)"},
+            "username": {"type": "string", "description": "GitHub 사용자명 (list_user_repos용)"},
+            "query": {"type": "string", "description": "검색어 (search_repos용, 예: user:jinsoo96)"},
+            "branch": {"type": "string", "description": "브랜치명"},
+            "limit": {"type": "integer", "description": "조회 개수 제한 (기본 10)"},
+            "title": {"type": "string", "description": "PR/이슈 제목"},
+            "body": {"type": "string", "description": "PR/이슈 본문"},
+            "path": {"type": "string", "description": "파일 경로"},
+            "content": {"type": "string", "description": "파일 내용"},
+            "message": {"type": "string", "description": "커밋 메시지"},
+        },
+        "required": ["action"],
+    }
 
     # 파괴적 작업 목록 (실행 전 확인 필요)
     DESTRUCTIVE_ACTIONS = ["force_push", "delete_branch", "delete_repo", "close_pr"]
@@ -184,7 +215,7 @@ class GitHubAgent(JinxTool):
 
         # 캐시 확인 (읽기 전용 작업만)
         use_cache = input_data.get("use_cache", True)
-        read_only_actions = ["get_repo", "list_branches", "list_prs", "list_issues", "list_user_repos", "search_repos"]
+        read_only_actions = ["get_repo", "list_branches", "list_prs", "list_issues", "list_user_repos", "search_repos", "list_commits", "get_contents", "get_file"]
 
         if use_cache and action in read_only_actions:
             cache_key = self._cache_key(action, input_data)
@@ -246,6 +277,18 @@ class GitHubAgent(JinxTool):
             elif action == "search_repos":
                 result = await loop.run_in_executor(
                     None, self._search_repos, input_data
+                )
+            elif action == "list_commits":
+                result = await loop.run_in_executor(
+                    None, self._list_commits, input_data
+                )
+            elif action == "get_contents":
+                result = await loop.run_in_executor(
+                    None, self._get_contents, input_data
+                )
+            elif action == "get_file":
+                result = await loop.run_in_executor(
+                    None, self._get_file, input_data
                 )
             else:
                 return ToolResult(
@@ -548,6 +591,178 @@ class GitHubAgent(JinxTool):
                     "username": username or "authenticated user",
                     "repos": repo_list,
                     "count": len(repo_list),
+                },
+                duration_ms=self._get_duration_ms(),
+            )
+
+        except GithubException as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+    def _get_contents(self, input_data: dict) -> ToolResult:
+        """파일/디렉토리 내용 조회"""
+        repo_name = input_data.get("repo")
+        path = input_data.get("path", "")
+        branch = input_data.get("branch")
+
+        if not repo_name:
+            return ToolResult(
+                success=False, output=None,
+                error="repo is required (예: jinsoo96/Prompt_Foundry)",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        client = self._get_client()
+        try:
+            repo = client.get_repo(repo_name)
+            kwargs = {"ref": branch} if branch else {}
+            contents = repo.get_contents(path, **kwargs)
+
+            if isinstance(contents, list):
+                # 디렉토리
+                items = []
+                for item in contents:
+                    items.append({
+                        "name": item.name,
+                        "path": item.path,
+                        "type": item.type,  # "file" or "dir"
+                        "size": item.size if item.type == "file" else None,
+                    })
+                return ToolResult(
+                    success=True,
+                    output={"repo": repo_name, "path": path or "/", "type": "directory", "items": items, "count": len(items)},
+                    duration_ms=self._get_duration_ms(),
+                )
+            else:
+                # 파일
+                try:
+                    content = contents.decoded_content.decode("utf-8")
+                except Exception:
+                    content = f"[바이너리 파일, {contents.size} bytes]"
+
+                # 너무 긴 파일은 잘라서 반환
+                if len(content) > 10000:
+                    content = content[:10000] + f"\n\n... (이하 생략, 전체 {len(content)}자)"
+
+                return ToolResult(
+                    success=True,
+                    output={"repo": repo_name, "path": contents.path, "type": "file", "size": contents.size, "content": content},
+                    duration_ms=self._get_duration_ms(),
+                )
+
+        except GithubException as e:
+            return ToolResult(
+                success=False, output=None,
+                error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+    def _get_file(self, input_data: dict) -> ToolResult:
+        """특정 파일 전체 내용 조회 (get_contents의 파일 전용 래퍼)"""
+        if not input_data.get("path"):
+            return ToolResult(
+                success=False, output=None,
+                error="path is required (예: src/main.py)",
+                duration_ms=self._get_duration_ms(),
+            )
+        return self._get_contents(input_data)
+
+    def _list_commits(self, input_data: dict) -> ToolResult:
+        """최근 커밋 목록 조회"""
+        repo_name = input_data.get("repo")
+        branch = input_data.get("branch")
+        limit = input_data.get("limit", 10)
+
+        if not repo_name:
+            # repo 없으면 username으로 전체 레포 최근 커밋 조회 시도
+            username = input_data.get("username")
+            if username:
+                return self._list_user_recent_commits(username, limit)
+            return ToolResult(
+                success=False,
+                output=None,
+                error="repo 또는 username이 필요합니다 (예: repo='jinsoo96/JINXUS' 또는 username='jinsoo96')",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        client = self._get_client()
+
+        try:
+            repo = client.get_repo(repo_name)
+            kwargs = {}
+            if branch:
+                kwargs["sha"] = branch
+
+            commits = []
+            for i, commit in enumerate(repo.get_commits(**kwargs)):
+                if i >= limit:
+                    break
+                commits.append({
+                    "sha": commit.sha[:7],
+                    "message": commit.commit.message.split("\n")[0][:100],
+                    "author": commit.commit.author.name if commit.commit.author else "unknown",
+                    "date": commit.commit.author.date.isoformat() if commit.commit.author else None,
+                    "url": commit.html_url,
+                })
+
+            return ToolResult(
+                success=True,
+                output={
+                    "repo": repo_name,
+                    "branch": branch or repo.default_branch,
+                    "commits": commits,
+                    "count": len(commits),
+                },
+                duration_ms=self._get_duration_ms(),
+            )
+
+        except GithubException as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+    def _list_user_recent_commits(self, username: str, limit: int = 10) -> ToolResult:
+        """사용자의 최근 커밋 (전체 레포 대상)"""
+        client = self._get_client()
+
+        try:
+            user = client.get_user(username)
+            repos = user.get_repos(sort="pushed")
+
+            all_commits = []
+            for repo in repos:
+                if len(all_commits) >= limit:
+                    break
+                try:
+                    for commit in repo.get_commits(author=username):
+                        if len(all_commits) >= limit:
+                            break
+                        all_commits.append({
+                            "repo": repo.full_name,
+                            "sha": commit.sha[:7],
+                            "message": commit.commit.message.split("\n")[0][:100],
+                            "date": commit.commit.author.date.isoformat() if commit.commit.author else None,
+                            "url": commit.html_url,
+                        })
+                except GithubException:
+                    continue  # 빈 레포 등 건너뛰기
+
+            # 날짜순 정렬
+            all_commits.sort(key=lambda c: c.get("date", ""), reverse=True)
+
+            return ToolResult(
+                success=True,
+                output={
+                    "username": username,
+                    "commits": all_commits[:limit],
+                    "count": len(all_commits[:limit]),
                 },
                 duration_ms=self._get_duration_ms(),
             )

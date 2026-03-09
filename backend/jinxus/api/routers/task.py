@@ -1,24 +1,165 @@
-"""Task API - 비동기 작업 관리"""
+"""Task API - 비동기 작업 관리 (Redis 기반 저장소)"""
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Callable
+
+import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
 from jinxus.api.models import TaskRequest, TaskResponse, TaskStatusResponse
+from jinxus.config import get_settings
 from jinxus.core import get_orchestrator
 
 router = APIRouter(prefix="/task", tags=["task"])
 logger = logging.getLogger(__name__)
 
-# 작업 저장소 (실제로는 Redis나 DB 사용 권장)
-_tasks: Dict[str, dict] = {}
-# asyncio Task 추적 (실제 취소용)
+
+class TaskStore:
+    """Redis 기반 작업 저장소
+
+    - 개별 작업: jinxus:tasks:{task_id} (Redis hash, JSON 직렬화)
+    - 인덱스: jinxus:tasks:index (sorted set, score=created_at timestamp)
+    """
+
+    _KEY_PREFIX = "jinxus:tasks"
+    _INDEX_KEY = "jinxus:tasks:index"
+
+    def __init__(self):
+        self._redis: Optional[redis.Redis] = None
+
+    async def connect(self) -> redis.Redis:
+        """Redis 연결 획득/생성"""
+        if self._redis is None:
+            settings = get_settings()
+            self._redis = redis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                password=settings.redis_password if settings.redis_password else None,
+                decode_responses=True,
+            )
+        return self._redis
+
+    def _task_key(self, task_id: str) -> str:
+        return f"{self._KEY_PREFIX}:{task_id}"
+
+    def _ttl_seconds(self) -> int:
+        settings = get_settings()
+        return settings.task_retention_hours * 3600
+
+    async def create(self, task_id: str, task_data: dict) -> None:
+        """작업 저장"""
+        r = await self.connect()
+        key = self._task_key(task_id)
+        await r.set(key, json.dumps(task_data, ensure_ascii=False))
+        await r.expire(key, self._ttl_seconds())
+
+        # sorted set 인덱스에 추가 (score = created_at timestamp)
+        created_at = task_data.get("created_at", datetime.now().isoformat())
+        try:
+            ts = datetime.fromisoformat(created_at).timestamp()
+        except (ValueError, TypeError):
+            ts = datetime.now().timestamp()
+        await r.zadd(self._INDEX_KEY, {task_id: ts})
+
+    async def get(self, task_id: str) -> Optional[dict]:
+        """작업 조회"""
+        r = await self.connect()
+        data = await r.get(self._task_key(task_id))
+        if data is None:
+            return None
+        return json.loads(data)
+
+    async def update(self, task_id: str, updates: dict) -> None:
+        """작업 부분 업데이트"""
+        r = await self.connect()
+        key = self._task_key(task_id)
+        data = await r.get(key)
+        if data is None:
+            logger.warning(f"업데이트 대상 작업 없음: {task_id}")
+            return
+        task = json.loads(data)
+        task.update(updates)
+        await r.set(key, json.dumps(task, ensure_ascii=False))
+        await r.expire(key, self._ttl_seconds())
+
+    async def delete(self, task_id: str) -> None:
+        """작업 삭제"""
+        r = await self.connect()
+        await r.delete(self._task_key(task_id))
+        await r.zrem(self._INDEX_KEY, task_id)
+
+    async def list_tasks(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """작업 목록 조회 (최신순)"""
+        r = await self.connect()
+        # sorted set에서 최신순으로 task_id 목록 획득
+        task_ids = await r.zrevrange(self._INDEX_KEY, 0, -1)
+
+        tasks = []
+        for tid in task_ids:
+            data = await r.get(self._task_key(tid))
+            if data is None:
+                # TTL 만료된 키는 인덱스에서 제거
+                await r.zrem(self._INDEX_KEY, tid)
+                continue
+            task = json.loads(data)
+            if status and task.get("status") != status:
+                continue
+            tasks.append(task)
+            if len(tasks) >= limit:
+                break
+
+        return tasks
+
+    async def cleanup_old(self) -> None:
+        """만료된 작업 정리 (TTL 만료 후 인덱스 잔존 제거 + max_tasks 초과 처리)"""
+        r = await self.connect()
+        settings = get_settings()
+
+        # 1) 인덱스에서 실제 키가 없는(TTL 만료) 항목 제거
+        task_ids = await r.zrange(self._INDEX_KEY, 0, -1)
+        for tid in task_ids:
+            exists = await r.exists(self._task_key(tid))
+            if not exists:
+                await r.zrem(self._INDEX_KEY, tid)
+
+        # 2) max_tasks 초과 시 가장 오래된 완료 작업부터 삭제
+        remaining_ids = await r.zrange(self._INDEX_KEY, 0, -1)  # 오래된 순
+        if len(remaining_ids) > settings.max_tasks:
+            excess = len(remaining_ids) - settings.max_tasks
+            deleted = 0
+            for tid in remaining_ids:
+                if deleted >= excess:
+                    break
+                data = await r.get(self._task_key(tid))
+                if data is None:
+                    await r.zrem(self._INDEX_KEY, tid)
+                    deleted += 1
+                    continue
+                task = json.loads(data)
+                if task.get("status") in ["completed", "failed", "cancelled"]:
+                    await r.delete(self._task_key(tid))
+                    await r.zrem(self._INDEX_KEY, tid)
+                    deleted += 1
+
+            if deleted:
+                logger.debug(f"정리된 작업: {deleted}개")
+
+
+# 싱글톤 TaskStore
+_task_store: Optional[TaskStore] = None
+
+
+def get_task_store() -> TaskStore:
+    global _task_store
+    if _task_store is None:
+        _task_store = TaskStore()
+    return _task_store
+
+
+# asyncio Task 추적 (실제 취소용 - 직렬화 불가, 인메모리 유지)
 _running_tasks: Dict[str, asyncio.Task] = {}
-# 완료된 작업 보관 시간 (1시간)
-TASK_RETENTION_HOURS = 1
-# 최대 저장 작업 수
-MAX_TASKS = 100
 
 # 텔레그램 알림 함수 (서버 시작 시 설정)
 _telegram_notify: Optional[Callable] = None
@@ -31,69 +172,44 @@ def set_telegram_notify(func: Callable):
     logger.info("Task API: 텔레그램 알림 연결됨")
 
 
-def _cleanup_old_tasks():
-    """오래된 완료 작업 정리 (메모리 누수 방지)"""
-    now = datetime.utcnow()
-    cutoff = now - timedelta(hours=TASK_RETENTION_HOURS)
-
-    to_delete = []
-    for task_id, task in _tasks.items():
-        # 완료/실패/취소 상태의 오래된 작업 삭제
-        if task["status"] in ["completed", "failed", "cancelled"]:
-            if task.get("completed_at"):
-                try:
-                    completed = datetime.fromisoformat(task["completed_at"])
-                    if completed < cutoff:
-                        to_delete.append(task_id)
-                except (ValueError, TypeError):
-                    pass
-
-    for task_id in to_delete:
-        del _tasks[task_id]
-
-    # 최대 개수 초과 시 가장 오래된 완료 작업부터 삭제
-    if len(_tasks) > MAX_TASKS:
-        completed_tasks = [
-            (tid, t) for tid, t in _tasks.items()
-            if t["status"] in ["completed", "failed", "cancelled"]
-        ]
-        completed_tasks.sort(key=lambda x: x[1].get("created_at", ""))
-        excess = len(_tasks) - MAX_TASKS
-        for i in range(min(excess, len(completed_tasks))):
-            del _tasks[completed_tasks[i][0]]
-
-    if to_delete:
-        logger.debug(f"정리된 작업: {len(to_delete)}개")
+async def _send_telegram(message: str) -> None:
+    """텔레그램 알림 전송 (실패해도 에러 무시)"""
+    if not _telegram_notify:
+        return
+    try:
+        await _telegram_notify(message)
+    except Exception as e:
+        logger.warning(f"텔레그램 알림 실패: {e}")
 
 
 async def _run_task(task_id: str, message: str, session_id: str):
     """백그라운드 작업 실행"""
     orchestrator = get_orchestrator()
+    store = get_task_store()
     start_time = asyncio.get_event_loop().time()
 
     try:
-        _tasks[task_id]["status"] = "in_progress"
-        _tasks[task_id]["started_at"] = datetime.utcnow().isoformat()
+        await store.update(task_id, {
+            "status": "in_progress",
+            "started_at": datetime.now().isoformat(),
+        })
 
         # 시작 알림
-        if _telegram_notify:
-            try:
-                await _telegram_notify(
-                    f"🚀 [작업 시작]\n"
-                    f"ID: {task_id[:8]}\n"
-                    f"내용: {message[:100]}"
-                )
-            except Exception as e:
-                logger.warning(f"텔레그램 시작 알림 실패: {e}")
+        await _send_telegram(
+            f"🚀 [작업 시작]\n"
+            f"ID: {task_id[:8]}\n"
+            f"내용: {message[:100]}"
+        )
 
         result = await orchestrator.run_task(message, session_id)
 
         # 취소된 경우 무시
-        if _tasks[task_id]["status"] == "cancelled":
+        task = await store.get(task_id)
+        if task and task["status"] == "cancelled":
             return
 
         duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
-        _tasks[task_id].update({
+        await store.update(task_id, {
             "status": "completed",
             "result": result["response"],
             "agents_used": result["agents_used"],
@@ -102,52 +218,44 @@ async def _run_task(task_id: str, message: str, session_id: str):
         })
 
         # 완료 알림
-        if _telegram_notify:
-            try:
-                duration = asyncio.get_event_loop().time() - start_time
-                result_preview = result["response"][:1500] if result["response"] else "결과 없음"
-                await _telegram_notify(
-                    f"✅ [작업 완료]\n"
-                    f"ID: {task_id[:8]}\n"
-                    f"소요: {duration:.1f}초\n"
-                    f"에이전트: {', '.join(result['agents_used'])}\n\n"
-                    f"결과:\n{result_preview}"
-                )
-            except Exception as e:
-                logger.warning(f"텔레그램 완료 알림 실패: {e}")
+        duration = asyncio.get_event_loop().time() - start_time
+        result_preview = result["response"][:1500] if result["response"] else "결과 없음"
+        await _send_telegram(
+            f"✅ [작업 완료]\n"
+            f"ID: {task_id[:8]}\n"
+            f"소요: {duration:.1f}초\n"
+            f"에이전트: {', '.join(result['agents_used'])}\n\n"
+            f"결과:\n{result_preview}"
+        )
 
     except asyncio.CancelledError:
         duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
-        _tasks[task_id].update({
+        await store.update(task_id, {
             "status": "cancelled",
             "result": "작업이 사용자에 의해 취소되었습니다.",
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.now().isoformat(),
             "duration_ms": duration_ms,
         })
     except Exception as e:
         duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
-        _tasks[task_id].update({
+        await store.update(task_id, {
             "status": "failed",
             "result": str(e),
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.now().isoformat(),
             "duration_ms": duration_ms,
         })
 
         # 실패 알림
-        if _telegram_notify:
-            try:
-                await _telegram_notify(
-                    f"❌ [작업 실패]\n"
-                    f"ID: {task_id[:8]}\n"
-                    f"오류: {str(e)[:500]}"
-                )
-            except Exception:
-                pass
+        await _send_telegram(
+            f"❌ [작업 실패]\n"
+            f"ID: {task_id[:8]}\n"
+            f"오류: {str(e)[:500]}"
+        )
     finally:
         # 완료 후 추적에서 제거
         _running_tasks.pop(task_id, None)
         # 오래된 작업 정리
-        _cleanup_old_tasks()
+        await store.cleanup_old()
 
 
 @router.post("", response_model=TaskResponse)
@@ -163,21 +271,23 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
     if not orchestrator.is_initialized:
         await orchestrator.initialize()
 
+    store = get_task_store()
     task_id = str(uuid.uuid4())
     session_id = request.session_id or str(uuid.uuid4())
 
-    _tasks[task_id] = {
+    task_data = {
         "task_id": task_id,
         "session_id": session_id,
         "status": "pending",
         "message": request.message,
         "result": None,
         "agents_used": [],
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now().isoformat(),
         "started_at": None,
         "completed_at": None,
         "duration_ms": None,
     }
+    await store.create(task_id, task_data)
 
     # 자율 모드인 경우 BackgroundWorker를 통해 실행
     if request.autonomous:
@@ -197,8 +307,10 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
             max_steps=request.max_steps,
             timeout_seconds=request.timeout_seconds,
         )
-        _tasks[task_id]["status"] = "in_progress"
-        _tasks[task_id]["bg_task_id"] = bg_task_id
+        await store.update(task_id, {
+            "status": "in_progress",
+            "bg_task_id": bg_task_id,
+        })
     else:
         # asyncio.Task로 추적하여 취소 가능하게
         task = asyncio.create_task(_run_task(task_id, request.message, session_id))
@@ -214,10 +326,12 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
 @router.get("/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """작업 상태 조회"""
-    if task_id not in _tasks:
+    store = get_task_store()
+    task = await store.get(task_id)
+
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = _tasks[task_id]
     return TaskStatusResponse(
         task_id=task["task_id"],
         status=task["status"],
@@ -232,10 +346,11 @@ async def get_task_status(task_id: str):
 @router.delete("/{task_id}")
 async def cancel_task(task_id: str):
     """작업 취소 - 실행 중인 작업 강제 중지"""
-    if task_id not in _tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
+    store = get_task_store()
+    task_info = await store.get(task_id)
 
-    task_info = _tasks[task_id]
+    if task_info is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
     if task_info["status"] == "completed":
         raise HTTPException(status_code=400, detail="Task already completed")
@@ -252,8 +367,10 @@ async def cancel_task(task_id: str):
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
 
-    _tasks[task_id]["status"] = "cancelled"
-    _tasks[task_id]["result"] = "작업이 사용자에 의해 취소되었습니다."
+    await store.update(task_id, {
+        "status": "cancelled",
+        "result": "작업이 사용자에 의해 취소되었습니다.",
+    })
     _running_tasks.pop(task_id, None)
 
     return {"task_id": task_id, "status": "cancelled", "message": "작업이 취소되었습니다."}
@@ -262,16 +379,11 @@ async def cancel_task(task_id: str):
 @router.get("")
 async def list_tasks(limit: int = 20, status: str = None):
     """작업 목록 조회"""
-    tasks = list(_tasks.values())
-
-    if status:
-        tasks = [t for t in tasks if t["status"] == status]
-
-    # 최신순 정렬
-    tasks.sort(key=lambda x: x["created_at"], reverse=True)
+    store = get_task_store()
+    tasks = await store.list_tasks(status=status, limit=limit)
 
     return {
-        "tasks": tasks[:limit],
+        "tasks": tasks,
         "total": len(tasks),
     }
 
@@ -303,7 +415,9 @@ async def list_active_tasks():
         if t.status.value in ["pending", "running"]
     ]
 
-    # 일반 Task API의 작업들
+    # 일반 Task API의 작업들 (Redis에서 조회)
+    store = get_task_store()
+    all_tasks = await store.list_tasks(limit=100)
     active_api = [
         {
             "id": t["task_id"],
@@ -314,7 +428,7 @@ async def list_active_tasks():
             "created_at": t["created_at"],
             "source": "api",
         }
-        for t in _tasks.values()
+        for t in all_tasks
         if t["status"] in ["pending", "in_progress"]
     ]
 
@@ -343,7 +457,9 @@ async def cancel_active_task(task_id: str):
             raise HTTPException(status_code=400, detail="작업을 취소할 수 없습니다.")
 
     # 2. Task API에서 찾기
-    if task_id in _tasks:
+    store = get_task_store()
+    task = await store.get(task_id)
+    if task is not None:
         return await cancel_task(task_id)
 
     raise HTTPException(status_code=404, detail="Task not found")

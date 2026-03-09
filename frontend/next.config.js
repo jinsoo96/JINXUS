@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   generateBuildId: async () => {
     return `${Date.now()}-${Math.random().toString(36).substring(7)}`;
   },

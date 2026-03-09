@@ -73,6 +73,7 @@ class HRManager:
             "JX_WRITER": ("작문", "글쓰기, 문서화 전문가"),
             "JX_ANALYST": ("데이터 분석", "데이터 분석, 시각화 전문가"),
             "JX_OPS": ("운영", "파일, 스케줄, 시스템 운영 전문가"),
+            "JS_PERSONA": ("자소서/포트폴리오", "진수 전용 자소서, 포트폴리오 작성 전문가"),
         }
 
         for name, (specialty, description) in existing_agents.items():
@@ -142,7 +143,7 @@ class HRManager:
 
         # 비활성화
         record.is_active = False
-        record.fired_at = datetime.utcnow()
+        record.fired_at = datetime.now()
 
         # 부모에서 제거
         if record.parent_id and record.parent_id in self._records:

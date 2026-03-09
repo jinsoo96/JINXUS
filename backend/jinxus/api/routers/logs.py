@@ -1,6 +1,7 @@
 """로그 API - 작업 이력 조회 및 관리"""
+import json
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from jinxus.memory import get_jinx_memory
@@ -11,13 +12,27 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 class TaskLog(BaseModel):
     """작업 로그"""
     id: str
+    main_task_id: Optional[str] = None
     agent_name: str
     instruction: str
     success: bool
     success_score: float
     duration_ms: int
     failure_reason: Optional[str] = None
+    output: Optional[str] = None
+    tool_calls: Optional[list[str]] = None
     created_at: str
+
+    @field_validator("tool_calls", mode="before")
+    @classmethod
+    def parse_tool_calls(cls, v):
+        """DB의 JSON 문자열을 리스트로 파싱"""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
 
 class LogsResponse(BaseModel):
@@ -29,6 +44,7 @@ class LogsResponse(BaseModel):
 @router.get("", response_model=LogsResponse)
 async def get_logs(
     agent_name: Optional[str] = None,
+    main_task_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -36,6 +52,7 @@ async def get_logs(
 
     Args:
         agent_name: 특정 에이전트 필터 (선택)
+        main_task_id: 메인 작업 ID 필터 (선택) - 특정 채팅의 실행 흐름 조회용
         limit: 조회 개수 (기본 50)
         offset: 시작 위치
     """
@@ -44,6 +61,7 @@ async def get_logs(
     # 메타 저장소에서 로그 조회
     logs = await memory._meta.get_recent_logs(
         agent_name=agent_name,
+        main_task_id=main_task_id,
         limit=limit,
         offset=offset,
     )

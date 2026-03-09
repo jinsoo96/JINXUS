@@ -2,32 +2,53 @@ import type { ChatResponse, SystemStatus, MemorySearchResult, AgentInfo } from '
 
 const API_BASE = '/api';
 
-// GET 요청 cache-busting
-const cacheBust = (endpoint: string, method?: string) => {
-  if (!method || method === 'GET') {
-    const sep = endpoint.includes('?') ? '&' : '?';
-    return `${API_BASE}${endpoint}${sep}_cb=${Date.now()}`;
-  }
-  return `${API_BASE}${endpoint}`;
+// 재시도 설정
+const RETRY_CONFIG = {
+  maxRetries: 2,
+  baseDelay: 500,    // ms
+  maxDelay: 3000,    // ms
+  retryableStatuses: [502, 503, 504, 408, 429],
 };
 
-// 기본 API 호출
+// 기본 API 호출 (exponential backoff 재시도 포함)
 async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(cacheBust(endpoint, options?.method), {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache',
-      ...options?.headers,
-    },
-  });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || error.message || `API Error: ${response.status}`);
+  for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers,
+        },
+      });
+
+      if (!response.ok) {
+        // 재시도 가능한 상태 코드인 경우
+        if (attempt < RETRY_CONFIG.maxRetries && RETRY_CONFIG.retryableStatuses.includes(response.status)) {
+          const delay = Math.min(RETRY_CONFIG.baseDelay * Math.pow(2, attempt), RETRY_CONFIG.maxDelay);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || error.message || `API Error: ${response.status}`);
+      }
+
+      return response.json();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // 네트워크 에러일 때 재시도
+      if (attempt < RETRY_CONFIG.maxRetries && !(lastError.message.startsWith('API Error'))) {
+        const delay = Math.min(RETRY_CONFIG.baseDelay * Math.pow(2, attempt), RETRY_CONFIG.maxDelay);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw lastError;
+    }
   }
 
-  return response.json();
+  throw lastError || new Error('API call failed');
 }
 
 // 채팅 세션 정보
@@ -226,6 +247,76 @@ export interface MCPStatus {
   servers: MCPServerStatus[];
 }
 
+// ToolGraph 타입
+export interface ToolGraphNode {
+  name: string;
+  description: string;
+  category: string;
+  keywords: string[];
+  weight: number;
+}
+
+export interface ToolGraphEdge {
+  source: string;
+  target: string;
+  type: string;
+  weight: number;
+}
+
+export interface ToolGraphData {
+  nodes: ToolGraphNode[];
+  edges: ToolGraphEdge[];
+}
+
+export interface ToolGraphWorkflow {
+  query: string;
+  score: number;
+  tools: { name: string; description: string; category: string }[];
+  edges: { from: string; to: string; type: string }[];
+}
+
+// 도구 목록 타입
+export interface NativeTool {
+  name: string;
+  description: string;
+  allowed_agents: string[];
+  enabled: boolean;
+}
+
+export interface ToolsListResponse {
+  total: number;
+  mcp_count: number;
+  native_count: number;
+  mcp_tools: { name: string; description: string; server: string }[];
+  native_tools: NativeTool[];
+}
+
+// 도구 정책 타입
+export interface AgentToolPolicy {
+  whitelist: string[] | null;
+  blacklist: string[];
+  max_rounds: number | null;
+}
+
+export interface ToolPoliciesResponse {
+  policies: Record<string, AgentToolPolicy>;
+}
+
+// 도구 호출 로그 타입
+export interface ToolCallLog {
+  timestamp: string;
+  agent: string;
+  tool: string;
+  status: 'success' | 'error';
+  duration_ms: number | null;
+  error: string | null;
+}
+
+export interface ToolLogsResponse {
+  logs: ToolCallLog[];
+  total: number;
+}
+
 // 시스템 API
 export const systemApi = {
   getStatus: async (): Promise<SystemStatus> => {
@@ -242,6 +333,49 @@ export const systemApi = {
     return apiCall<{ success: boolean; message: string }>(`/status/mcp/reconnect/${serverName}`, {
       method: 'POST',
     });
+  },
+
+  // ToolGraph 조회
+  getToolGraph: async (): Promise<ToolGraphData> => {
+    return apiCall<ToolGraphData>('/status/tool-graph');
+  },
+
+  // ToolGraph 워크플로우 탐색
+  retrieveWorkflow: async (query: string, topK: number = 5): Promise<ToolGraphWorkflow> => {
+    return apiCall<ToolGraphWorkflow>('/status/tool-graph/retrieve', {
+      method: 'POST',
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+  },
+
+  // 등록된 도구 목록
+  getTools: async (): Promise<ToolsListResponse> => {
+    return apiCall<ToolsListResponse>('/status/tools');
+  },
+
+  // 에이전트 성능 리포트
+  getPerformance: async (): Promise<Record<string, unknown>> => {
+    return apiCall('/status/performance');
+  },
+
+  // 시스템 메트릭 (에이전트/도구/캐시)
+  getMetrics: async (): Promise<Record<string, unknown>> => {
+    return apiCall('/status/metrics');
+  },
+
+  // 도구 정책 전체 조회
+  getToolPolicies: async (): Promise<ToolPoliciesResponse> => {
+    return apiCall<ToolPoliciesResponse>('/status/tool-policies');
+  },
+
+  // 특정 에이전트 도구 정책 조회
+  getAgentToolPolicy: async (agentName: string): Promise<AgentToolPolicy & { agent_name: string }> => {
+    return apiCall<AgentToolPolicy & { agent_name: string }>(`/status/tool-policies/${agentName}`);
+  },
+
+  // 실시간 도구 호출 로그 조회
+  getToolLogs: async (limit: number = 50): Promise<ToolLogsResponse> => {
+    return apiCall<ToolLogsResponse>(`/status/tool-logs?limit=${limit}`);
   },
 };
 
@@ -383,11 +517,18 @@ export const hrApi = {
 
 // 메모리 API
 export const memoryApi = {
-  search: async (agentName: string, query: string): Promise<{ results: MemorySearchResult[] }> => {
-    return apiCall<{ results: MemorySearchResult[] }>('/memory/search', {
-      method: 'POST',
-      body: JSON.stringify({ agent_name: agentName, query }),
-    });
+  search: async (agentName: string, query: string, limit: number = 5): Promise<{ results: MemorySearchResult[]; total: number }> => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    if (agentName) params.append('agent', agentName);
+    return apiCall<{ results: MemorySearchResult[]; total: number }>(`/memory/search?${params.toString()}`);
+  },
+
+  getStats: async (): Promise<{ health: Record<string, unknown>; total_tasks_logged: number; collections: Record<string, unknown> }> => {
+    return apiCall('/memory/stats');
+  },
+
+  prune: async (agentName: string): Promise<{ success: boolean; agent_name: string; deleted_count: number }> => {
+    return apiCall(`/memory/prune/${agentName}`, { method: 'POST' });
   },
 };
 
@@ -404,12 +545,15 @@ export const feedbackApi = {
 // 로그 API
 export interface TaskLog {
   id: string;
+  main_task_id: string | null;
   agent_name: string;
   instruction: string;
   success: boolean;
   success_score: number;
   duration_ms: number;
   failure_reason: string | null;
+  output: string | null;
+  tool_calls: string[] | null;
   created_at: string;
 }
 
@@ -430,6 +574,11 @@ export const logsApi = {
     params.append('limit', String(limit));
     params.append('offset', String(offset));
     return apiCall<{ logs: TaskLog[]; total: number }>(`/logs?${params.toString()}`);
+  },
+
+  // 특정 작업(채팅 메시지)의 실행 흐름 조회
+  getLogsByTaskId: async (taskId: string): Promise<{ logs: TaskLog[]; total: number }> => {
+    return apiCall<{ logs: TaskLog[]; total: number }>(`/logs?main_task_id=${encodeURIComponent(taskId)}&limit=50`);
   },
 
   // 로그 요약 통계
@@ -481,5 +630,93 @@ export const taskApi = {
     return apiCall<{ task_id: string; status: string }>(`/task/active/${taskId}`, {
       method: 'DELETE',
     });
+  },
+};
+
+// 자가 강화 API
+export interface ImproveHistoryItem {
+  agent_name: string;
+  test_id: string;
+  old_score: number;
+  new_score: number;
+  winner: string;
+  test_count: number;
+  created_at: string;
+}
+
+export interface PromptVersion {
+  version: string;
+  created_at: string;
+  is_active: boolean;
+}
+
+export const improveApi = {
+  // 수동 자가 강화 트리거
+  trigger: async (agentName?: string): Promise<{ success: boolean; improvements: unknown[]; message?: string }> => {
+    return apiCall('/improve', {
+      method: 'POST',
+      body: JSON.stringify({ agent_name: agentName }),
+    });
+  },
+
+  // 개선 이력 조회
+  getHistory: async (agentName?: string, limit: number = 20): Promise<{ history: ImproveHistoryItem[] }> => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (agentName) params.append('agent_name', agentName);
+    return apiCall(`/improve/history?${params.toString()}`);
+  },
+
+  // 프롬프트 버전 롤백
+  rollback: async (agentName: string, version: string): Promise<{ success: boolean; agent_name: string; rolled_back_to: string }> => {
+    return apiCall('/improve/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ agent_name: agentName, version }),
+    });
+  },
+
+  // 프롬프트 버전 이력
+  getPromptVersions: async (agentName: string): Promise<{ agent_name: string; active_version: string; versions: PromptVersion[] }> => {
+    return apiCall(`/improve/prompts/${agentName}`);
+  },
+};
+
+// 플러그인 API
+export interface PluginInfo {
+  name: string;
+  description: string;
+  allowed_agents: string[];
+  enabled: boolean;
+}
+
+export const pluginsApi = {
+  // 플러그인 목록
+  getAll: async (): Promise<{ plugins: PluginInfo[] }> => {
+    return apiCall('/plugins');
+  },
+
+  // 플러그인 상세
+  get: async (name: string): Promise<PluginInfo> => {
+    return apiCall(`/plugins/${name}`);
+  },
+
+  // 활성화
+  enable: async (name: string): Promise<{ success: boolean; name: string; enabled: boolean }> => {
+    return apiCall('/plugins/enable', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  // 비활성화
+  disable: async (name: string): Promise<{ success: boolean; name: string; enabled: boolean }> => {
+    return apiCall('/plugins/disable', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  // 전체 재로드
+  reload: async (): Promise<{ success: boolean; loaded_count: number }> => {
+    return apiCall('/plugins/reload', { method: 'POST' });
   },
 };

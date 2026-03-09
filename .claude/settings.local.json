@@ -1,23 +1,12 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
+      "Read",
+      "Edit",
+      "Write",
       "WebFetch(*)",
-      "WebSearch",
-      "Bash(docker compose build --no-cache jinxus 2>&1 | tail -20)",
-      "Bash(docker compose up -d jinxus 2>&1)",
-      "Bash(sleep 5 && lsof -i :5000 2>/dev/null | head -5)",
-      "Bash(curl -s http://localhost:19000/ 2>/dev/null | head -5)",
-      "Bash(sleep 5 && ss -tlnp | grep 5000)",
-      "Bash(cd /home/jinsookim/jinxus/frontend && npx tsc --noEmit 2>&1 | tail -15)",
-      "Bash(npx tsc --noEmit 2>&1 | tail -5)",
-      "Bash(python3 -c \"\nimport ast\nwith open\\('jinxus/agents/jinxus_core.py'\\) as f:\n    ast.parse\\(f.read\\(\\)\\)\nprint\\('✅ jinxus_core.py syntax OK'\\)\nwith open\\('jinxus/tools/dynamic_executor.py'\\) as f:\n    ast.parse\\(f.read\\(\\)\\)\nprint\\('✅ dynamic_executor.py syntax OK'\\)\n\")",
-      "Bash(cd /home/jinsookim/jinxus/backend && python3 -c \"\nimport ast\nfor f in ['jinxus/agents/jinxus_core.py', 'jinxus/tools/dynamic_executor.py']:\n    with open\\(f\\) as fh: ast.parse\\(fh.read\\(\\)\\)\n    print\\(f'✅ {f}'\\)\n\")",
-      "Bash(docker compose build --no-cache jinxus 2>&1 | tail -10)",
-      "Bash(git init 2>&1; git remote -v 2>/dev/null)",
-      "Bash(git branch -m main 2>/dev/null; which gh 2>/dev/null && gh auth status 2>/dev/null | head -5)",
-      "Bash(git config user.name 2>/dev/null; git config user.email 2>/dev/null)",
-      "Bash(git config user.name \"jinsoo96\" && git config user.email \"wlstn010203@gmail.com\" && echo \"done\")",
-      "Bash(git add -A && git status --short | head -50)"
+      "WebSearch"
     ]
   }
 }

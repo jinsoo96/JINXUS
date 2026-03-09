@@ -36,11 +36,12 @@ class MetaStore:
                 )
             """)
 
-            # 기존 테이블에 output 컬럼 추가 (마이그레이션)
-            try:
-                await db.execute("ALTER TABLE agent_task_logs ADD COLUMN output TEXT")
-            except Exception:
-                pass  # 이미 존재하면 무시
+            # 기존 테이블에 컬럼 추가 (마이그레이션)
+            for col in ("output TEXT", "tool_calls TEXT"):
+                try:
+                    await db.execute(f"ALTER TABLE agent_task_logs ADD COLUMN {col}")
+                except Exception:
+                    pass  # 이미 존재하면 무시
 
             # 에이전트별 프롬프트 버전
             await db.execute("""
@@ -181,18 +182,21 @@ class MetaStore:
         failure_reason: Optional[str] = None,
         prompt_version: Optional[str] = None,
         output: Optional[str] = None,
+        tool_calls: Optional[list[str]] = None,
     ) -> str:
         """작업 로그 저장"""
+        import json
         task_id = str(uuid.uuid4())
         # output은 A/B 테스트용으로 500자까지만 저장 (DB 용량 절약)
         truncated_output = output[:500] if output else None
+        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
                 INSERT INTO agent_task_logs
                 (id, main_task_id, agent_name, instruction, output, success, success_score,
-                 duration_ms, failure_reason, prompt_version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 duration_ms, failure_reason, prompt_version, tool_calls, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -205,7 +209,8 @@ class MetaStore:
                     duration_ms,
                     failure_reason,
                     prompt_version,
-                    datetime.utcnow().isoformat(),
+                    tool_calls_json,
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -215,7 +220,7 @@ class MetaStore:
         self, agent_name: str, days: int = 7
     ) -> dict:
         """에이전트 성능 통계 조회"""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -281,6 +286,7 @@ class MetaStore:
     async def get_recent_logs(
         self,
         agent_name: Optional[str] = None,
+        main_task_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -288,25 +294,28 @@ class MetaStore:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
 
+            conditions = []
+            params: list = []
+
             if agent_name:
-                cursor = await db.execute(
-                    """
-                    SELECT * FROM agent_task_logs
-                    WHERE agent_name = ?
-                    ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (agent_name, limit, offset),
-                )
-            else:
-                cursor = await db.execute(
-                    """
-                    SELECT * FROM agent_task_logs
-                    ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (limit, offset),
-                )
+                conditions.append("agent_name = ?")
+                params.append(agent_name)
+            if main_task_id:
+                conditions.append("main_task_id = ?")
+                params.append(main_task_id)
+
+            where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.extend([limit, offset])
+
+            cursor = await db.execute(
+                f"""
+                SELECT * FROM agent_task_logs
+                {where}
+                ORDER BY created_at ASC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
 
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -358,7 +367,7 @@ class MetaStore:
 
     async def delete_old_logs(self, days: int = 7, keep_failures: bool = True) -> int:
         """오래된 로그 삭제 (실패 로그는 선택적 유지)"""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             if keep_failures:
                 # 성공 로그만 삭제, 실패 로그는 유지
@@ -407,7 +416,7 @@ class MetaStore:
                     prompt_content,
                     change_reason,
                     1 if is_active else 0,
-                    datetime.utcnow().isoformat(),
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -488,7 +497,7 @@ class MetaStore:
                     rating,
                     comment,
                     1 if triggered_improve else 0,
-                    datetime.utcnow().isoformat(),
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -548,7 +557,7 @@ class MetaStore:
                     score_before,
                     ab_test_score,
                     1 if ab_test_score is not None else 0,
-                    datetime.utcnow().isoformat(),
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -610,7 +619,7 @@ class MetaStore:
                     new_score,
                     winner,
                     test_count,
-                    datetime.utcnow().isoformat(),
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -668,7 +677,7 @@ class MetaStore:
                     task_prompt,
                     1 if is_active else 0,
                     next_run_at,
-                    datetime.utcnow().isoformat(),
+                    datetime.now().isoformat(),
                 ),
             )
             await db.commit()
@@ -751,7 +760,7 @@ class MetaStore:
         """워크플로우 패턴 저장"""
         import json
         pattern_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        now = datetime.now().isoformat()
         seq_json = json.dumps(tool_sequence)
 
         async with aiosqlite.connect(self._db_path) as db:
@@ -825,7 +834,7 @@ class MetaStore:
                    (task_id, description, session_id, status, autonomous, created_at)
                    VALUES (?, ?, ?, 'pending', ?, ?)""",
                 (task_id, description, session_id, int(autonomous),
-                 datetime.utcnow().isoformat()),
+                 datetime.now().isoformat()),
             )
             await db.commit()
 
@@ -840,7 +849,7 @@ class MetaStore:
     ) -> None:
         """백그라운드 작업 상태 업데이트"""
         async with aiosqlite.connect(self._db_path) as db:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now().isoformat()
             updates = {
                 "status": status,
                 "steps_completed": steps_completed,
@@ -882,7 +891,7 @@ class MetaStore:
                     """UPDATE background_tasks
                        SET status = 'interrupted', completed_at = ?
                        WHERE task_id = ?""",
-                    (datetime.utcnow().isoformat(), row["task_id"]),
+                    (datetime.now().isoformat(), row["task_id"]),
                 )
             await db.commit()
 
@@ -890,7 +899,7 @@ class MetaStore:
 
     async def cleanup_old_background_tasks(self, days: int = 7) -> int:
         """오래된 완료 작업 정리"""
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
                 """DELETE FROM background_tasks

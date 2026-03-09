@@ -9,21 +9,28 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 
+from jinxus.config import get_settings
+
 # 모델별 컨텍스트 윈도우 (토큰)
 MODEL_CONTEXT_LIMITS = {
+    "claude-opus-4-6": 200000,
+    "claude-sonnet-4-6": 200000,
+    "claude-haiku-4-5-20251001": 200000,
     "claude-opus-4-5-20251101": 200000,
     "claude-sonnet-4-20250514": 200000,
     "claude-3-5-sonnet-latest": 200000,
-    "default": 100000,
+    "default": 200000,
 }
 
 # 토큰 추정 상수 (보수적)
 CHARS_PER_TOKEN_EN = 4  # 영어: 약 4자/토큰
 CHARS_PER_TOKEN_KO = 3  # 한국어: 약 2-3자/토큰 (보수적으로 3)
 
-# 기본 제한
-MAX_OUTPUT_CHARS = 4000   # 에이전트 output 최대 길이
-MAX_CONTEXT_CHARS = 8000  # aggregate로 넘기는 최대 전체 길이
+def _max_output_chars() -> int:
+    return get_settings().max_output_chars
+
+def _max_context_chars() -> int:
+    return get_settings().max_context_chars
 
 
 class BudgetStatus(Enum):
@@ -226,7 +233,7 @@ def get_context_guard(model: str = "default") -> ContextWindowGuard:
 
 # === 기존 호환 함수들 (하위 호환성 유지) ===
 
-def truncate_output(output: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
+def truncate_output(output: str, max_chars: int = None) -> str:
     """에이전트 output 길이 제한
 
     Args:
@@ -236,6 +243,9 @@ def truncate_output(output: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     Returns:
         잘린 출력 (중간 생략 표시 포함)
     """
+    if max_chars is None:
+        max_chars = _max_output_chars()
+
     if not output:
         return ""
 
@@ -269,7 +279,7 @@ def guard_results(results: list[dict]) -> list[dict]:
     return guarded
 
 
-def guard_context(context: list[dict], max_chars: int = MAX_CONTEXT_CHARS) -> list[dict]:
+def guard_context(context: list[dict], max_chars: int = None) -> list[dict]:
     """순차 실행 시 컨텍스트 크기 제한
 
     Args:
@@ -279,6 +289,9 @@ def guard_context(context: list[dict], max_chars: int = MAX_CONTEXT_CHARS) -> li
     Returns:
         크기 제한된 컨텍스트
     """
+    if max_chars is None:
+        max_chars = _max_context_chars()
+
     if not context:
         return []
 

@@ -15,8 +15,9 @@ class Settings(BaseSettings):
 
     # LLM
     anthropic_api_key: str = Field(default="")
-    claude_model: str = Field(default="claude-sonnet-4-20250514")
-    claude_fallback_model: str = Field(default="claude-sonnet-4-20250514")
+    claude_model: str = Field(default="claude-sonnet-4-6")
+    claude_fallback_model: str = Field(default="claude-haiku-4-5-20251001")
+    claude_fast_model: str = Field(default="claude-haiku-4-5-20251001")  # 분류/평가용 경량 모델
 
     # Redis (단기기억)
     redis_host: str = Field(default="localhost")
@@ -30,12 +31,17 @@ class Settings(BaseSettings):
     # OpenAI (임베딩)
     openai_api_key: str = Field(default="")
     gpt_emb_api_key: str = Field(default="")
+    embedding_model: str = Field(default="text-embedding-3-small")
+    embedding_dimensions: int = Field(default=1536)
 
     # SQLite (메타 저장)
     sqlite_path: str = Field(default="./data/jinxus_meta.db")
 
     # 도구
     tavily_api_key: str = Field(default="")
+    naver_client_id: str = Field(default="")
+    naver_client_secret: str = Field(default="")
+    openweathermap_api_key: str = Field(default="")
     github_token: str = Field(default="")
     github_personal_access_token: str = Field(default="")
 
@@ -54,8 +60,28 @@ class Settings(BaseSettings):
     use_dynamic_tools: bool = Field(default=True)  # 에이전트 동적 도구 실행 (Claude tool_use)
 
     # Claude Code
-    claude_code_storage: str = Field(default="/tmp/jinxus_sessions")
-    claude_dangerously_skip_permissions: bool = Field(default=True)
+    claude_code_storage: str = Field(default="./data/claude_sessions")
+    claude_dangerously_skip_permissions: bool = Field(default=False)
+
+    # 컨텍스트 관리
+    max_output_chars: int = Field(default=4000)    # 에이전트 output 최대 길이
+    max_context_chars: int = Field(default=8000)   # aggregate 최대 전체 길이
+
+    # 모델 라우팅
+    quality_critical_agents: list[str] = Field(default=["JX_WRITER", "JX_ANALYST"])
+    complex_keywords: list[str] = Field(default=[
+        "분석", "작성", "설계", "최적화", "자소서",
+        "포트폴리오", "보고서", "논문", "리팩토링",
+        "아키텍처", "시스템", "전략", "기획",
+        "analyze", "design", "optimize", "architecture",
+    ])
+    simple_patterns: list[str] = Field(default=[
+        "안녕", "뭐해", "hi", "hello", "네", "응", "ㅇㅇ", "고마워", "감사",
+    ])
+
+    # 작업 관리
+    task_retention_hours: int = Field(default=1)
+    max_tasks: int = Field(default=100)
 
     # 프로젝트 경로
     @property

@@ -8,6 +8,8 @@ from typing import Optional
 from .base import JinxTool, ToolResult
 from .code_executor import CodeExecutor
 from .web_searcher import WebSearcher
+from .naver_searcher import NaverSearcher
+from .weather import WeatherTool
 from .file_manager import FileManager
 from .github_agent import GitHubAgent
 from .github_graphql import GitHubGraphQL
@@ -40,6 +42,8 @@ __all__ = [
     "ToolResult",
     "CodeExecutor",
     "WebSearcher",
+    "NaverSearcher",
+    "WeatherTool",
     "FileManager",
     "GitHubAgent",
     "GitHubGraphQL",
@@ -79,6 +83,8 @@ def register_tools() -> dict[str, JinxTool]:
         TOOL_REGISTRY = {
             "code_executor": CodeExecutor(),
             "web_searcher": WebSearcher(),
+            "naver_searcher": NaverSearcher(),
+            "weather": WeatherTool(),
             "file_manager": FileManager(),
             "github_agent": GitHubAgent(),
             "github_graphql": GitHubGraphQL(),

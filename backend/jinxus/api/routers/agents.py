@@ -1,9 +1,12 @@
 """Agents API - 에이전트 상태 조회"""
+import logging
 from fastapi import APIRouter, HTTPException
 
 from jinxus.api.models import AgentStatus, AgentListResponse
 from jinxus.core import get_orchestrator
 from jinxus.memory.meta_store import get_meta_store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -29,7 +32,8 @@ async def list_agents():
                 avg_duration_ms=status.get("avg_duration_ms", 0),
                 recent_failures=status.get("recent_failures", 0),
             ))
-        except Exception:
+        except Exception as e:
+            logger.warning(f"에이전트 상태 조회 실패 [{agent_name}]: {e}")
             agents.append(AgentStatus(
                 name=agent_name,
                 prompt_version="v1.0",

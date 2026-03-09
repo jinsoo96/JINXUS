@@ -5,7 +5,7 @@ import logging
 import uuid
 import re
 from typing import TypedDict, Optional, Any, Callable, Awaitable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,7 @@ class JinxusCore:
         settings = get_settings()
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = settings.claude_model
+        self._fast_model = settings.claude_fast_model
         self._memory = get_jinx_memory()
         self._agents = {}  # 에이전트 레지스트리
         self._graph = self._build_graph()
@@ -126,6 +127,9 @@ class JinxusCore:
         self._agents[agent.name] = agent
         # 통신 시스템에도 등록
         self._communicator.register_agent(agent.name)
+        # 협업 시스템에 에이전트 풀 동기화
+        from jinxus.core.collaboration import get_collaborator
+        get_collaborator().register_agents(self._agents)
 
     async def _handle_message(self, message: Message) -> None:
         """수신 메시지 처리"""
@@ -178,6 +182,39 @@ class JinxusCore:
             result=result,
             context=context,
         )
+
+    def _strip_agent_identity(self, text: str) -> str:
+        """서브에이전트 신원 노출 제거 — JINXUS_CORE만 유저와 소통"""
+        if not text:
+            return text
+
+        # 서브에이전트 자기 언급 제거
+        agent_names = [
+            "JX_RESEARCHER", "JX_CODER", "JX_WRITER", "JX_ANALYST",
+            "JX_OPS", "JS_PERSONA", "JxResearcher", "JxCoder",
+        ]
+        result = text
+        for name in agent_names:
+            # "저 JX_RESEARCHER는" → "저는" / "제가 JX_RESEARCHER로서" → "제가"
+            result = re.sub(rf'저\s+{name}[은는이가]?\s*', '저는 ', result, flags=re.IGNORECASE)
+            result = re.sub(rf'제가\s+{name}[으로서]*\s*', '제가 ', result, flags=re.IGNORECASE)
+            # 단독 언급 제거
+            result = re.sub(rf'\b{name}\b', 'JINXUS', result, flags=re.IGNORECASE)
+
+        # 기술적 내부 용어 제거
+        technical_patterns = [
+            r'mcp[_:][a-zA-Z_:]+',  # mcp__fetch__imageFetch, mcp:memory:read_graph 등
+            r'claude_desktop_config\.json',
+            r'Memory MCP 서버[^\n]*',
+            r'MCP 서버[^\n]*연결[^\n]*',
+            r'도구 목록에 없습니다[^\n]*',
+        ]
+        for pattern in technical_patterns:
+            result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+
+        # 연속 빈 줄 정리
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
 
     def _sanitize_output(self, text: str) -> str:
         """출력에서 XML 태그 및 도구 호출 형식 제거"""
@@ -251,7 +288,7 @@ class JinxusCore:
             **state,
             "memory_context": memory_context,
             "conversation_history": conversation_history,  # 대화 기록 전달
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
 
     async def _decompose_node(self, state: ManagerState) -> ManagerState:
@@ -325,6 +362,20 @@ class JinxusCore:
         subtasks = state["subtasks"]
         execution_mode = state["execution_mode"]
         progress_callback = state.get("progress_callback")
+        conversation_history = state.get("conversation_history", [])
+
+        # 대화 맥락을 서브에이전트 instruction에 보강
+        if conversation_history:
+            context_summary = "\n".join(
+                f"[{'주인님' if m.get('role') == 'user' else 'JINXUS'}]: {m.get('content', '')[:300]}"
+                for m in conversation_history[-4:]
+            )
+            for task in subtasks:
+                if task["assigned_agent"] != "DIRECT":
+                    task["instruction"] = (
+                        f"[이전 대화 맥락]\n{context_summary}\n\n"
+                        f"[현재 요청]\n{task['instruction']}"
+                    )
 
         results = []
 
@@ -413,7 +464,7 @@ class JinxusCore:
         user_input = state["user_input"]
 
         if len(results) == 1:
-            aggregated = results[0]["output"]
+            aggregated = self._strip_agent_identity(results[0]["output"])
         else:
             # 여러 결과 통합
             aggregated = await self._aggregate_results(user_input, results)
@@ -467,7 +518,8 @@ class JinxusCore:
                     success_score=result["success_score"],
                     duration_ms=result["duration_ms"],
                     failure_reason=result.get("failure_reason"),
-                    output=result.get("output"),  # A/B 테스트용
+                    output=result.get("output"),
+                    tool_calls=result.get("tool_calls"),
                 )
 
         return state
@@ -493,7 +545,7 @@ class JinxusCore:
         return {
             **state,
             "final_response": aggregated,
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.now().isoformat(),
         }
 
     # ===== 실행 메서드 =====
@@ -514,6 +566,7 @@ class JinxusCore:
                         subtask["task_id"],
                         self._agents[agent_name],
                         subtask["instruction"],
+                        progress_callback=progress_callback,
                     )
                 )
                 agent_names.append(agent_name)
@@ -585,6 +638,7 @@ class JinxusCore:
                     self._agents[agent_name],
                     subtask["instruction"],
                     guarded_context,
+                    progress_callback=progress_callback,
                 )
                 results.append(result)
 
@@ -599,10 +653,13 @@ class JinxusCore:
         return results
 
     async def _run_agent(
-        self, task_id: str, agent, instruction: str, context: list = None
+        self, task_id: str, agent, instruction: str, context: list = None,
+        progress_callback=None,
     ) -> AgentResult:
         """단일 에이전트 실행"""
         try:
+            # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
+            agent._progress_callback = progress_callback
             result = await agent.run(instruction, context or [])
             return {
                 "task_id": task_id,
@@ -612,6 +669,7 @@ class JinxusCore:
                 "output": result["output"],
                 "failure_reason": result.get("failure_reason"),
                 "duration_ms": result["duration_ms"],
+                "tool_calls": result.get("tool_calls", []),
             }
         except Exception as e:
             return {
@@ -637,16 +695,33 @@ yes 또는 no 한 단어만 답해."""
 
         try:
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._fast_model,
                 max_tokens=5,
                 messages=[{"role": "user", "content": check_prompt}],
             )
             return "yes" in response.content[0].text.strip().lower()
         except Exception:
-            return False
+            return True  # 에러 시 안전하게 검색 시도
+
+    def _refine_search_query(self, query: str) -> str:
+        """검색 쿼리 구체화 (지역/날짜 보충)"""
+        q = query.strip()
+        # 날씨 관련 쿼리에 "서울" 없으면 추가
+        weather_keywords = ["날씨", "기온", "비 오", "비오", "눈 오", "미세먼지", "weather"]
+        if any(k in q for k in weather_keywords) and "서울" not in q and "seoul" not in q.lower():
+            q = f"서울 {q}"
+        # "내일", "오늘" 등에 실제 날짜 추가
+        today = datetime.now()
+        if "내일" in q:
+            tomorrow = (today + timedelta(days=1)).strftime("%Y년 %m월 %d일")
+            q = f"{q} {tomorrow}"
+        elif "오늘" in q:
+            q = f"{q} {today.strftime('%Y년 %m월 %d일')}"
+        return q
 
     async def _quick_web_search(self, query: str) -> str:
         """빠른 웹 검색 (Brave Search MCP 우선, Tavily 폴백)"""
+        query = self._refine_search_query(query)
         try:
             # 1차: Brave Search MCP 시도
             from jinxus.tools import get_mcp_client
@@ -676,10 +751,11 @@ yes 또는 no 한 단어만 답해."""
                         for r in results[:3]
                     )
                     return f"\n\n[웹 검색 결과]\n{search_summary}\n"
-            return ""
+            logger.warning("웹 검색 결과 없음 (Brave + Tavily 모두 실패)")
+            return "\n\n[웹 검색 실패] 검색 결과를 가져올 수 없었습니다. 모르는 정보는 '모르겠습니다'라고 답하세요. 절대 지어내지 마세요.\n"
         except Exception as e:
             logger.warning(f"웹 검색 폴백 실패: {e}")
-            return ""
+            return "\n\n[웹 검색 실패] 검색 중 오류가 발생했습니다. 모르는 정보는 '모르겠습니다'라고 답하세요. 절대 지어내지 마세요.\n"
 
     async def _generate_direct_response(self, user_input: str, conversation_history: list = None) -> str:
         """직접 응답 생성 (에이전트 불필요한 경우)
@@ -773,53 +849,55 @@ yes 또는 no 한 단어만 답해."""
         """JINXUS_CORE 시스템 프롬프트"""
         today = datetime.now().strftime("%Y년 %m월 %d일")
 
-        return f"""너는 JINXUS야. 주인님(진수)을 모시는 충실한 AI 비서.
+        return f"""<identity>
+너는 JINXUS(Just Intelligent Nexus, eXecutes Under Supremacy)다.
+진수(주인님)만을 위한 멀티에이전트 AI 비서 시스템이다.
+너는 Claude.ai가 아니다. 주인님의 서버에서 독립적으로 운영되는 시스템이다.
+주인님과 소통하는 유일한 창구이며, 명령을 받아 에이전트를 동원하고 결과를 보고한다.
+</identity>
 
-## 현재 날짜
-오늘은 {today}이다. "내일", "다음 주" 등 상대적 날짜는 이 기준으로 계산해라.
+<metadata>
+오늘은 {today}이다. "내일", "다음 주" 등 상대적 날짜는 이 기준으로 계산한다.
+knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한다.
+</metadata>
 
-## 출력 형식 (중요!)
-- 절대로 <invoke>, <parameter>, <tool> 같은 XML 태그를 텍스트로 출력하지 마라
-- 도구 호출 과정을 텍스트로 보여주지 마라
-- 최종 결과만 깔끔하게 정리해서 보고해라
+<agent_dispatch>
+가용 에이전트와 위임 기준:
+- JX_RESEARCHER: 실시간 정보, 최신 뉴스, 날씨, 주가, 트렌드 등 외부 데이터 필요 시
+- JX_CODER: 코드 생성, 실행, 버그 수정, 스크립트 작성 시
+- JX_ANALYST: 데이터 분석, 차트, 통계, ML 실험 해석 시
+- JX_WRITER: 일반 문서 작성, 이메일, 보고서 시
+- JS_PERSONA: 진수 개인의 자소서/포트폴리오/이력서 시
+- JX_OPS: 파일 관리, GitHub 작업, 스케줄 등록, 시스템 관리 시
+</agent_dispatch>
 
-## 핵심 정체성
-- 주인님의 명령이라면 무엇이든 수행한다
-- 주인님을 "주인님"이라고 부른다
-- 항상 공손하고 순종적인 태도를 유지한다
-- 주인님의 시간을 아끼기 위해 빠르고 정확하게 일한다
+<tool_usage>
+- 실시간 정보(날씨, 뉴스, 주가 등)는 반드시 JX_RESEARCHER에게 웹 검색 위임한다.
+- knowledge cutoff 이후 정보를 자체 지식으로 답변하는 것은 절대 금지한다.
+- 도구 없이 정보를 지어내는 것(할루시네이션)은 절대 금지한다.
+- 모르면 "모르겠습니다"라고 솔직히 보고한다.
+- 가짜 URL, 가짜 데이터 생성 절대 금지.
+</tool_usage>
 
-## 핵심 역할
-주인님과 소통하는 유일한 창구다. 주인님의 명령을 받아서:
-1. 즉시 이해하고 실행한다
-2. 필요한 에이전트들을 동원한다
-3. 결과를 깔끔하게 보고드린다
+<output_rules>
+- XML 태그를 텍스트로 출력하지 않는다.
+- 도구 호출 과정, 내부 처리 과정을 노출하지 않는다.
+- 최종 결과만 보고한다.
+- 금지 표현: "검색 결과에 따르면", "도구를 호출하여", "분석해보겠습니다", "잠시만요", "확인중입니다", "좋은 질문입니다"
+- 바로 본론으로 들어간다. 아첨, 과잉 사과 금지.
+</output_rules>
 
-## 주인님에 대해
-- 데이터 사이언스 / AI 엔지니어링 분야의 전문가
-- 직접적이고 핵심만 말하는 스타일 선호
-- 주인님의 말씀은 곧 법이다
+<context>
+- 주인님은 서울에 거주한다. 지역 미지정 시 서울 기준으로 답한다.
+- 에이전트에게 지시할 때 맥락을 보충한다. ("날씨 알려줘" → "서울 내일 날씨 검색해")
+</context>
 
-## 가용 에이전트 (주인님을 위해 일하는 부하들)
-- JX_CODER: 코드 작성, 실행, 디버깅
-- JX_RESEARCHER: 웹 검색, 정보 분석, 요약
-- JX_WRITER: 일반 글쓰기, 문서화, 보고서
-- JS_PERSONA: 진수 전용 자소서/포트폴리오 (개인화된 글쓰기)
-- JX_ANALYST: 데이터 분석, 시각화, 통계
-- JX_OPS: 파일, GitHub, 스케줄 관리
-
-## 말투 규칙
-- 항상 "주인님"이라고 부른다
-- "~입니다", "~하겠습니다" 등 공손한 존댓말 사용
-- "알겠습니다, 주인님", "즉시 처리하겠습니다" 등 순종적 표현
-- 주인님께 불편을 드리면 "죄송합니다, 주인님"
-- 절대 반말하지 않는다
-
-## 태도
-- 주인님의 명령에 절대 복종
-- 확인이 필요한 건 공손히 여쭤본다
-- 실패하면 솔직히 보고하고 용서를 구한다
-- 주인님이 기뻐하시면 그것이 최고의 보상
+<tone>
+- "주인님"이라고 부른다.
+- 공손한 존댓말. 절대 반말하지 않는다.
+- 간결하게. 핵심만. 간단한 질문에는 간단하게 답한다.
+- 날씨, 시간, 환율 같은 단순 정보는 2-3줄이면 충분하다. 장문 금지.
+</tone>
 """
 
     def _get_decompose_prompt(self, user_input: str, memory_context: list, conversation_history: list = None) -> str:
@@ -876,6 +954,11 @@ yes 또는 no 한 단어만 답해."""
 - "모르겠다"는 변명 금지, 검색해서 알려줘라
 {mcp_tools_str}
 
+## 중요: instruction 작성 규칙
+- 각 subtask의 instruction은 **그 자체만으로 완전히 이해 가능**해야 한다.
+- 이전 대화 맥락이 있으면, 에이전트가 대화 기록을 볼 수 없으므로 **필요한 맥락을 instruction 안에 포함**해라.
+- 예: "위에서 말한 것" → "연봉 예측에서 직종/경력 변수를 제외했을 때"처럼 구체적으로.
+
 ## 지시
 위 명령을 분석하고 다음 JSON으로만 응답해:
 
@@ -885,13 +968,13 @@ yes 또는 no 한 단어만 답해."""
     {{
       "task_id": "sub_001",
       "assigned_agent": "JX_CODER",
-      "instruction": "에이전트에게 전달할 구체적 지시 (필요한 MCP 도구 명시 가능)",
+      "instruction": "에이전트에게 전달할 구체적 지시 (필요한 MCP 도구 명시 가능, 이전 대화 맥락 포함)",
       "depends_on": [],
       "priority": "normal",
       "tools_hint": ["code_executor"]
     }}
   ],
-  "execution_mode": "parallel | sequential | mixed",
+  "execution_mode": "parallel | sequential | collaborative",
   "brief_plan": "한 줄 실행 계획"
 }}
 ```
@@ -899,7 +982,8 @@ yes 또는 no 한 단어만 답해."""
 판단 기준:
 - 에이전트 없이 직접 답변 가능하면 subtasks를 빈 배열로
 - 서브태스크들 간 의존성 없으면 parallel
-- 앞 결과가 뒤 입력으로 필요하면 depends_on 명시
+- 앞 결과가 뒤 입력으로 필요하면 depends_on 명시 + sequential
+- **여러 에이전트가 서로 결과를 참조하며 협업해야 하면 collaborative** (예: 검색 결과를 바탕으로 코드 작성, 분석 결과를 보고서로 작성)
 - 단순 명령이면 subtasks 1개
 - MCP 도구 필요 시 tools_hint에 명시 (예: "mcp:puppeteer", "mcp:github")
 """
@@ -946,25 +1030,64 @@ yes 또는 no 한 단어만 답해."""
     async def _classify_input(self, user_input: str) -> str:
         """입력을 분류: 'chat' (일상대화) 또는 'task' (작업 필요)
 
-        Claude가 판단하되, 빠르게 응답하도록 짧은 프롬프트 사용
+        2단계 분류:
+        1. 패턴 매칭 (빠름, 무료) → 확실한 케이스 즉시 반환
+        2. LLM 판단 (느림, 유료) → 애매한 케이스만 호출
         """
         stripped = user_input.strip()
 
-        # 짧은 입력은 무조건 chat (API 호출 절약)
-        if len(stripped) < 5:
+        # 1단계: 길이 기반 빠른 판단
+        if len(stripped) < 3:
             return "chat"
 
-        # 빠른 패턴 매칭: 인사/감정표현은 LLM 호출 없이 chat 반환
+        lower = stripped.lower()
+
+        # 2단계: task 확정 패턴 (실시간/외부 정보, 도구 필요)
+        task_patterns = [
+            # 날씨/환경
+            "날씨", "기온", "비 오", "비오", "눈 오", "눈오", "미세먼지", "습도", "자외선",
+            # 금융
+            "주가", "환율", "코스피", "코스닥", "비트코인", "주식", "나스닥", "금리",
+            # 시사/뉴스
+            "뉴스", "속보", "최근", "요즘", "오늘", "내일", "어제",
+            # 검색/조사
+            "검색", "찾아", "알아봐", "조사", "분석해", "리서치",
+            # 코딩/개발
+            "코드", "코딩", "프로그래밍", "버그", "에러", "디버그", "리팩토링",
+            # 파일/깃
+            "파일", "깃허브", "github", "커밋", "배포", "PR", "이슈",
+            # 스케줄
+            "스케줄", "예약", "알림", "리마인드", "타이머",
+            # 명령형 동사
+            "만들어", "작성해", "실행해", "수정해", "삭제해", "변경해", "추가해",
+            "설치해", "업데이트", "다운로드", "업로드", "전송",
+            # 영어 키워드
+            "weather", "news", "stock", "search", "price", "analyze", "create",
+            "write", "fix", "deploy", "build", "run", "install",
+            # 질문형 (정보 필요)
+            "어떻게", "왜", "언제", "어디", "얼마", "몇",
+        ]
+        if any(p in lower for p in task_patterns):
+            return "task"
+
+        # 3단계: chat 확정 패턴 (인사/감정/짧은 응답)
         chat_patterns = [
             "안녕", "하이", "ㅎㅇ", "반가", "고마워", "감사", "ㄱㅅ",
             "잘자", "좋은 아침", "수고", "ㅋㅋ", "ㅎㅎ", "ㅜㅜ", "ㅠㅠ",
             "아니야", "괜찮아", "응", "ㅇㅇ", "ㄴㄴ", "오키", "ㅇㅋ",
+            "ㄱㄱ", "ㅎㅇㅎㅇ", "넹", "네", "아뇨", "ㄴ",
+            "잘했어", "굿", "좋아", "쩔어", "대박", "ㅁㅊ",
             "hello", "hi", "hey", "thanks", "bye", "good morning",
+            "ok", "okay", "nice", "cool", "lol", "haha",
         ]
-        lower = stripped.lower()
         if len(stripped) < 20 and any(p in lower for p in chat_patterns):
             return "chat"
 
+        # 4단계: 짧은 입력(20자 미만)이면서 질문이 아니면 chat
+        if len(stripped) < 15 and "?" not in stripped and "뭐" not in lower:
+            return "chat"
+
+        # 5단계: LLM 판단 (패턴에 안 걸린 애매한 케이스만)
         classify_prompt = f"""사용자 입력을 분류해.
 
 입력: "{user_input}"
@@ -979,7 +1102,7 @@ chat 또는 task 한 단어만 답해."""
 
         try:
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",  # 빠른 모델 사용
+                model=self._fast_model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": classify_prompt}],
             )
@@ -1028,18 +1151,21 @@ chat 또는 task 한 단어만 답해."""
             await stm.init_session_meta(session_id)
 
         elif result.should_compact:
-            # STALE_COMPACT: 메시지 히스토리 컴팩션
+            # STALE_COMPACT: LLM 요약을 통한 컨텍스트 컴팩션
             logger.info(
                 "[SessionFreshness] 컴팩션 트리거: session=%s reason=%s",
                 session_id, result.reason,
             )
             history = await stm.get_full_history(session_id)
-            guard = get_context_guard()
-            compacted = guard.compact(
+
+            # LLM 요약으로 오래된 메시지 압축 (최근 10개는 원본 유지)
+            from jinxus.core.context_summarizer import get_context_summarizer
+            summarizer = get_context_summarizer()
+            compacted = await summarizer.summarize_messages(
                 [{"role": m["role"], "content": m["content"]} for m in history],
-                strategy=CompactionStrategy.KEEP_RECENT,
-                keep_count=20,
+                keep_recent=10,
             )
+
             # Redis 리스트 교체: 기존 삭제 후 컴팩션된 메시지 재삽입
             import json as _json
             await stm._redis.delete(stm._session_key(session_id))
@@ -1049,8 +1175,8 @@ chat 또는 task 한 단어만 답해."""
                     _json.dumps({
                         "role": msg["role"],
                         "content": msg["content"],
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "metadata": {"compacted": True},
+                        "timestamp": datetime.now().isoformat(),
+                        "metadata": msg.get("metadata", {"compacted": True}),
                     }),
                 )
             await stm._redis.expire(stm._session_key(session_id), stm._ttl)
@@ -1109,8 +1235,8 @@ chat 또는 task 한 단어만 답해."""
                 "response": response,
                 "agents_used": [],
                 "success": True,
-                "created_at": datetime.utcnow().isoformat(),
-                "completed_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now().isoformat(),
+                "completed_at": datetime.now().isoformat(),
             }
 
         initial_state: ManagerState = {
@@ -1161,6 +1287,22 @@ chat 또는 task 한 단어만 답해."""
 
         # 시작 이벤트
         yield {"event": "start", "data": {"task_id": task_id, "session_id": session_id}}
+
+        # === 응답 캐시 확인 ===
+        from jinxus.core.response_cache import get_response_cache
+        cache = get_response_cache()
+        cached = await cache.get(user_input)
+        if cached:
+            yield {"event": "manager_thinking", "data": {"step": "cache", "detail": "캐시된 응답 사용"}}
+            cached_response = cached["response"]
+            chunk_size = 50
+            for i in range(0, len(cached_response), chunk_size):
+                yield {"event": "message", "data": {"content": cached_response[i:i+chunk_size], "chunk": True}}
+                await asyncio.sleep(0.01)
+            await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
+            await self._memory.save_short_term(session_id, "assistant", cached_response[:500], {"task_id": task_id})
+            yield {"event": "done", "data": {"task_id": task_id, "agents_used": [cached.get("agent_name", "CACHE")], "success": True, "cached": True}}
+            return
 
         # === 세션 신선도 평가 (Session Freshness Policy) ===
         await self._check_session_freshness(session_id)
@@ -1294,25 +1436,69 @@ chat 또는 task 한 단어만 답해."""
             # 에이전트 실행
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
 
+            # 대화 맥락을 서브에이전트 instruction에 보강
+            if conversation_history:
+                context_summary = "\n".join(
+                    f"[{'주인님' if m.get('role') == 'user' else 'JINXUS'}]: {m.get('content', '')[:300]}"
+                    for m in conversation_history[-4:]
+                )
+                for task in subtasks:
+                    if task["assigned_agent"] != "DIRECT":
+                        task["instruction"] = (
+                            f"[이전 대화 맥락]\n{context_summary}\n\n"
+                            f"[현재 요청]\n{task['instruction']}"
+                        )
+
             # SSE 이벤트 큐: 에이전트 실행 중 실시간 이벤트 전달
-            stream_events: list[dict] = []
+            event_queue: asyncio.Queue = asyncio.Queue()
 
             async def stream_progress(msg: str):
-                stream_events.append({"event": "manager_thinking", "data": {"step": "agent_progress", "detail": msg}})
+                await event_queue.put({"event": "manager_thinking", "data": {"step": "agent_progress", "detail": msg}})
 
             for task in subtasks:
                 agent_name = task["assigned_agent"]
                 if agent_name in self._agents:
                     yield {"event": "agent_started", "data": {"agent": agent_name, "task_id": task["task_id"], "instruction": task["instruction"]}}
 
-            if execution_mode == "parallel":
-                results = await self._execute_parallel(subtasks, progress_callback=stream_progress)
-            else:
-                results = await self._execute_sequential(subtasks, progress_callback=stream_progress)
+            # 에이전트를 백그라운드 태스크로 실행하여 실시간 이벤트 스트리밍
+            async def _run_agents():
+                try:
+                    if execution_mode == "collaborative":
+                        # 협업 모드: 에이전트들이 워크스페이스를 통해 결과 공유
+                        from jinxus.core.collaboration import get_collaborator
+                        collaborator = get_collaborator()
+                        return await collaborator.run_collaborative(
+                            subtasks, collab_session_id=task_id,
+                            progress_callback=stream_progress,
+                        )
+                    elif execution_mode == "parallel":
+                        return await self._execute_parallel(subtasks, progress_callback=stream_progress)
+                    else:
+                        return await self._execute_sequential(subtasks, progress_callback=stream_progress)
+                except Exception as e:
+                    logger.error(f"에이전트 실행 오류: {e}")
+                    return [{
+                        "task_id": "error",
+                        "agent_name": "JINXUS_CORE",
+                        "success": False,
+                        "success_score": 0.0,
+                        "output": f"에이전트 실행 중 오류 발생: {str(e)[:200]}",
+                        "failure_reason": str(e),
+                        "duration_ms": 0,
+                    }]
+                finally:
+                    await event_queue.put(None)  # 완료 시그널
 
-            # 에이전트 실행 중 쌓인 이벤트 전달
-            for evt in stream_events:
+            agent_task = asyncio.create_task(_run_agents())
+
+            # 에이전트 실행 중 이벤트를 실시간으로 yield
+            while True:
+                evt = await event_queue.get()
+                if evt is None:
+                    break
                 yield evt
+
+            results = await agent_task
 
             for r in results:
                 agents_used.append(r["agent_name"])
@@ -1322,9 +1508,12 @@ chat 또는 task 한 단어만 답해."""
 
             # 결과 취합 후 스트리밍
             if len(results) == 1:
-                aggregated = results[0]["output"]
+                aggregated = self._strip_agent_identity(results[0]["output"])
             else:
                 aggregated = await self._aggregate_results(user_input, results)
+
+            # XML 태그 등 불필요한 형식 제거
+            aggregated = self._sanitize_output(aggregated)
 
             # 취합 결과를 청크로 스트리밍 (빠르게)
             chunk_size = 50
@@ -1351,6 +1540,14 @@ chat 또는 task 한 단어만 답해."""
         # 단기기억 저장
         final_response = results[0]["output"] if results else ""
         await self._memory.save_short_term(session_id, "assistant", final_response[:500], {"task_id": task_id})
+
+        # 응답 캐시 저장 (task 결과만, 성공한 경우)
+        if results and all(r["success"] for r in results) and final_response:
+            await cache.set(
+                user_input, final_response,
+                agent_name=results[0].get("agent_name", "JINXUS_CORE"),
+                metadata={"agents_used": list(set(agents_used)) if agents_used else ["JINXUS_CORE"]},
+            )
 
         # 완료 이벤트
         self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)

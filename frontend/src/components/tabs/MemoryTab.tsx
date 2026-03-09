@@ -46,6 +46,7 @@ export default function MemoryTab() {
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
+            aria-label="에이전트 선택"
             className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors"
           >
             <option value="">에이전트 선택</option>
@@ -62,6 +63,7 @@ export default function MemoryTab() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="검색어를 입력하세요..."
+            aria-label="메모리 검색어"
             className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors"
           />
 
@@ -129,7 +131,7 @@ export default function MemoryTab() {
               <div className="flex items-center gap-4 text-xs text-zinc-500">
                 <span className="flex items-center gap-1">
                   <Clock size={12} />
-                  {result.timestamp ? new Date(result.timestamp).toLocaleString() : '-'}
+                  {result.timestamp ? new Date(result.timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false }) : '-'}
                 </span>
                 <span>Task ID: {result.task_id?.slice(0, 8)}...</span>
               </div>

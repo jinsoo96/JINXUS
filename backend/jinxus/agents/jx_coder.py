@@ -50,6 +50,7 @@ class JXCoder:
         settings = get_settings()
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = settings.claude_model
+        self._fast_model = settings.claude_fast_model
         self._memory = get_jinx_memory()
         self._prompt_version = "v2.0"  # 동적 도구 실행 버전
         self._code_executor = CodeExecutor()
@@ -90,7 +91,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
 
         try:
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._fast_model,
                 max_tokens=50,
                 messages=[{"role": "user", "content": classify_prompt}],
             )
@@ -294,10 +295,21 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
 
             context = f"{memory_str}\n{error_context}" if memory_str or error_context else None
 
+            # 도구 호출 콜백 (실시간 이벤트)
+            tool_cb = None
+            if hasattr(self, '_progress_callback') and self._progress_callback:
+                cb = self._progress_callback
+                async def tool_cb(tool_name: str, status: str):
+                    if status == "calling":
+                        await cb(f"🔧 [{self.name}] {tool_name} 호출 중...")
+                    elif status == "error":
+                        await cb(f"❌ [{self.name}] {tool_name} 실패")
+
             result = await executor.execute(
                 instruction=instruction,
                 system_prompt=system_prompt,
                 context=context,
+                tool_callback=tool_cb,
             )
 
             if result.success:

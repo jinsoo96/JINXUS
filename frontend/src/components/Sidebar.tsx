@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { LayoutDashboard, MessageSquare, GitBranch, Bot, Brain, ScrollText, Wrench, Settings, Menu, X } from 'lucide-react';
+import { MAX_SIDEBAR_AGENTS } from '@/lib/constants';
 
 const tabs = [
   { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
@@ -64,7 +65,7 @@ export default function Sidebar() {
               />
               <div>
                 <h2 className="font-bold text-lg text-primary">JINXUS</h2>
-                <p className="text-xs text-zinc-500">v1.3.0</p>
+                <p className="text-xs text-zinc-500">v1.5.0</p>
               </div>
             </div>
             <button
@@ -110,7 +111,7 @@ export default function Sidebar() {
             에이전트 ({agents.length})
           </h3>
           <div className="space-y-2">
-            {agents.slice(0, 5).map((agent) => (
+            {agents.slice(0, MAX_SIDEBAR_AGENTS).map((agent) => (
               <div
                 key={agent.name}
                 className="flex items-center gap-2 text-sm text-zinc-400"

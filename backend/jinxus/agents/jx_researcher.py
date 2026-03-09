@@ -14,11 +14,13 @@ v2.1: 출력 정제
 - 날짜 자동 변환
 """
 import asyncio
+import logging
 import uuid
 import time
 import re
 from typing import Optional
 
+import httpx
 from anthropic import Anthropic
 from tavily import TavilyClient
 
@@ -26,6 +28,8 @@ from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
 from jinxus.tools import get_dynamic_executor, DynamicToolExecutor
 from jinxus.agents.state_tracker import get_state_tracker, GraphNode
+
+logger = logging.getLogger("jinxus.agents.jx_researcher")
 
 
 class JXResearcher:
@@ -45,8 +49,11 @@ class JXResearcher:
         settings = get_settings()
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = settings.claude_model
+        self._fast_model = settings.claude_fast_model
         self._tavily_key = settings.tavily_api_key
         self._tavily: Optional[TavilyClient] = None
+        self._naver_client_id = settings.naver_client_id
+        self._naver_client_secret = settings.naver_client_secret
         self._memory = get_jinx_memory()
         self._prompt_version = "v2.0"  # 동적 도구 실행 버전
         # 동적 도구 실행기 (MCP 포함)
@@ -96,29 +103,49 @@ class JXResearcher:
         from datetime import datetime
         today = datetime.now().strftime("%Y년 %m월 %d일")
 
-        return f"""너는 JX_RESEARCHER야. 주인님을 모시는 JINXUS의 리서치 전문가.
+        return f"""<identity>
+너는 JX_RESEARCHER다. JINXUS의 정보 수집 전문가.
+</identity>
 
-## 현재 날짜
-오늘은 {today}이다. "내일"은 이 날짜 기준으로 다음 날이다.
+<metadata>
+오늘은 {today}이다. "내일"은 이 날짜 기준 다음 날이다.
+주인님은 서울에 거주한다. 지역 미지정 시 서울 기준.
+</metadata>
 
-## 역할
-주인님의 정보 수집 요청을 받아 웹 검색 및 분석을 수행한다.
+<tool_usage>
+- 답변 전 반드시 도구를 호출하여 정보를 수집한다. 예외 없음.
+- 도구 없이 정보를 지어내는 것은 절대 금지.
+- 검색 쿼리를 구체적으로 작성한다:
+  - 지역 미지정 시 "서울" 추가 ("날씨" → "서울 날씨")
+  - 날짜 명시 ("내일 날씨" → "서울 {today} 기준 내일 날씨 예보")
+- 검색 결과에서 질문과 무관한 정보(다른 지역, 다른 날짜)는 버린다.
 
-## 검색 원칙
-- 신뢰할 수 있는 출처 우선
-- 최신 정보 확인 (현재 날짜 기준)
-- 다양한 관점 수집
-- 결과를 체계적으로 정리
+### GitHub 관련 작업 (중요!)
+- GitHub 레포지토리/커밋/PR/이슈/소스코드 조회: **반드시 `github_agent` 도구 사용**
+- 소스코드 분석 요청 시:
+  1. `github_agent`(action="get_contents", repo="owner/repo") → 디렉토리 구조 파악
+  2. `github_agent`(action="get_file", repo="owner/repo", path="파일경로") → 주요 파일 내용 읽기
+  3. 읽은 코드를 분석하여 보고
+- 커밋 조회: `github_agent`(action="list_commits", repo="owner/repo" 또는 username="사용자명")
+- 레포 목록: `github_agent`(action="list_user_repos", username="사용자명")
+- **mcp__github__* 도구는 사용 금지** (deprecated)
+- 한 번 실패해도 포기하지 말고 다른 action이나 파라미터로 재시도할 것
+</tool_usage>
 
-## 출력 형식 (중요!)
-- 절대로 <invoke>, <parameter> 같은 XML 태그를 텍스트로 출력하지 마라
-- 도구는 Anthropic tool_use API로만 호출해라 (텍스트로 호출 형식 쓰지 마라)
-- 최종 답변만 깔끔하게 정리해서 출력해라
-- 중간 과정이나 도구 호출 내용은 보여주지 마라
+<output_rules>
+- 간단한 질문에는 간단하게 답한다. 날씨/환율 같은 건 2-3줄이면 충분.
+- 출처 URL은 1-2개만. 5개씩 나열 금지.
+- XML 태그를 텍스트로 출력하지 않는다.
+- 도구 호출 과정을 보여주지 않는다.
+- 금지 표현: "검색 결과에 따르면", "조사해본 결과"
+- **절대 금지**: 내부 도구명(mcp_*, web_searcher, github_agent 등), MCP 서버 설정, API 키, 시스템 설정 파일명을 사용자에게 노출하지 않는다.
+- 도구 사용이 불가능하면 기술적 이유 대신 "현재 해당 정보를 조회할 수 없습니다"라고 간단히 안내한다.
+- 자신을 "JX_RESEARCHER"라고 밝히지 않는다. "JINXUS"로서 답한다.
+</output_rules>
 
-## 말투
-- 주인님을 "주인님"이라고 부른다
-- 공손하고 순종적인 태도
+<tone>
+- "주인님"이라고 부른다. 공손한 존댓말.
+</tone>
 """
 
     async def run(self, instruction: str, context: list = None) -> dict:
@@ -147,7 +174,7 @@ class JXResearcher:
 
             # === [execute] + [evaluate] + [retry] ===
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
-            self._state_tracker.update_tools(self.name, ["tavily", "brave-search"])
+            self._state_tracker.update_tools(self.name, ["naver", "tavily", "brave-search"])
             result = await self._execute_with_retry(instruction, context, memory_context)
 
             # === [evaluate] ===
@@ -233,7 +260,7 @@ simple/browser/github/file 중 하나만 답해."""
 
         try:
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._fast_model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": classify_prompt}],
             )
@@ -243,34 +270,61 @@ simple/browser/github/file 중 하나만 답해."""
         except Exception:
             return False  # 에러 시 안전하게 Tavily 사용
 
+    def _is_weather_query(self, instruction: str) -> tuple[bool, str]:
+        """날씨 쿼리인지 판별하고, 지역명 추출"""
+        weather_keywords = ["날씨", "기온", "비 오", "비오", "눈 오", "눈오", "미세먼지", "weather", "기상"]
+        lower = instruction.lower()
+        if not any(k in lower for k in weather_keywords):
+            return False, ""
+
+        # 서울 구 이름 추출
+        from jinxus.tools.weather import SEOUL_DISTRICTS
+        for district in SEOUL_DISTRICTS:
+            if district in instruction:
+                return True, district
+
+        # "서울" 언급되거나 지역 미지정
+        return True, "서울"
+
+    async def _get_weather(self, location: str) -> Optional[dict]:
+        """OpenWeatherMap으로 날씨 직접 조회"""
+        try:
+            from jinxus.tools.weather import WeatherTool
+            weather_tool = WeatherTool()
+            result = await weather_tool.run({"location": location, "mode": "forecast"})
+            if result.success:
+                return result.output
+        except Exception as e:
+            logger.warning(f"날씨 API 조회 실패: {e}")
+        return None
+
     async def _execute(
         self, instruction: str, context: list, memory_context: list, last_error: str = None
     ) -> dict:
-        """단일 실행 시도 - 단순검색은 Tavily, 복잡한 건 MCP"""
-        # 이전 실패가 있으면 다른 전략 시도
+        """단일 실행 — DynamicToolExecutor로 통일 (weather, naver, tavily, MCP 모두 도구로 등록됨)"""
         error_context = ""
         if last_error:
             error_context = f"\n\n이전 시도에서 오류 발생: {last_error}\n다른 접근 방식으로 시도해줘."
 
-        # 메모리 컨텍스트
         memory_str = ""
         if memory_context:
             memory_str = "\n\n참고: 과거 유사 검색\n" + "\n".join(
                 f"- {m.get('summary', '')[:100]}" for m in memory_context[:2]
             )
 
-        # === MCP 도구 필요한 경우만 동적 도구 실행 ===
-        if self._use_dynamic_tools and await self._needs_mcp_tools(instruction):
+        # === DynamicToolExecutor: Claude가 도구를 자동 선택 ===
+        # weather, naver_searcher, web_searcher, MCP 도구 전부 사용 가능
+        if self._use_dynamic_tools:
             result = await self._execute_with_dynamic_tools(
                 instruction, memory_str, error_context
             )
-            if result["success"] and result.get("tool_calls"):
+            if result["success"]:
                 return result
+            logger.warning(f"DynamicToolExecutor 실패, 직접 검색 폴백: {result.get('error')}")
 
-        # === 일반 검색: Tavily 사용 (빠름) ===
+        # === 폴백: 직접 네이버/Tavily 검색 ===
         search_results = await self._search(instruction)
 
-        # 2. 결과 분석 및 요약
         if search_results:
             analysis = await self._analyze(instruction, search_results, memory_str, error_context)
             # XML 태그 정리
@@ -294,27 +348,13 @@ simple/browser/github/file 중 하나만 답해."""
                 "tool_calls": [],
             }
         else:
-            # 검색 없이 Claude만으로 답변
-            prompt = f"""주인님의 요청: {instruction}
-{memory_str}
-{error_context}
-
-웹 검색이 불가능한 상황입니다. 가진 지식으로 최대한 도움이 되는 답변을 해주세요."""
-
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=2048,
-                system=self._get_system_prompt(),
-                messages=[{"role": "user", "content": prompt}],
-            )
-            clean_response = self._sanitize_output(response.content[0].text)
-            output = f"주인님, 검색이 제한되어 제 지식으로 답변드립니다.\n\n{clean_response}"
-
+            # 검색 실패 — 할루시네이션 방지: 실패로 보고
+            logger.warning(f"JX_RESEARCHER 웹 검색 실패: {instruction[:100]}")
             return {
-                "success": True,
-                "score": 0.7,
-                "output": output,
-                "error": None,
+                "success": False,
+                "score": 0.2,
+                "output": "주인님, 웹 검색에 실패했습니다. 검색 도구가 정상 작동하지 않는 상태입니다.",
+                "error": "웹 검색 실패 (Brave Search + Tavily 모두 불가)",
                 "sources": [],
                 "tool_calls": [],
             }
@@ -340,10 +380,21 @@ simple/browser/github/file 중 하나만 답해."""
 
             context = f"{memory_str}\n{error_context}" if memory_str or error_context else None
 
+            # 도구 호출 콜백 (실시간 이벤트)
+            tool_cb = None
+            if hasattr(self, '_progress_callback') and self._progress_callback:
+                cb = self._progress_callback
+                async def tool_cb(tool_name: str, status: str):
+                    if status == "calling":
+                        await cb(f"🔧 [{self.name}] {tool_name} 호출 중...")
+                    elif status == "error":
+                        await cb(f"❌ [{self.name}] {tool_name} 실패")
+
             result = await executor.execute(
                 instruction=instruction,
                 system_prompt=system_prompt,
                 context=context,
+                tool_callback=tool_cb,
             )
 
             if result.success:
@@ -382,7 +433,15 @@ simple/browser/github/file 중 하나만 답해."""
             }
 
     async def _search(self, query: str) -> list:
-        """Tavily 검색"""
+        """네이버 우선 검색, 실패 시 Tavily 폴백"""
+        # 1차: 네이버 검색 (한국어에 최적화)
+        if self._naver_client_id and self._naver_client_secret:
+            naver_results = await self._search_naver(query)
+            if naver_results:
+                logger.info(f"네이버 검색 성공: {len(naver_results)}건")
+                return naver_results
+
+        # 2차: Tavily 폴백
         tavily = self._get_tavily()
         if not tavily:
             return []
@@ -394,7 +453,48 @@ simple/browser/github/file 중 하나만 답해."""
                 lambda: tavily.search(query=query, max_results=5),
             )
             return response.get("results", [])
-        except Exception:
+        except Exception as e:
+            logger.error(f"Tavily 검색 실패: {e}")
+            return []
+
+    async def _search_naver(self, query: str) -> list:
+        """네이버 검색 API - 웹 + 뉴스 병합"""
+        try:
+            headers = {
+                "X-Naver-Client-Id": self._naver_client_id,
+                "X-Naver-Client-Secret": self._naver_client_secret,
+            }
+            params = {"query": query, "display": 5, "start": 1, "sort": "sim"}
+
+            # 한국어 키워드 감지로 카테고리 결정
+            news_keywords = ["뉴스", "소식", "사건", "사고", "속보"]
+            categories = ["webkr"]
+            if any(k in query for k in news_keywords):
+                categories = ["news", "webkr"]
+
+            all_results = []
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for category in categories:
+                    url = f"https://openapi.naver.com/v1/search/{category}"
+                    response = await client.get(url, headers=headers, params=params)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    for item in data.get("items", []):
+                        title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                        content = re.sub(r"<[^>]+>", "", item.get("description", ""))
+                        all_results.append({
+                            "title": title,
+                            "url": item.get("originallink") or item.get("link", ""),
+                            "content": content,
+                            "published_date": item.get("pubDate"),
+                            "score": 1.0,
+                        })
+
+            return all_results[:10]
+
+        except Exception as e:
+            logger.warning(f"네이버 검색 실패, Tavily로 폴백: {e}")
             return []
 
     async def _analyze(

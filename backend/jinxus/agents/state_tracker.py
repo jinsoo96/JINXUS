@@ -2,10 +2,13 @@
 
 에이전트의 실시간 상태를 추적하고 UI에 제공한다.
 """
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 from enum import Enum
+
+KST = timezone(timedelta(hours=9))
 
 
 class AgentStatus(Enum):
@@ -58,6 +61,7 @@ class AgentStateTracker:
 
     def __init__(self):
         self._states: Dict[str, AgentRuntimeState] = {}
+        self._tool_call_logs: deque[dict] = deque(maxlen=100)
 
     @classmethod
     def get_instance(cls) -> "AgentStateTracker":
@@ -81,21 +85,21 @@ class AgentStateTracker:
         state.current_node = GraphNode.RECEIVE
         state.current_tools = []
         state.error_message = None
-        state.last_update = datetime.utcnow()
+        state.last_update = datetime.now()
 
     def update_node(self, agent_name: str, node: GraphNode) -> None:
         """현재 노드 업데이트"""
         if agent_name in self._states:
             state = self._states[agent_name]
             state.current_node = node
-            state.last_update = datetime.utcnow()
+            state.last_update = datetime.now()
 
     def update_tools(self, agent_name: str, tools: List[str]) -> None:
         """사용 중인 도구 업데이트"""
         if agent_name in self._states:
             state = self._states[agent_name]
             state.current_tools = tools
-            state.last_update = datetime.utcnow()
+            state.last_update = datetime.now()
 
     def complete_task(self, agent_name: str) -> None:
         """작업 완료"""
@@ -105,7 +109,7 @@ class AgentStateTracker:
             state.current_node = None
             state.current_task = None
             state.current_tools = []
-            state.last_update = datetime.utcnow()
+            state.last_update = datetime.now()
 
     def set_error(self, agent_name: str, error: str) -> None:
         """에러 상태 설정"""
@@ -113,7 +117,7 @@ class AgentStateTracker:
             state = self._states[agent_name]
             state.status = AgentStatus.ERROR
             state.error_message = error[:200]
-            state.last_update = datetime.utcnow()
+            state.last_update = datetime.now()
 
     def get_state(self, agent_name: str) -> Optional[AgentRuntimeState]:
         """에이전트 상태 조회"""
@@ -129,6 +133,48 @@ class AgentStateTracker:
             state for state in self._states.values()
             if state.status == AgentStatus.WORKING
         ]
+
+    # ── 도구 호출 로그 ──
+
+    def log_tool_call(
+        self,
+        agent_name: str,
+        tool_name: str,
+        status: str,
+        duration_ms: Optional[float] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """도구 호출 로그 기록
+
+        Args:
+            agent_name: 호출한 에이전트 이름
+            tool_name: 도구 이름
+            status: "success" | "error"
+            duration_ms: 실행 시간 (ms)
+            error: 에러 메시지 (실패 시)
+        """
+        entry = {
+            "timestamp": datetime.now(KST).isoformat(),
+            "agent": agent_name,
+            "tool": tool_name,
+            "status": status,
+            "duration_ms": round(duration_ms, 1) if duration_ms is not None else None,
+            "error": error[:200] if error else None,
+        }
+        self._tool_call_logs.append(entry)
+
+    def get_tool_call_logs(self, limit: int = 50) -> List[dict]:
+        """최근 도구 호출 로그 반환 (최신순)
+
+        Args:
+            limit: 반환할 최대 개수
+
+        Returns:
+            도구 호출 로그 리스트 (최신순)
+        """
+        logs = list(self._tool_call_logs)
+        logs.reverse()
+        return logs[:limit]
 
 
 def get_state_tracker() -> AgentStateTracker:

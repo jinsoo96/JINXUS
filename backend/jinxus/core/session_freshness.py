@@ -89,7 +89,7 @@ class SessionFreshness:
                 should_reset=False,
             )
 
-        now = now or datetime.utcnow()
+        now = now or datetime.now()
         age = (now - created_at).total_seconds()
         idle = (now - (last_active or created_at)).total_seconds()
 

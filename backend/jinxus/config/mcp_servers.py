@@ -51,7 +51,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
             "@modelcontextprotocol/server-filesystem",
             os.path.expanduser("~"),  # 홈 디렉토리
         ],
-        allowed_agents=["JX_OPS", "JX_WRITER", "JX_ANALYST"],
+        allowed_agents=["JX_OPS", "JX_CODER", "JX_WRITER", "JX_ANALYST"],
         enabled=True,
         description="파일 시스템 읽기/쓰기",
     ),
@@ -78,7 +78,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
     MCPServerConfig(
         name="fetch",
         command="npx",
-        args=["-y", "mcp-fetch-server"],
+        args=["-y", "@kazuph/mcp-fetch"],
         allowed_agents=[],  # 모든 에이전트 사용 가능
         enabled=True,
         description="웹 콘텐츠 가져오기",
@@ -93,7 +93,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         command="npx",
         args=["-y", "@modelcontextprotocol/server-github"],
         env={"GITHUB_PERSONAL_ACCESS_TOKEN": os.getenv("GITHUB_TOKEN", "")},
-        allowed_agents=["JX_OPS", "JX_CODER"],
+        allowed_agents=["JX_OPS", "JX_CODER", "JX_RESEARCHER"],
         enabled=True,  # 항상 활성화 (API 키 없으면 연결 안 됨)
         description="GitHub 레포지토리 관리",
         requires_api_key="GITHUB_TOKEN",

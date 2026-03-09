@@ -1,5 +1,5 @@
 """Status API - 시스템 상태 조회"""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 
 from jinxus.api.models import SystemStatusResponse
 from jinxus.core import get_orchestrator
@@ -62,8 +62,25 @@ async def get_performance_report(days: int = Query(7, ge=1, le=30)):
 
 @router.get("/health")
 async def health_check():
-    """헬스 체크 (간단)"""
-    return {"status": "ok"}
+    """헬스 체크 (인프라 연결 상태 포함)"""
+    memory = get_jinx_memory()
+    orchestrator = get_orchestrator()
+    redis_ok = memory.short_term.is_connected() if hasattr(memory, 'short_term') else False
+    qdrant_ok = memory.long_term.is_connected() if hasattr(memory, 'long_term') else False
+
+    return {
+        "status": "ok" if orchestrator.is_initialized else "initializing",
+        "redis": redis_ok,
+        "qdrant": qdrant_ok,
+        "uptime_seconds": orchestrator.uptime_seconds,
+    }
+
+
+@router.get("/metrics")
+async def get_metrics_report():
+    """시스템 메트릭 리포트 - 에이전트/도구/캐시 성능"""
+    from jinxus.core.metrics import get_metrics
+    return get_metrics().get_report()
 
 
 @router.get("/tool-graph")
@@ -231,3 +248,47 @@ async def reconnect_mcp_server(server_name: str):
         "server_name": server_name,
         "message": "연결 성공" if success else "연결 실패",
     }
+
+
+@router.get("/tool-policies")
+async def get_tool_policies():
+    """에이전트별 도구 정책 조회"""
+    from jinxus.core.tool_policy import AGENT_POLICIES
+
+    policies = {}
+    for agent_name, policy in AGENT_POLICIES.items():
+        policies[agent_name] = {
+            "whitelist": policy.get("whitelist"),
+            "blacklist": policy.get("blacklist", []),
+            "max_rounds": policy.get("max_tool_rounds"),
+        }
+
+    return {"policies": policies}
+
+
+@router.get("/tool-policies/{agent_name}")
+async def get_agent_tool_policy(agent_name: str):
+    """특정 에이전트의 도구 정책 조회"""
+    from jinxus.core.tool_policy import AGENT_POLICIES
+
+    policy = AGENT_POLICIES.get(agent_name)
+    if not policy:
+        raise HTTPException(status_code=404, detail=f"에이전트 '{agent_name}'의 정책이 없습니다")
+
+    return {
+        "agent_name": agent_name,
+        "whitelist": policy.get("whitelist"),
+        "blacklist": policy.get("blacklist", []),
+        "max_rounds": policy.get("max_tool_rounds"),
+    }
+
+
+@router.get("/tool-logs")
+async def get_tool_call_logs(limit: int = Query(50, ge=1, le=100)):
+    """실시간 도구 호출 로그 조회"""
+    from jinxus.agents.state_tracker import get_state_tracker
+
+    tracker = get_state_tracker()
+    logs = tracker.get_tool_call_logs(limit=limit)
+
+    return {"logs": logs, "total": len(logs)}

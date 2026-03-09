@@ -1,14 +1,12 @@
 #!/bin/bash
 
 # JINXUS Daemon 관리 스크립트
+# Linux (systemd) / macOS (launchctl) 크로스 플랫폼 지원
 # 사용법: ./daemon.sh [start|stop|restart|status|install|uninstall|logs]
 
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PLIST_NAME="com.jinxus.server"
-PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_NAME}.plist"
-SOURCE_PLIST="$SCRIPT_DIR/daemon/jinxus.plist"
 LOG_FILE="/tmp/jinxus_daemon.log"
 ERROR_LOG="/tmp/jinxus_daemon_error.log"
 
@@ -29,56 +27,96 @@ print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
 }
 
+# OS 감지
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    else
+        echo "linux"
+    fi
+}
+
+OS=$(detect_os)
+
+# macOS 설정
+PLIST_NAME="com.jinxus.server"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_NAME}.plist"
+SOURCE_PLIST="$SCRIPT_DIR/daemon/jinxus.plist"
+
+# Linux systemd 설정
+SERVICE_NAME="jinxus"
+SERVICE_FILE="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
+
+ensure_docker() {
+    if ! docker ps --format '{{.Names}}' | grep -q 'jinxus-redis'; then
+        print_warning "Redis 컨테이너 시작 중..."
+        if docker ps -a --format '{{.Names}}' | grep -q 'jinxus-redis'; then
+            docker start jinxus-redis > /dev/null
+        else
+            docker run -d --name jinxus-redis -p 16379:6379 redis:7-alpine > /dev/null
+        fi
+    fi
+
+    if ! docker ps --format '{{.Names}}' | grep -q 'jinxus-qdrant'; then
+        print_warning "Qdrant 컨테이너 시작 중..."
+        if docker ps -a --format '{{.Names}}' | grep -q 'jinxus-qdrant'; then
+            docker start jinxus-qdrant > /dev/null
+        else
+            docker run -d --name jinxus-qdrant -p 16333:6333 qdrant/qdrant > /dev/null
+        fi
+    fi
+}
+
 case "$1" in
     start)
         echo "JINXUS Daemon 시작 중..."
+        ensure_docker
 
-        # Docker 컨테이너 확인
-        if ! docker ps --format '{{.Names}}' | grep -q 'jinxus-redis'; then
-            print_warning "Redis 컨테이너 시작 중..."
-            if docker ps -a --format '{{.Names}}' | grep -q 'jinxus-redis'; then
-                docker start jinxus-redis > /dev/null
+        if [[ "$OS" == "macos" ]]; then
+            if [ -f "$PLIST_PATH" ]; then
+                launchctl load "$PLIST_PATH" 2>/dev/null || true
+                launchctl start "$PLIST_NAME" 2>/dev/null || true
             else
-                docker run -d --name jinxus-redis -p 16379:6379 redis:7-alpine > /dev/null
-            fi
-        fi
-
-        if ! docker ps --format '{{.Names}}' | grep -q 'jinxus-qdrant'; then
-            print_warning "Qdrant 컨테이너 시작 중..."
-            if docker ps -a --format '{{.Names}}' | grep -q 'jinxus-qdrant'; then
-                docker start jinxus-qdrant > /dev/null
-            else
-                docker run -d --name jinxus-qdrant -p 16333:6333 qdrant/qdrant > /dev/null
-            fi
-        fi
-
-        # launchctl로 시작
-        if [ -f "$PLIST_PATH" ]; then
-            launchctl load "$PLIST_PATH" 2>/dev/null || true
-            launchctl start "$PLIST_NAME" 2>/dev/null || true
-            sleep 3
-
-            if curl -s http://localhost:19000/status > /dev/null 2>&1; then
-                print_status "JINXUS Daemon 시작됨 (포트 19000)"
-            else
-                print_warning "서버 시작 중... 잠시 후 확인"
+                print_error "Daemon 설치되지 않음. './daemon.sh install' 먼저 실행"
+                exit 1
             fi
         else
-            print_error "Daemon 설치되지 않음. './daemon.sh install' 먼저 실행"
-            exit 1
+            if [ -f "$SERVICE_FILE" ]; then
+                systemctl --user start "$SERVICE_NAME"
+            else
+                print_error "Daemon 설치되지 않음. './daemon.sh install' 먼저 실행"
+                exit 1
+            fi
+        fi
+
+        sleep 3
+        if curl -s http://localhost:19000/status > /dev/null 2>&1; then
+            print_status "JINXUS Daemon 시작됨 (포트 19000)"
+        else
+            print_warning "서버 시작 중... 잠시 후 확인"
         fi
         ;;
 
     stop)
         echo "JINXUS Daemon 중지 중..."
-        if [ -f "$PLIST_PATH" ]; then
-            launchctl stop "$PLIST_NAME" 2>/dev/null || true
-            launchctl unload "$PLIST_PATH" 2>/dev/null || true
-            print_status "JINXUS Daemon 중지됨"
+
+        if [[ "$OS" == "macos" ]]; then
+            if [ -f "$PLIST_PATH" ]; then
+                launchctl stop "$PLIST_NAME" 2>/dev/null || true
+                launchctl unload "$PLIST_PATH" 2>/dev/null || true
+                print_status "JINXUS Daemon 중지됨"
+            else
+                pkill -f "python.*main.py" 2>/dev/null || true
+                print_status "JINXUS 프로세스 종료됨"
+            fi
         else
-            # 직접 프로세스 종료
-            pkill -f "python.*main.py" 2>/dev/null || true
-            print_status "JINXUS 프로세스 종료됨"
+            if [ -f "$SERVICE_FILE" ]; then
+                systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+                print_status "JINXUS Daemon 중지됨"
+            else
+                pkill -f "python.*main.py" 2>/dev/null || true
+                print_status "JINXUS 프로세스 종료됨"
+            fi
         fi
         ;;
 
@@ -90,6 +128,10 @@ case "$1" in
 
     status)
         echo "JINXUS Daemon 상태:"
+        echo ""
+
+        # OS 표시
+        echo "플랫폼: $OS"
         echo ""
 
         # 프로세스 확인 (포트 19000 기준)
@@ -116,29 +158,78 @@ case "$1" in
 
         # Daemon 설치 여부
         echo ""
-        if [ -f "$PLIST_PATH" ]; then
-            print_status "Daemon 설치됨"
+        if [[ "$OS" == "macos" ]]; then
+            if [ -f "$PLIST_PATH" ]; then
+                print_status "Daemon 설치됨 (macOS launchctl)"
+            else
+                print_warning "Daemon 미설치 ('./daemon.sh install'로 설치)"
+            fi
         else
-            print_warning "Daemon 미설치 ('./daemon.sh install'로 설치)"
+            if [ -f "$SERVICE_FILE" ]; then
+                print_status "Daemon 설치됨 (Linux systemd)"
+                systemctl --user status "$SERVICE_NAME" --no-pager 2>/dev/null || true
+            else
+                print_warning "Daemon 미설치 ('./daemon.sh install'로 설치)"
+            fi
         fi
         ;;
 
     install)
-        echo "JINXUS Daemon 설치 중..."
+        echo "JINXUS Daemon 설치 중... (플랫폼: $OS)"
 
-        # LaunchAgents 디렉토리 생성
-        mkdir -p "$HOME/Library/LaunchAgents"
+        if [[ "$OS" == "macos" ]]; then
+            # macOS: LaunchAgents
+            mkdir -p "$HOME/Library/LaunchAgents"
 
-        # plist 파일 복사 및 경로 업데이트
-        sed "s|/Users/jinsookim/Desktop/JINXUS|$SCRIPT_DIR|g" "$SOURCE_PLIST" > "$PLIST_PATH"
+            if [ -f "$SOURCE_PLIST" ]; then
+                sed "s|/Users/jinsookim/Desktop/JINXUS|$SCRIPT_DIR|g" "$SOURCE_PLIST" > "$PLIST_PATH"
+                chmod 644 "$PLIST_PATH"
+                print_status "Daemon 설치 완료 (macOS launchctl)"
+            else
+                print_error "plist 템플릿 파일 없음: $SOURCE_PLIST"
+                exit 1
+            fi
+        else
+            # Linux: systemd user service
+            mkdir -p "$HOME/.config/systemd/user"
 
-        # 권한 설정
-        chmod 644 "$PLIST_PATH"
+            # Python 경로 탐색
+            PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+            if [ ! -f "$PYTHON_BIN" ]; then
+                PYTHON_BIN=$(which python3)
+            fi
 
-        print_status "Daemon 설치 완료"
+            cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=JINXUS AI Assistant Backend
+After=network.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=$SCRIPT_DIR
+ExecStart=$PYTHON_BIN main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:$LOG_FILE
+StandardError=append:$ERROR_LOG
+Environment=PATH=$SCRIPT_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-$SCRIPT_DIR/.env
+
+[Install]
+WantedBy=default.target
+EOF
+
+            systemctl --user daemon-reload
+            systemctl --user enable "$SERVICE_NAME"
+            print_status "Daemon 설치 완료 (Linux systemd)"
+            echo ""
+            echo "부팅 시 자동 시작을 위해 다음 명령 실행:"
+            echo "  sudo loginctl enable-linger $USER"
+        fi
+
         echo ""
         echo "사용법:"
-        echo "  ./daemon.sh start   - 시작 (부팅 시 자동 시작)"
+        echo "  ./daemon.sh start   - 시작"
         echo "  ./daemon.sh stop    - 중지"
         echo "  ./daemon.sh status  - 상태 확인"
         echo "  ./daemon.sh logs    - 로그 보기"
@@ -150,19 +241,37 @@ case "$1" in
         # 먼저 중지
         $0 stop 2>/dev/null || true
 
-        # plist 파일 삭제
-        if [ -f "$PLIST_PATH" ]; then
-            rm -f "$PLIST_PATH"
-            print_status "Daemon 제거 완료"
+        if [[ "$OS" == "macos" ]]; then
+            if [ -f "$PLIST_PATH" ]; then
+                rm -f "$PLIST_PATH"
+                print_status "Daemon 제거 완료 (macOS)"
+            else
+                print_warning "이미 제거됨"
+            fi
         else
-            print_warning "이미 제거됨"
+            if [ -f "$SERVICE_FILE" ]; then
+                systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
+                rm -f "$SERVICE_FILE"
+                systemctl --user daemon-reload
+                print_status "Daemon 제거 완료 (Linux systemd)"
+            else
+                print_warning "이미 제거됨"
+            fi
         fi
         ;;
 
     logs)
         echo "JINXUS Daemon 로그:"
         echo "===================="
+
+        if [[ "$OS" == "linux" ]] && [ -f "$SERVICE_FILE" ]; then
+            # systemd 로그 우선 표시
+            journalctl --user -u "$SERVICE_NAME" -n 100 --no-pager 2>/dev/null || true
+        fi
+
         if [ -f "$LOG_FILE" ]; then
+            echo ""
+            echo "--- 파일 로그 ($LOG_FILE) ---"
             tail -100 "$LOG_FILE"
         else
             echo "(로그 파일 없음)"
@@ -177,7 +286,7 @@ case "$1" in
         ;;
 
     *)
-        echo "JINXUS Daemon 관리"
+        echo "JINXUS Daemon 관리 (플랫폼: $OS)"
         echo ""
         echo "사용법: $0 [command]"
         echo ""

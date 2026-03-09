@@ -27,6 +27,7 @@ class JinxLoop:
         settings = get_settings()
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = settings.claude_model
+        self._fast_model = settings.claude_fast_model
         self._memory = get_jinx_memory()
         self._threshold = settings.auto_improve_threshold
         self._reflect_every_n = settings.reflect_every_n_tasks
@@ -102,8 +103,14 @@ class JinxLoop:
         recent_failures = await self._memory.get_recent_failures(agent_name, limit=5)
         feedback_list = await self._memory.get_agent_feedback(agent_name, limit=10)
 
-        # 3. 실패 패턴 분석
+        # 3. 실패 패턴 분석 (키워드 + LLM 자동 학습)
         failure_patterns = self._analyze_failure_patterns(recent_failures, feedback_list)
+
+        # 3.5. LLM 기반 실패 자동 학습 (실패가 충분히 쌓인 경우)
+        auto_learning = await self.analyze_and_learn_failures(agent_name)
+        if auto_learning and auto_learning.get("prompt_additions"):
+            failure_patterns.extend(auto_learning["prompt_additions"])
+            logger.info(f"[JinxLoop] {agent_name}: 자동 학습 패턴 {len(auto_learning['prompt_additions'])}개 추가")
 
         # 4. 개선안 생성
         improvement = await self._generate_improvement(
@@ -268,7 +275,7 @@ class JinxLoop:
     def _analyze_failure_patterns(
         self, failures: list[dict], feedback: list[dict]
     ) -> list[str]:
-        """실패 패턴 분석"""
+        """실패 패턴 분석 (키워드 기반 + 빈도 분석)"""
         patterns = []
 
         # 실패 이유 수집
@@ -277,19 +284,91 @@ class JinxLoop:
         # 피드백 코멘트 수집
         comments = [f.get("comment", "") for f in feedback if f.get("comment") and f.get("rating", 5) <= 3]
 
-        # 패턴 추출 (간단한 구현)
         all_text = " ".join(failure_reasons + comments).lower()
 
-        if "에러" in all_text or "error" in all_text:
-            patterns.append("에러 핸들링 부족")
-        if "느" in all_text or "slow" in all_text:
-            patterns.append("실행 속도 문제")
-        if "틀" in all_text or "wrong" in all_text or "incorrect" in all_text:
-            patterns.append("결과 정확도 문제")
-        if "부족" in all_text or "missing" in all_text:
-            patterns.append("불완전한 응답")
+        # 패턴 카테고리별 키워드 매핑
+        pattern_map = {
+            "에러 핸들링 부족": ["에러", "error", "exception", "traceback", "실패"],
+            "실행 속도 문제": ["느", "slow", "timeout", "시간초과", "오래"],
+            "결과 정확도 문제": ["틀", "wrong", "incorrect", "잘못", "부정확"],
+            "불완전한 응답": ["부족", "missing", "불완전", "더 필요", "빠진"],
+            "도구 선택 오류": ["도구", "tool", "mcp", "filesystem", "url"],
+            "할루시네이션": ["지어", "fabricat", "없는 정보", "존재하지 않"],
+            "컨텍스트 이해 부족": ["이해", "문맥", "context", "의도", "잘못 이해"],
+        }
+
+        for pattern, keywords in pattern_map.items():
+            if any(k in all_text for k in keywords):
+                patterns.append(pattern)
+
+        # 도구 실패 빈도 분석
+        tool_failures = [f for f in failures if "tool" in str(f.get("failure_reason", "")).lower()]
+        if len(tool_failures) >= 2:
+            patterns.append(f"반복적 도구 실패 ({len(tool_failures)}회)")
+
+        # 연속 실패 감지
+        if len(failures) >= 3:
+            patterns.append(f"연속 실패 감지 ({len(failures)}건)")
 
         return patterns if patterns else ["일반적인 품질 개선 필요"]
+
+    async def analyze_and_learn_failures(self, agent_name: str) -> Optional[dict]:
+        """실패 패턴 자동 학습 — 주기적으로 호출되어 실패 패턴을 분석하고 프롬프트에 반영
+
+        Returns:
+            학습 결과 또는 None (학습 불필요 시)
+        """
+        recent_failures = await self._memory.get_recent_failures(agent_name, limit=10)
+
+        if len(recent_failures) < 3:
+            return None  # 데이터 부족
+
+        # 실패 패턴 LLM 분석
+        failure_texts = "\n".join(
+            f"- 작업: {f.get('instruction', 'N/A')[:100]}\n  실패: {f.get('failure_reason', 'N/A')[:200]}"
+            for f in recent_failures[:5]
+        )
+
+        analysis_prompt = f"""다음 에이전트({agent_name})의 최근 실패 기록을 분석해.
+
+{failure_texts}
+
+1. 반복되는 실패 패턴이 있는가?
+2. 프롬프트에 추가할 구체적 지침을 1-3개 제안해줘.
+
+JSON으로 응답:
+```json
+{{
+  "has_pattern": true/false,
+  "pattern_summary": "패턴 요약",
+  "prompt_additions": ["추가할 지침1", "추가할 지침2"]
+}}
+```"""
+
+        try:
+            response = self._client.messages.create(
+                model=self._fast_model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": analysis_prompt}],
+            )
+            import re
+            text = response.content[0].text
+            json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group(1))
+            else:
+                analysis = json.loads(text)
+
+            if analysis.get("has_pattern") and analysis.get("prompt_additions"):
+                logger.info(
+                    f"[JinxLoop] {agent_name} 실패 패턴 학습: {analysis['pattern_summary']}"
+                )
+                return analysis
+
+        except Exception as e:
+            logger.warning(f"[JinxLoop] 실패 분석 오류: {e}")
+
+        return None
 
     async def _generate_improvement(
         self,
@@ -519,7 +598,7 @@ JSON으로 응답해:
 
         try:
             eval_response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",  # 평가는 sonnet으로
+                model=self._fast_model,  # 평가는 경량 모델로
                 max_tokens=50,
                 messages=[{"role": "user", "content": eval_prompt}],
             )

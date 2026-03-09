@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, RefreshCw, Filter, Trash2, CheckSquare, Square, AlertTriangle } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, RefreshCw, Filter, Trash2, CheckSquare, Square, AlertTriangle, ChevronDown, ChevronUp, Wrench } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { logsApi, type TaskLog } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
+import { formatDateTime } from '@/lib/utils';
 
 export default function LogsTab() {
   const { agents, loadAgents } = useAppStore();
@@ -16,6 +17,7 @@ export default function LogsTab() {
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupDays, setCleanupDays] = useState(7);
   const [keepFailures, setKeepFailures] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (agents.length === 0) loadAgents();
@@ -39,18 +41,6 @@ export default function LogsTab() {
   useEffect(() => {
     fetchLogs();
   }, [filter]);
-
-  const formatTime = (isoString: string) => {
-    const date = new Date(isoString);
-    return date.toLocaleString('ko-KR', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: 'Asia/Seoul',
-    });
-  };
 
   const formatDuration = (ms: number) => {
     if (ms < 1000) return `${ms}ms`;
@@ -205,77 +195,140 @@ export default function LogsTab() {
             작업 기록이 없습니다
           </div>
         ) : (
-          logs.map((log) => (
-            <div
-              key={log.id}
-              className={`bg-dark-card border rounded-xl p-4 transition-colors ${
-                selectedIds.has(log.id)
-                  ? 'border-primary bg-primary/5'
-                  : 'border-dark-border hover:border-zinc-600'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-4">
-                {/* 체크박스 */}
-                <button
-                  onClick={() => toggleSelect(log.id)}
-                  className="flex-shrink-0 mt-0.5 text-zinc-500 hover:text-zinc-300"
-                >
-                  {selectedIds.has(log.id) ? (
-                    <CheckSquare size={18} className="text-primary" />
-                  ) : (
-                    <Square size={18} />
-                  )}
-                </button>
+          logs.map((log) => {
+            const isExpanded = expandedId === log.id;
+            const hasDetails = (log.tool_calls && log.tool_calls.length > 0) || log.output;
 
-                {/* 상태 아이콘 */}
-                <div className="flex-shrink-0 mt-0.5">
-                  {log.success ? (
-                    <CheckCircle size={20} className="text-green-400" />
-                  ) : (
-                    <XCircle size={20} className="text-red-400" />
-                  )}
-                </div>
-
-                {/* 내용 */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-medium px-2 py-0.5 rounded bg-violet-600/20 text-violet-400">
-                      {log.agent_name}
-                    </span>
-                    <span className="text-xs text-zinc-500">
-                      {formatTime(log.created_at)}
-                    </span>
-                  </div>
-                  <p className="text-sm text-zinc-300 line-clamp-2">
-                    {log.instruction}
-                  </p>
-                  {log.failure_reason && (
-                    <p className="mt-1 text-xs text-red-400 line-clamp-1">
-                      실패: {log.failure_reason}
-                    </p>
-                  )}
-                </div>
-
-                {/* 메타 정보 + 삭제 */}
-                <div className="flex-shrink-0 text-right">
-                  <div className="flex items-center gap-1 text-xs text-zinc-500">
-                    <Clock size={12} />
-                    <span>{formatDuration(log.duration_ms)}</span>
-                  </div>
-                  <div className="text-xs text-zinc-500 mt-1">
-                    {(log.success_score * 100).toFixed(0)}%
-                  </div>
+            return (
+              <div
+                key={log.id}
+                className={`bg-dark-card border rounded-xl transition-colors ${
+                  selectedIds.has(log.id)
+                    ? 'border-primary bg-primary/5'
+                    : 'border-dark-border hover:border-zinc-600'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-4 p-4">
+                  {/* 체크박스 */}
                   <button
-                    onClick={() => handleDeleteOne(log.id)}
-                    className="mt-2 p-1 rounded hover:bg-red-600/20 text-zinc-500 hover:text-red-400 transition-colors"
-                    title="삭제"
+                    onClick={() => toggleSelect(log.id)}
+                    className="flex-shrink-0 mt-0.5 text-zinc-500 hover:text-zinc-300"
                   >
-                    <Trash2 size={14} />
+                    {selectedIds.has(log.id) ? (
+                      <CheckSquare size={18} className="text-primary" />
+                    ) : (
+                      <Square size={18} />
+                    )}
                   </button>
+
+                  {/* 상태 아이콘 */}
+                  <div className="flex-shrink-0 mt-0.5">
+                    {log.success ? (
+                      <CheckCircle size={20} className="text-green-400" />
+                    ) : (
+                      <XCircle size={20} className="text-red-400" />
+                    )}
+                  </div>
+
+                  {/* 내용 */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-medium px-2 py-0.5 rounded bg-violet-600/20 text-violet-400">
+                        {log.agent_name}
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        {formatDateTime(log.created_at)}
+                      </span>
+                      {log.tool_calls && log.tool_calls.length > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-blue-400">
+                          <Wrench size={11} />
+                          {log.tool_calls.length}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm text-zinc-300 line-clamp-2">
+                      {log.instruction}
+                    </p>
+                    {log.failure_reason && (
+                      <p className="mt-1 text-xs text-red-400 line-clamp-1">
+                        실패: {log.failure_reason}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* 메타 정보 + 삭제 */}
+                  <div className="flex-shrink-0 text-right">
+                    <div className="flex items-center gap-1 text-xs text-zinc-500">
+                      <Clock size={12} />
+                      <span>{formatDuration(log.duration_ms)}</span>
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-1">
+                      {(log.success_score * 100).toFixed(0)}%
+                    </div>
+                    <div className="flex items-center gap-1 mt-2">
+                      {hasDetails && (
+                        <button
+                          onClick={() => setExpandedId(isExpanded ? null : log.id)}
+                          className="p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
+                          title="상세 보기"
+                        >
+                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDeleteOne(log.id)}
+                        className="p-1 rounded hover:bg-red-600/20 text-zinc-500 hover:text-red-400 transition-colors"
+                        title="삭제"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
+
+                {/* 상세 패널 */}
+                {isExpanded && hasDetails && (
+                  <div className="px-4 pb-4 pt-0 border-t border-dark-border mt-0">
+                    <div className="pt-3 space-y-3">
+                      {/* 도구 호출 이력 */}
+                      {log.tool_calls && log.tool_calls.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-zinc-500 uppercase mb-2 flex items-center gap-1.5">
+                            <Wrench size={12} />
+                            호출된 도구 ({log.tool_calls.length})
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {log.tool_calls.map((tool, i) => (
+                              <span
+                                key={i}
+                                className={`text-xs px-2 py-1 rounded-md font-mono ${
+                                  tool.startsWith('mcp__')
+                                    ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
+                                    : 'bg-zinc-700/50 text-zinc-300 border border-zinc-600/30'
+                                }`}
+                              >
+                                {tool}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 출력 내용 */}
+                      {log.output && (
+                        <div>
+                          <p className="text-xs font-medium text-zinc-500 uppercase mb-2">출력</p>
+                          <pre className="text-xs text-zinc-400 bg-zinc-900/50 rounded-lg p-3 whitespace-pre-wrap break-words max-h-40 overflow-y-auto border border-zinc-700/50">
+                            {log.output}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

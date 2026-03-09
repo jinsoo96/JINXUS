@@ -67,7 +67,7 @@ class ShortTermMemory:
         key = self._session_meta_key(session_id)
         exists = await self._redis.exists(key)
         if not exists:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now().isoformat()
             await self._redis.hset(key, mapping={
                 "created_at": now,
                 "last_active": now,
@@ -79,7 +79,7 @@ class ShortTermMemory:
         """세션 활성 시간 갱신 + iteration 카운터 증가"""
         await self.connect()
         key = self._session_meta_key(session_id)
-        now = datetime.utcnow().isoformat()
+        now = datetime.now().isoformat()
         await self._redis.hset(key, "last_active", now)
         await self._redis.hincrby(key, "iteration_count", 1)
         await self._redis.expire(key, self._ttl)
@@ -100,7 +100,7 @@ class ShortTermMemory:
         message = {
             "role": role,
             "content": content,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "metadata": metadata or {},
         }
 

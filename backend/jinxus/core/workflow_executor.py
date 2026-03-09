@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from jinxus.core.tool_graph import ToolGraph, Workflow, ToolNode, EdgeType, get_tool_graph
+from jinxus.core.tool_graph import ToolGraph, Workflow, ToolNode, EdgeType, get_tool_graph, save_tool_graph
 
 logger = logging.getLogger(__name__)
 
@@ -301,3 +301,9 @@ class WorkflowExecutor:
                 ))
         except Exception as e:
             logger.debug(f"워크플로우 패턴 저장 실패: {e}")
+
+        # 학습된 가중치를 디스크에 저장
+        try:
+            save_tool_graph()
+        except Exception as e:
+            logger.debug(f"ToolGraph 가중치 저장 실패: {e}")

@@ -27,7 +27,10 @@ AGENT_COLLECTIONS = {
     "JX_OPS": "jinxus_ops_memory",
 }
 
-VECTOR_SIZE = 1536  # text-embedding-3-small 차원
+from jinxus.config import get_settings as _get_settings
+
+# settings에서 임베딩 차원 가져오기
+VECTOR_SIZE = _get_settings().embedding_dimensions
 
 
 class LongTermMemory:
@@ -78,8 +81,9 @@ class LongTermMemory:
         if not self._openai:
             raise RuntimeError("OpenAI client not initialized. Check OPENAI_API_KEY.")
 
+        settings = _get_settings()
         response = self._openai.embeddings.create(
-            model="text-embedding-3-small", input=text
+            model=settings.embedding_model, input=text
         )
         return response.data[0].embedding
 
@@ -117,7 +121,7 @@ class LongTermMemory:
             "key_learnings": key_learnings,
             "importance_score": importance_score,
             "prompt_version": prompt_version,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
 
         self._client.upsert(
@@ -206,7 +210,7 @@ class LongTermMemory:
 
         try:
             from datetime import timedelta
-            cutoff_date = (datetime.utcnow() - timedelta(days=max_days)).isoformat()
+            cutoff_date = (datetime.now() - timedelta(days=max_days)).isoformat()
 
             # scroll API로 모든 포인트 조회 후 조건에 맞는 것 삭제
             offset = None

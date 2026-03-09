@@ -107,6 +107,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize scheduler: {e}")
 
+    # 메모리 자동 정리 (6시간 간격)
+    memory_cleanup_task = None
+    try:
+        async def _periodic_memory_prune():
+            import asyncio
+            from jinxus.memory.long_term import get_long_term_memory, AGENT_COLLECTIONS
+            while True:
+                await asyncio.sleep(6 * 3600)  # 6시간
+                try:
+                    ltm = get_long_term_memory()
+                    total_deleted = 0
+                    for agent_name in AGENT_COLLECTIONS:
+                        deleted = ltm.prune_low_quality(agent_name, importance_threshold=0.3, max_days=30)
+                        total_deleted += deleted
+                    if total_deleted > 0:
+                        logger.info(f"메모리 자동 정리: {total_deleted}개 삭제")
+                except Exception as e:
+                    logger.warning(f"메모리 자동 정리 실패: {e}")
+
+        memory_cleanup_task = asyncio.create_task(_periodic_memory_prune())
+        print("Memory auto-prune scheduled (every 6h)")
+    except Exception as e:
+        logger.debug(f"Memory prune schedule failed: {e}")
+
     yield
 
     # 종료 시
@@ -122,6 +146,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to shutdown scheduler: {e}")
 
+    if memory_cleanup_task:
+        memory_cleanup_task.cancel()
     if telegram_task:
         telegram_task.cancel()
     print("JINXUS shutting down")
@@ -134,7 +160,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="JINXUS",
         description="Just Intelligent Nexus, eXecutes Under Supremacy - 진수의 AI 비서 시스템",
-        version="1.3.0",
+        version="1.5.0",
         lifespan=lifespan,
         debug=settings.jinxus_debug,
     )
@@ -166,7 +192,7 @@ def create_app() -> FastAPI:
         return {
             "name": "JINXUS",
             "tagline": "명령만 해. 나머지는 내가 다 한다.",
-            "version": "1.3.0",
+            "version": "1.5.0",
             "status": "running",
         }
 

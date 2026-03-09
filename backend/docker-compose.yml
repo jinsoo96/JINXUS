@@ -21,6 +21,12 @@ services:
       qdrant:
         condition: service_healthy
     restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./data:/app/data
       - ./prompts:/app/prompts

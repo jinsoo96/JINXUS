@@ -91,11 +91,11 @@ echo "🚀 JINXUS 서버 시작 중..."
 tmux new-session -d -s jinxus -n backend "cd $SCRIPT_DIR/backend && python3 main.py"
 
 # 프론트엔드 - 이미 실행 중인지 확인
-if lsof -i :1818 > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠ 프론트엔드 이미 실행 중 (포트 1818)${NC}"
+if lsof -i :5000 > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ 프론트엔드 이미 실행 중 (포트 5000)${NC}"
 else
     # 프론트엔드 윈도우 추가
-    tmux new-window -t jinxus -n frontend "cd $SCRIPT_DIR/frontend && npm run dev"
+    tmux new-window -t jinxus -n frontend "cd $SCRIPT_DIR/frontend && npx next dev -p 5000 -H 0.0.0.0"
     echo -e "${GREEN}✓ 프론트엔드 시작됨${NC}"
 fi
 
@@ -116,10 +116,18 @@ echo "════════════════════════�
 echo -e "${GREEN}✓ JINXUS 서버 시작 완료!${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo "📌 접속 정보:"
-echo "   - 웹 UI: http://localhost:1818"
+echo "📌 접속 정보 (로컬):"
+echo "   - 대시보드: http://localhost:5000"
 echo "   - API: http://localhost:19000"
 echo "   - API 문서: http://localhost:19000/docs"
+echo ""
+echo "📌 접속 정보 (원격 - Tailscale):"
+echo "   - 대시보드: http://100.75.83.105:5000"
+echo "   - API: http://100.75.83.105:19000"
+echo ""
+echo "📌 접속 정보 (같은 네트워크):"
+echo "   - 대시보드: http://192.168.0.102:5000"
+echo "   - API: http://192.168.0.102:19000"
 echo ""
 echo "📌 tmux 명령어:"
 echo "   - 세션 붙기: tmux attach -t jinxus"

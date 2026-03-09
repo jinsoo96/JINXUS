@@ -17,6 +17,7 @@
     /tasks    - 백그라운드 작업 목록
     /cancel   - 작업 취소
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -53,7 +54,7 @@ class TelegramBot:
         return user_id == self._authorized_user_id
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """일반 메시지 처리 → JINXUS_CORE 실행"""
+        """일반 메시지 처리 → JINXUS_CORE 실행 (비동기, 폴링 블록 방지)"""
         if not update.effective_user or not update.message:
             return
 
@@ -64,11 +65,25 @@ class TelegramBot:
 
         user_input = update.message.text
         chat_id = update.effective_chat.id
+        bot = context.bot
 
-        # 처리 중 메시지
-        thinking_msg = await context.bot.send_message(
-            chat_id, "처리 중입니다, 주인님..."
-        )
+        # 백그라운드에서 실행 (폴링 블록 방지)
+        asyncio.create_task(self._process_message(bot, chat_id, user_input))
+
+    async def _process_message(self, bot, chat_id: int, user_input: str):
+        """메시지 처리 (백그라운드 태스크)"""
+        # 타이핑 인디케이터
+        typing_active = True
+
+        async def keep_typing():
+            while typing_active:
+                try:
+                    await bot.send_chat_action(chat_id, "typing")
+                except Exception:
+                    pass
+                await asyncio.sleep(4)
+
+        typing_task = asyncio.create_task(keep_typing())
 
         try:
             if not self._orchestrator:
@@ -83,17 +98,20 @@ class TelegramBot:
 
             response = result["response"]
 
-            # 처리 중 메시지 삭제
-            await thinking_msg.delete()
+            # 타이핑 중단
+            typing_active = False
+            typing_task.cancel()
 
-            # 텔레그램 4096자 제한 처리 (plain text로 전송 - 마크다운 파싱 에러 방지)
+            # 텔레그램 4096자 제한 처리
             for i in range(0, len(response), 4000):
                 chunk = response[i:i+4000]
-                await context.bot.send_message(chat_id, chunk)
+                await bot.send_message(chat_id, chunk)
 
         except Exception as e:
+            typing_active = False
+            typing_task.cancel()
             logger.error(f"Telegram message handling error: {e}")
-            await thinking_msg.edit_text(f"오류가 발생했습니다: {str(e)[:200]}")
+            await bot.send_message(chat_id, f"오류가 발생했습니다: {str(e)[:200]}")
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/start 명령"""

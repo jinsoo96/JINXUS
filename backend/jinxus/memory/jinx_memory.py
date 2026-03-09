@@ -135,8 +135,9 @@ class JinxMemory:
         failure_reason: Optional[str] = None,
         prompt_version: Optional[str] = None,
         output: Optional[str] = None,
+        tool_calls: Optional[list[str]] = None,
     ) -> str:
-        """작업 통계 로깅 (A/B 테스트용 output 포함)"""
+        """작업 통계 로깅 (도구 호출 이력 포함)"""
         return await self._meta.log_task(
             main_task_id=main_task_id,
             agent_name=agent_name,
@@ -147,6 +148,7 @@ class JinxMemory:
             failure_reason=failure_reason,
             prompt_version=prompt_version,
             output=output,
+            tool_calls=tool_calls,
         )
 
     async def get_agent_performance(self, agent_name: str, days: int = 7) -> dict:

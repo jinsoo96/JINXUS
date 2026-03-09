@@ -166,7 +166,7 @@ class BackgroundWorker:
 
         if task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
             task.status = TaskStatus.CANCELLED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now()
 
             # 자율 실행 중이면 runner도 취소
             runner = self._autonomous_runners.get(task_id)
@@ -274,7 +274,7 @@ class BackgroundWorker:
     async def _execute_task(self, task: BackgroundTask, worker_id: int):
         """작업 실행"""
         task.status = TaskStatus.RUNNING
-        task.started_at = datetime.utcnow()
+        task.started_at = datetime.now()
 
         logger.info(f"[Worker-{worker_id}] 작업 시작: {task.task_id[:8]} (autonomous={task.autonomous})")
 
@@ -316,7 +316,7 @@ class BackgroundWorker:
 
         except Exception as e:
             task.status = TaskStatus.FAILED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now()
             task.error = str(e)
 
             # 상태 영속화: failed
@@ -351,7 +351,7 @@ class BackgroundWorker:
         )
 
         task.status = TaskStatus.COMPLETED
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now()
         task.result = result.get("response", "")
         task.attachments = self._extract_attachments(result)
 
@@ -394,7 +394,7 @@ class BackgroundWorker:
             )
 
             task.status = TaskStatus.COMPLETED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now()
             task.progress = 100
 
             # 결과 요약 구성

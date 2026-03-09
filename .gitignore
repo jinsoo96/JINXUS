@@ -53,5 +53,5 @@ server.log
 frontend.log
 nohup.out
 
-# Blueprint (내부 문서)
-JINXUS_BLUEPRINT.md
+# 내부 문서
+docs/

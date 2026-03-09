@@ -1,6 +1,214 @@
 # JINXUS 개발 현황
 
-## 버전 v1.4.0 (진행 중)
+## 버전 v1.5.0 (진행 중)
+
+### 2026-03-09 대화 맥락 + 인프라 강화
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| CTX-1 | 대화 맥락 유지 | 완료 | 서브에이전트 위임 시 최근 대화 4건을 instruction에 자동 포함. decompose 프롬프트에 "self-contained instruction" 지침 추가 |
+| CTX-2 | 서브에이전트 신원 노출 방지 | 완료 | `_strip_agent_identity()` 메서드 추가. 단일 결과도 에이전트명(JX_*) → JINXUS 치환, MCP/기술 용어 자동 제거 |
+| CTX-3 | 기술적 에러 메시지 차단 | 완료 | JX_RESEARCHER 프롬프트에 내부 도구명/MCP 설정 노출 금지 지침 추가. 도구 불가 시 간단 안내로 대체 |
+| INF-1 | Docker 멀티스테이지 빌드 | 완료 | Dockerfile 2-stage 구조: builder(gcc, pip wheel, npm) → runtime(wheels 복사, Node.js, Playwright만 포함). 빌드 도구 제거 |
+| INF-2 | jinxus healthcheck | 완료 | docker-compose.yml에 `curl -f http://localhost:19000/` healthcheck 추가 (10s interval, 30s start_period) |
+| INF-3 | task.py Redis 마이그레이션 | 완료 | 인메모리 dict → Redis 해시(`jinxus:tasks:{id}`) + sorted set 인덱스. TaskStore 클래스. TTL 자동 만료 |
+| INF-4 | Tool Policy API (B-6) | 완료 | `GET /status/tool-policies`, `GET /status/tool-policies/{agent}` 엔드포인트 추가. DynamicToolExecutor에 이미 통합 확인 |
+| INF-5 | 실시간 도구 호출 로그 | 완료 | state_tracker에 `log_tool_call()` 추가, DynamicToolExecutor에서 자동 기록. `GET /status/tool-logs` API. 프론트엔드 ToolsTab에 "도구 호출 로그" + "정책" 서브탭 추가 (5초 자동갱신) |
+| INF-6 | 버전 하드코딩 수정 | 완료 | server.py root 엔드포인트 "1.3.0" → "1.5.0" |
+
+### 2026-03-09 시스템 안정성 + UX 개선
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| H-1 | Observability 메트릭 | 완료 | core/metrics.py: 에이전트/도구/캐시 실행 메트릭 인메모리 수집. `/status/metrics` API 추가. DynamicToolExecutor + ResponseCache에 자동 기록 |
+| H-2 | API 재시도 로직 | 완료 | 프론트엔드 apiCall()에 exponential backoff 추가 (502/503/504/408/429 + 네트워크 에러). 최대 2회 재시도 |
+| H-3 | MCP 스타트업 보장 | 이미해결 | orchestrator.initialize()에서 이미 `await register_mcp_tools()` 호출 중. 스타트업 보장됨 |
+| H-5 | 에러 토스트 통일 | 완료 | DashboardTab, GraphTab, SettingsTab(4곳), ToolsTab(7곳)의 catch 블록에 toast.error 추가 |
+| M-1 | 비활성 탭 폴링 중지 | 완료 | DashboardTab, GraphTab의 setInterval에 `document.visibilityState === 'visible'` 체크 추가 |
+| M-2 | 메모리 자동 정리 | 완료 | server.py lifespan에 6시간 주기 벡터 메모리 자동 프루닝 (importance < 0.3 + 30일 초과) |
+| M-3 | 임베딩 모델 설정화 | 완료 | settings에 embedding_model/embedding_dimensions 추가, long_term.py에서 동적 참조. 하드코딩 제거 |
+| M-5 | MCP 자동 재연결 | 완료 | MCPClient.call_tool()에서 세션 없으면 자동 재연결 1회 시도. 연결 끊김 감지 시 세션 제거 → 다음 호출에서 재연결 |
+| M-6 | 상태색상 중복코드 제거 | 완료 | lib/utils.ts에 getAgentStatusColor/getAgentStatusText/getTaskStatusColor 추출. DashboardTab, TasksDropdown에서 참조 |
+| M-7 | 접근성 개선 | 완료 | MemoryTab select/input, GraphTab select에 aria-label 추가 |
+| H-1+ | 헬스체크 강화 | 완료 | /status/health에 Redis/Qdrant 연결 상태, uptime 포함 |
+
+---
+
+## 버전 v1.4.0
+
+### 2026-03-09 GitHub 도구 수정 + 에이전트 협업 시스템
+
+#### GitHub 도구 수정
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| GH-1 | MCP GitHub deprecated 대응 | 완료 | `@modelcontextprotocol/server-github`가 deprecated되어 "Unknown action: unsupported_request" 반환. Tool Policy에서 `mcp:github:*` 차단, `github_agent` (PyGithub REST API)로 대체 |
+| GH-2 | github_agent JX_RESEARCHER 허용 | 완료 | `allowed_agents`에 JX_RESEARCHER 추가. Tool Policy whitelist에도 추가 |
+| GH-3 | list_commits action 추가 | 완료 | `github_agent`에 커밋 목록 조회 기능 추가. `repo` 지정 시 해당 레포 커밋, `username`만 지정 시 전체 레포 최근 커밋 조회 |
+| GH-4 | input_schema 추가 | 완료 | Claude tool_use가 올바른 파라미터를 생성하도록 `github_agent`에 JSON Schema 추가 (action enum, repo, username, query 등) |
+| GH-5 | TOOL_SELECTION_GUIDE 업데이트 | 완료 | DynamicToolExecutor 가이드라인에 `github_agent` 사용법 명시, `mcp__github__*` 사용 금지 안내 |
+
+### 2026-03-09 에이전트 협업 시스템
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| COLLAB-1 | 공유 워크스페이스 | 완료 | core/collaboration.py: SharedWorkspace — Redis 기반 에이전트 간 정보 공유 보드. 에이전트가 중간 결과를 게시하면 다른 에이전트가 참조 가능. 자동 만료 (1시간 TTL) |
+| COLLAB-2 | 에이전트 간 직접 위임 | 완료 | AgentCollaborator.request_help() — 실행 중 다른 에이전트에게 직접 도움 요청. BaseAgent.request_help() 메서드 추가. 예: JX_RESEARCHER → JX_CODER |
+| COLLAB-3 | 협업 실행 모드 | 완료 | execution_mode: "collaborative" 추가. 병렬 실행 + 먼저 끝난 에이전트 결과를 워크스페이스에 게시 → 느린 에이전트가 참조. JINXUS_CORE decompose에서 자동 판단 |
+| COLLAB-4 | Communicator 연동 | 완료 | 기존 hr/communicator.py 인프라와 연결. register_agent 시 협업 시스템에도 자동 등록. 위임/결과 메시지 자동 전송 |
+
+### 2026-03-09 8대 핵심 개선 (SSE 실시간 + WebSocket + 캐싱 + 정책엔진 + 요약 + 라우팅 + 자동학습 + 체이닝)
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| IMP-1 | SSE 실시간 도구 호출 이벤트 | 완료 | run_stream()에서 에이전트 실행 중 이벤트를 asyncio.Queue로 실시간 yield. 기존 list 버퍼 방식에서 Queue + create_task로 전환하여 도구 호출 진행 상황이 즉시 프론트엔드에 전달됨 |
+| IMP-2 | WebSocket 채팅 엔드포인트 | 완료 | POST /chat/ws WebSocket 엔드포인트 추가. 양방향 실시간 통신 지원. 취소 요청도 WebSocket으로 처리. SSE 엔드포인트는 하위 호환으로 유지 |
+| IMP-3 | 에이전트 응답 캐싱 | 완료 | core/response_cache.py 신규. Redis 쿼리 해시 → 응답 캐시 (TTL 5분). run_stream() 진입 시 캐시 확인, 성공 응답만 캐싱. 동일 질문 반복 시 LLM 호출 절약 |
+| IMP-4 | Tool Policy Engine (B-6) | 완료 | core/tool_policy.py 신규. 에이전트별 도구 whitelist/blacklist 정책. DynamicToolExecutor에서 자동 필터링. 에이전트별 max_tool_rounds 설정. JX_RESEARCHER는 code_executor 차단, JX_OPS는 전체 허용 등 |
+| IMP-5 | 대화 컨텍스트 LLM 요약 | 완료 | core/context_summarizer.py 신규. SessionFreshness COMPACT 시 단순 truncate 대신 LLM으로 오래된 메시지 요약. 최근 10개 원본 유지 + 이전 대화 요약 1개로 압축. 핵심 컨텍스트 보존 |
+| IMP-6 | 에이전트 라우팅 정확도 강화 | 완료 | _classify_input() 패턴 매칭 대폭 확장. 명령형 동사(만들어/작성해 등), 질문형(어떻게/왜 등), 영어 동사(create/write 등) 추가. 15자 미만 비질문은 자동 chat. LLM 호출 빈도 감소 |
+| IMP-7 | 실패 자동 학습 | 완료 | JinxLoop.analyze_and_learn_failures() 추가. 실패 3건 이상 시 LLM으로 패턴 분석 → 프롬프트 지침 자동 생성. improve_agent() 플로우에 통합. 패턴 분류 7개 카테고리 (도구 선택 오류, 할루시네이션 등) |
+| IMP-8 | 멀티턴 도구 체이닝 | 완료 | DynamicToolExecutor에서 이전 도구 결과가 Claude messages에 자동 포함되어 다음 라운드 컨텍스트로 활용. 도구 체인 로깅 추가 (A→B→C 흐름 추적) |
+
+### 2026-03-09 타임존 수정 + 실행 흐름 뷰어 + 성능 최적화 + 텔레그램 비동기
+
+#### 타임존 KST 통일
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| T-1 | 백엔드 datetime.utcnow() → datetime.now() | 완료 | Docker TZ=Asia/Seoul이므로 now()가 KST. 13개 파일 일괄 변경 (base_agent, jinxus_core, state_tracker, task, daemon, background_worker, orchestrator, session_freshness, manager, long_term, meta_store, short_term, scheduler) |
+| T-2 | 프론트엔드 timeZone: 'Asia/Seoul' | 완료 | MemoryTab, ChatTab 등 toLocaleString에 KST 명시 |
+
+#### 실행 흐름 뷰어 (ThinkingPanel 확장)
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| EF-1 | meta_store tool_calls 컬럼 | 완료 | agent_task_logs 테이블에 tool_calls TEXT 컬럼 추가 (JSON). ALTER TABLE 마이그레이션 |
+| EF-2 | DynamicToolExecutor tool_callback | 완료 | execute()에 tool_callback 파라미터 추가. 도구 호출 전후 콜백 (calling/done/error) |
+| EF-3 | 에이전트 _progress_callback 주입 | 완료 | jinxus_core._run_agent()에서 agent._progress_callback 인스턴스 변수 설정. jx_researcher, jx_coder에서 tool_cb 연결 |
+| EF-4 | logs API main_task_id 필터 | 완료 | GET /logs?main_task_id=xxx 파라미터 추가. 특정 채팅 메시지의 에이전트 실행 로그 조회 |
+| EF-5 | ThinkingPanel 대화 이력 섹션 | 완료 | 로그 패널에 "대화 이력" 섹션 추가. 각 assistant 메시지 클릭 → API로 실행 흐름 조회 (에이전트, 도구, 점수, 소요시간). 데이터 캐시 |
+| EF-6 | logsApi.getLogsByTaskId() | 완료 | 프론트엔드 API 메서드 추가. TaskLog에 main_task_id 필드 추가 |
+
+#### 프론트엔드 성능 최적화
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| P-1 | cache-busting 제거 | 완료 | 모든 GET에 `_cb=timestamp` 붙이던 것 제거. next.config.js 헤더로 이미 no-cache 처리중이라 중복 |
+| P-2 | 폴링 간격 5초 → 15초 | 완료 | POLLING_INTERVAL_MS 변경. 대부분 idle 상태에서 5초는 과도 |
+| P-3 | DashboardTab logsApi.getSummary() 제거 | 완료 | 모든 에이전트 performance 순회 조회하는 무거운 API 제거. systemStatus에서 통계 대체 |
+| P-4 | AgentGraph 자체 폴링 제거 | 완료 | 부모 컴포넌트(AgentsTab)가 이미 폴링 중. 마운트 시 1회만 fetch |
+| P-5 | useCallback 의존성 버그 수정 | 완료 | DashboardTab, GraphTab, AgentsTab — useCallback(fn, [])이 렌더마다 interval 재등록하던 버그. useRef로 안정화 |
+| P-6 | loadAgents 중복 호출 방지 | 완료 | useAppStore에서 agents 이미 로드됐으면 API 재요청 스킵 |
+
+**새로고침 시 API 호출: ~8개 동시 → ~3개로 감소**
+
+#### 텔레그램 비동기 처리
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| TG-1 | 메시지 처리 비동기화 | 완료 | _handle_message를 _handle_message(인증만) + _process_message(실행)으로 분리. asyncio.create_task()로 백그라운드 실행 → 이전 요청이 걸려도 새 메시지 수신 가능 |
+
+#### 채팅 삭제 수정
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| CD-1 | handleClearChat 백엔드 연동 | 완료 | Zustand만 클리어하던 것 → chatApi.deleteSession() 호출 + sessions 목록 갱신. confirm() 제거 |
+
+---
+
+### 2026-03-09 시스템 프롬프트 심층 분석 + 프롬프트 전면 개선
+
+> 참고: leaked-system-prompts (ChatGPT5, Claude 4.1/4.5, Cursor, Devin, Manus, Perplexity, Gemini CLI) 심층 분석 → `sysprompt_ex.md`
+
+#### 프롬프트 개선 (전 에이전트)
+
+| # | 항목 | 적용 대상 | 설명 |
+|---|------|----------|------|
+| P-1 | 정체성 기반 할루시네이션 방지 (Devin 패턴) | 전 에이전트 | 금지 목록("~하지마") → 정체성 서술("너는 ~하지 않는다"). LLM에 더 효과적 |
+| P-2 | 정보 우선순위 계층 (Manus 패턴) | CORE, RESEARCHER | `<information_priority>` 섹션: 도구 결과 > 웹 검색 > 내부 지식. 스니펫 불신 |
+| P-3 | 3회 실패 에스컬레이션 (Cursor/Devin 패턴) | 전 에이전트 | `<failure_handling>` 섹션: 동일 에러 3회 시 다른 접근 또는 보고 |
+| P-4 | 능력 제한 + 에스컬레이션 경로 (Copilot/Devin 패턴) | 전 에이전트 | `<limitations>` 섹션: 할 수 없는 것 + 막혔을 때 행동 명시 |
+| P-5 | 반아첨 오프닝 금지 확대 (Claude 4.1 패턴) | CORE | "네, 알겠습니다", "말씀하신 대로", 긍정 형용사 시작 금지 |
+| P-6 | 즉시 확인 응답 (Manus 패턴) | CORE | 복합 작업 시 즉시 간단한 확인 → 최종 결과 보고 |
+| P-7 | 산문 우선 (Claude 4.1 패턴) | WRITER | 보고서/문서는 불릿 나열보다 문단 위주 |
+| P-8 | 도구 호출 상한 (Perplexity/Cursor 패턴) | CORE | 동일 작업 내 같은 도구 최대 3회 |
+
+#### 프론트엔드 개선
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| F-13 | 에이전트 역할 하드코딩 제거 | 완료 | `AgentCard.tsx` 정적 역할 매핑 → HR API 동적 조회 (`useAppStore.getAgentRole`) |
+| F-14 | GraphTab 서브에이전트 하드코딩 제거 | 완료 | `['JX_CODER', ...]` 정적 배열 → `agents.filter(a => a !== 'JINXUS_CORE')` 동적 |
+| F-15 | 버전 하드코딩 수정 | 완료 | Sidebar + SettingsTab `v1.3.0` → `v1.4.0` |
+| F-16 | GraphTab 폴백 하드코딩 제거 | 완료 | API 실패 시 빈 배열 반환 (하드코딩 에이전트 목록 제거) |
+| F-17 | memoryApi 호출 버그 수정 | 완료 | POST → GET 변경 (백엔드와 HTTP 메서드 일치) |
+| F-18 | ToolsTab 4탭 확장 | 완료 | MCP 서버 + 네이티브 도구 + ToolGraph 시각화/탐색 + 플러그인 관리 |
+| F-19 | SettingsTab 자가 강화 섹션 | 완료 | JinxLoop 수동 트리거, A/B 테스트 이력, 프롬프트 버전 관리/롤백 |
+| F-20 | api.ts API 연결 확장 | 완료 | improve, plugins, toolGraph, tools, performance, memory 엔드포인트 연결 |
+
+#### 백엔드 개선
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| B-11 | HR Manager JS_PERSONA 누락 수정 | 완료 | `_register_existing_agents()`에 JS_PERSONA 추가 |
+| B-12 | ToolGraph v2: BM25 + wRRF 퓨전 | 완료 | 아래 상세 |
+| B-13 | MCP fetch 패키지 교체 | 완료 | `mcp-fetch-server` → `@kazuph/mcp-fetch` (하드코딩 경로 버그 해결) |
+
+| B-14 | DynamicToolExecutor URL→filesystem 차단 | 완료 | filesystem 도구에 URL 전달 시 사전 차단 가드 추가 |
+| B-15 | MCP 에이전트 권한 정비 | 완료 | JX_RESEARCHER→GitHub, JX_CODER→filesystem 접근 권한 추가 |
+
+#### 코드 품질 일괄 개선 (Q-시리즈)
+
+| # | 영역 | 내용 |
+|---|------|------|
+| Q-1 | 보안 | `claude_dangerously_skip_permissions` 기본값 `True`→`False`, 임시경로→영구경로 |
+| Q-2 | 에러 | agents.py, task.py `except: pass` → 로깅 추가 |
+| Q-3 | 설정 | .env.example 모델명 업데이트 + CLAUDE_FAST_MODEL, GPT_EMB_API_KEY 추가 |
+| Q-4 | 하드코딩 | 에이전트 레지스트리 자동 스캔 (jx_\*.py, js_\*.py glob) |
+| Q-5 | 하드코딩 | model_router.py 복잡도 키워드/품질 에이전트 → settings.py 이동 |
+| Q-6 | 하드코딩 | context_guard.py 토큰 제한 상수 → settings.py 이동 |
+| Q-7 | 하드코딩 | task.py 보관 시간/최대 작업 수 → settings.py 이동 |
+| Q-8 | 중복 | task.py 텔레그램 알림 3곳 → `_send_telegram()` 헬퍼 추출 |
+| Q-9 | 타입 | base_agent.py reflection JSON 파싱 구현 (improvement_hint 활용) |
+| Q-10 | 프론트 | 시간 포맷 함수 4곳 중복 → `lib/utils.ts` 통일 |
+| Q-11 | 프론트 | 폴링 간격 5곳 하드코딩 → `lib/constants.ts` POLLING_INTERVAL_MS |
+| Q-12 | 프론트 | 사이드바 에이전트 수 하드코딩 → MAX_SIDEBAR_AGENTS 상수 |
+
+#### B-12 ToolGraph v2 상세
+
+> 참고: [graph-tool-call](https://github.com/SonAIengine/graph-tool-call), [Geny](https://github.com/CocoRoF/Geny)
+
+| 항목 | 설명 |
+|------|------|
+| BM25Scorer | 자체 구현 BM25 (k1=1.2, b=0.75). 한국어 bigram + 영어 단어 + camelCase 분리 토크나이저 |
+| wRRF 퓨전 | BM25(0.35) + 그래프 BFS(0.65) 두 소스 Weighted Reciprocal Rank Fusion (k=60) |
+| History 디모션 | 최근 사용/실패 도구에 0.8x 감쇠 적용 → 같은 도구 반복 선택 방지 |
+| 가중치 영속화 | `data/tool_graph_weights.json`에 학습된 노드/엣지 가중치 JSON 저장, 시작 시 자동 복원 |
+| 토크나이저 중복 수정 | 2글자 한국어 단어의 bigram=전체 중복 제거 |
+
+**성능 측정 (11개 도구 기준):**
+- BM25 스코어링: 쿼리당 ~26μs (API 호출 0건)
+- 메모리: ~24KB (BM25 인덱스)
+- DynamicToolExecutor 대비 ~100,000배 빠르고 무료
+
+**역할 분담:**
+- ToolGraph: 오케스트레이션 레이어 (JINXUS_CORE decompose) - 워크플로우 사전 구성 + 실패 보완
+- DynamicToolExecutor: 실행 레이어 (각 에이전트) - Claude tool_use로 실제 도구 선택
+
+#### 프롬프트 버전 백업
+
+| 에이전트 | 버전 |
+|---------|------|
+| JINXUS_CORE | v1.3 |
+| JX_RESEARCHER | v1.5 |
+| JX_CODER | v1.2 |
+| JX_WRITER | v1.2 |
+| JX_ANALYST | v1.2 |
+| JX_OPS | v1.2 |
+| JS_PERSONA | v1.2 |
+
+---
 
 ### 2026-03-08 코드 품질 + Geny 레퍼런스 기반 개선
 
@@ -18,6 +226,17 @@
 | B-6 | Tool Policy Engine (Geny 패턴) | 예정 | 에이전트 역할별 MCP 서버 접근 화이트리스트 필터링 |
 | B-7 | DynamicExecutor 도구 호출 제한 상향 | 완료 | `max_tool_rounds` 5 → 15. GitHub 레포 분석 등 다단계 도구 호출 작업에서 조기 중단 방지 |
 | B-8 | SSE 에이전트 진행 이벤트 상세화 | 완료 | `run_stream`에서 `progress_callback` 연결, `agent_started`에 `instruction` 필드 추가. Thinking Log에서 어떤 에이전트가 무슨 작업을 하는지 실시간 확인 가능 |
+| B-9 | 할루시네이션 방지 (입력 분류 + 검색 실패 처리) | 완료 | 아래 상세 |
+| B-10 | 시스템 프롬프트 자기 인식 보강 | 완료 | JINXUS_CORE 프롬프트에 "너는 Claude.ai가 아니다, JINXUS다" 명시 + 할루시네이션 금지 규칙 추가 |
+
+#### B-9 할루시네이션 방지 상세
+
+| 수정 위치 | 문제 | 해결 |
+|-----------|------|------|
+| `jinxus_core.py` `_classify_input()` | "날씨 알려줘"가 chat으로 오분류 → 도구 호출 자체를 안 함 | `task_patterns` 키워드 목록 추가 (날씨/뉴스/주가/검색/코드 등) — 매칭되면 무조건 task |
+| `jinxus_core.py` `_needs_external_info()` | Exception 시 `return False` → 검색 스킵 | `return True`로 변경 — 에러 시 안전하게 검색 시도 |
+| `jinxus_core.py` `_quick_web_search()` | 검색 실패해도 빈 문자열 반환 → Claude가 지식으로 지어냄 | 실패 시 "[웹 검색 실패] 절대 지어내지 마세요" 메시지 반환 |
+| `jx_researcher.py` `_execute()` | 검색 실패해도 `success=True`, `score=0.7` 반환 | `success=False`, `score=0.2`로 변경 — 실패는 실패로 보고 |
 
 #### 프론트엔드 개선
 
@@ -34,12 +253,42 @@
 | F-9 | 헤더 중복 제거 + 사이드바 로고 황금색 | 완료 | Header의 "JINXUS v1.3.0" 제거, Sidebar 로고를 `text-primary` (황금색)으로 변경 |
 | F-10 | Thinking Log 상세화 | 완료 | 에이전트명 + 작업 내용(instruction) 표시, step 아이콘/라벨 추가 (classify, tool_graph, agent_progress 등) |
 
+#### 인프라 / 스크립트 개선
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| I-1 | .sh 파일 포트 통일 | 완료 | `start.sh`, `stop.sh`, `setup.sh`, `frontend/rebuild.sh`, `frontend/dev.sh` — 포트 1818 → 5000 전면 교체 |
+| I-2 | 원격 접속 정보 추가 | 완료 | `start.sh`, `setup.sh`, `rebuild.sh`, `dev.sh`에 로컬/Tailscale/같은 네트워크 접속 URL 안내 |
+| I-3 | 프론트엔드 0.0.0.0 바인딩 | 완료 | `start.sh`, `dev.sh`, `rebuild.sh`에 `-H 0.0.0.0` 추가 — 원격 접속 허용 |
+| I-4 | daemon.sh Linux(systemd) 지원 | 완료 | macOS(launchctl) + Linux(systemd) 크로스 플랫폼. `install` 시 systemd user service 자동 생성, `logs`에서 journalctl 조회 |
+| I-5 | next.config.js standalone 출력 | 완료 | `output: 'standalone'` 추가 — Docker 프로덕션 빌드 지원 (Dockerfile 정상 작동) |
+| I-6 | stop.sh next start 프로세스 종료 | 완료 | `npm run dev` 대신 `next dev` + `next start` 모두 종료하도록 수정 |
+
+#### 검색 품질 + 도구 시스템 개선
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| S-1 | 네이버 검색 API 통합 | 완료 | `tools/naver_searcher.py` 신규. 웹/뉴스/블로그/지식iN/백과사전/지역 카테고리 지원. 일 25,000회 무료 |
+| S-2 | OpenWeatherMap 날씨 도구 | 완료 | `tools/weather.py` 신규. 서울 25개 구 좌표 내장, 현재 날씨 + 5일 예보(3시간 간격). 일 1,000회 무료 |
+| S-3 | 도구 레지스트리 통합 | 완료 | `tools/__init__.py`에 `naver_searcher`, `weather` 등록 → DynamicToolExecutor가 Claude tool_use로 자동 선택 |
+| S-4 | JX_RESEARCHER 실행 흐름 단순화 | 완료 | 복잡한 분기(날씨체크→MCP체크→검색) 제거 → 항상 DynamicToolExecutor 우선, 실패 시 직접 검색 폴백 |
+| S-5 | 텔레그램 타이핑 인디케이터 | 완료 | "처리 중입니다, 주인님..." 텍스트 → `send_chat_action("typing")` 4초 주기 갱신 |
+| S-6 | 모델 하드코딩 제거 | 완료 | 모든 에이전트/코어의 `model="claude-sonnet-4-20250514"` → `settings.claude_model` / `settings.claude_fast_model` 참조로 변경 |
+| S-7 | Docker 컨테이너 KST 시간대 | 완료 | Dockerfile에 `TZ=Asia/Seoul` 설정. UTC → KST 전환 |
+| S-8 | Claude 모델 업그레이드 | 완료 | `claude-sonnet-4-20250514` → `claude-sonnet-4-6` (메인), `claude-haiku-4-5-20251001` (분류/평가용) |
+| S-9 | context_guard 모델 목록 갱신 | 완료 | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5` 추가 |
+
+> **API 키 설정 (.env)**
+> - `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` — 네이버 검색 (developers.naver.com)
+> - `OPENWEATHERMAP_API_KEY` — 날씨 전용 (openweathermap.org)
+> - `CLAUDE_MODEL` / `CLAUDE_FALLBACK_MODEL` / `CLAUDE_FAST_MODEL` — 모델 설정 (하드코딩 없음)
+
 #### 향후 개선 예정
 
 | # | 항목 | 설명 | 우선순위 |
 |---|------|------|----------|
 | B-6 | Tool Policy Engine | 에이전트 역할별 MCP 서버 접근 화이트리스트 필터링 | 중간 |
-| B-9 | ToolGraph 개선 | find_similar_workflows 유사도, retrieve_with_history 활용, agent_name 필터 | 낮음 |
+| B-9 | ToolGraph 추가 개선 | retrieve_with_history 활용 확대, 에이전트별 워크플로우 패턴 분석 | 낮음 |
 | F-11 | 실시간 도구 호출 로그 | 에이전트 내부 도구 호출을 실시간 SSE로 전달 (현재는 완료 후 일괄 전달) | 중간 |
 | F-12 | 3D 플레이그라운드 | Three.js 기반 에이전트 시각화 | 낮음 |
 

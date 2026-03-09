@@ -10,7 +10,7 @@ MCP 도구 포함 모든 도구를 자동으로 활용 가능.
 """
 import json
 import logging
-from typing import Optional
+from typing import Optional, Callable
 from dataclasses import dataclass, field
 
 from anthropic import Anthropic
@@ -50,24 +50,34 @@ class DynamicToolExecutor:
         )
     """
 
-    # MCP 도구 선택 가이드라인 (잘못된 도구 선택 방지)
+    # MCP + 자체 도구 선택 가이드라인 (잘못된 도구 선택 방지)
     TOOL_SELECTION_GUIDE = """
 
 ## 도구 선택 가이드라인 (중요!)
 
+### 날씨 조회
+- 날씨/기온/강수확률: `weather` 도구 사용 (OpenWeatherMap, 서울 구별 지원)
+- weather 실패 시: `naver_searcher`로 폴백
+
+### 웹 검색
+- 한국어 검색 (뉴스, 로컬 정보): `naver_searcher` 도구 사용
+- 영문/글로벌 검색: `web_searcher` (Tavily) 또는 `mcp__brave_search__*`
+- 웹페이지 내용 가져오기: `mcp__fetch__*` 도구 사용
+- 브라우저 자동화: `mcp__playwright__*` 도구 사용
+
 ### GitHub 관련 작업
-- GitHub 레포지토리 조회/분석: `mcp__github__*` 도구 사용
-- GitHub 이슈/PR 관련: `mcp__github__*` 도구 사용
+- GitHub 레포지토리/커밋/PR/이슈 조회: **`github_agent` 도구 사용** (action 파라미터로 작업 지정)
+  - 커밋 목록: action="list_commits", repo="owner/repo" 또는 username="사용자명"
+  - 레포 목록: action="list_user_repos", username="사용자명"
+  - 레포 검색: action="search_repos", query="검색어"
+  - 레포 정보: action="get_repo", repo="owner/repo"
+- `mcp__github__*` 도구는 deprecated → **사용 금지**. 반드시 `github_agent` 사용
 - **절대로** `mcp__filesystem__*` 도구로 GitHub 작업하지 마라 (권한 오류 발생)
 
 ### 파일 시스템 작업
 - 로컬 파일 읽기/쓰기: `mcp__filesystem__*` 도구 사용
 - 단, 허용된 경로만 접근 가능 (/ 루트 접근 불가)
-
-### 웹 검색/크롤링
-- 웹 검색: `mcp__brave_search__*` 도구 사용
-- 웹페이지 내용 가져오기: `mcp__fetch__*` 도구 사용
-- 브라우저 자동화: `mcp__playwright__*` 도구 사용
+- **절대로 URL(http://, https://)을 `mcp__filesystem__*` 도구에 전달하지 마라. URL은 파일 경로가 아니다.**
 
 ### Git 작업
 - git commit, push, branch: `mcp__git__*` 도구 사용
@@ -76,6 +86,11 @@ class DynamicToolExecutor:
 1. 작업 목적에 맞는 도구 선택
 2. 에러 발생 시 다른 도구로 폴백 시도
 3. 확실하지 않으면 먼저 목록 조회 도구 사용 (list_*, get_* 등)
+4. 반드시 도구를 호출해서 정보를 가져와라. 도구 없이 지어내기 금지.
+
+### 핵심 금지 사항
+- URL(http://, https://)이 포함된 경로를 `mcp__filesystem__*` 도구에 절대 전달 금지
+- GitHub 레포 내용 읽기 → `mcp__github__*` 또는 `mcp__fetch__*` 사용. `mcp__filesystem__*` 사용 금지.
 """
 
     def __init__(
@@ -94,14 +109,18 @@ class DynamicToolExecutor:
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = model or settings.claude_model
         self._agent_name = agent_name
-        self._max_rounds = max_tool_rounds
+        # Tool Policy Engine에서 에이전트별 max_rounds 가져오기
+        from jinxus.core.tool_policy import get_max_tool_rounds
+        self._max_rounds = max_tool_rounds if max_tool_rounds != 15 else get_max_tool_rounds(agent_name, default=15)
         self._tools_cache: Optional[dict[str, JinxTool]] = None
 
     def _get_available_tools(self) -> dict[str, JinxTool]:
-        """에이전트가 사용 가능한 도구 로드 (매번 새로 로드)"""
-        # MCP 도구가 나중에 등록될 수 있으므로 항상 새로 로드
+        """에이전트가 사용 가능한 도구 로드 (Tool Policy Engine 적용)"""
         from . import get_tools_for_agent
-        self._tools_cache = get_tools_for_agent(self._agent_name)
+        from jinxus.core.tool_policy import filter_tools_for_agent
+        raw_tools = get_tools_for_agent(self._agent_name)
+        # Tool Policy Engine으로 에이전트별 도구 필터링
+        self._tools_cache = filter_tools_for_agent(self._agent_name, raw_tools)
         return self._tools_cache
 
     def _sanitize_tool_name(self, name: str) -> str:
@@ -157,6 +176,7 @@ class DynamicToolExecutor:
         system_prompt: str,
         context: Optional[str] = None,
         initial_messages: Optional[list[dict]] = None,
+        tool_callback: Optional[Callable] = None,
     ) -> ExecutionResult:
         """작업 실행 - Claude가 필요한 도구 자동 선택 및 실행
 
@@ -254,9 +274,51 @@ class DynamicToolExecutor:
                 )
                 all_tool_calls.append(call)
 
-                # 실제 도구 실행
+                # 원래 이름으로 로깅
+                original_tool_name = self._restore_tool_name(tool_name)
+
+                # 도구 호출 시작 콜백
+                if tool_callback:
+                    try:
+                        await tool_callback(original_tool_name, "calling")
+                    except Exception:
+                        pass
+
+                # 실제 도구 실행 (메트릭 포함)
+                import time as _time
+                _tool_start = _time.time()
                 result = await self._execute_tool(tool_name, tool_input)
+                _tool_duration = (_time.time() - _tool_start) * 1000
                 all_raw_results.append(result)
+
+                success = result.get("success", False)
+
+                # 도구 실행 메트릭 기록
+                try:
+                    from jinxus.core.metrics import get_metrics
+                    get_metrics().record_tool_execution(original_tool_name, _tool_duration, success)
+                except Exception:
+                    pass
+
+                # 도구 호출 로그 기록 (실시간 UI용)
+                try:
+                    from jinxus.agents.state_tracker import get_state_tracker
+                    get_state_tracker().log_tool_call(
+                        agent_name=self._agent_name,
+                        tool_name=original_tool_name,
+                        status="success" if success else "error",
+                        duration_ms=_tool_duration,
+                        error=result.get("error") if not success else None,
+                    )
+                except Exception:
+                    pass
+
+                # 도구 호출 완료 콜백
+                if tool_callback:
+                    try:
+                        await tool_callback(original_tool_name, "done" if success else "error")
+                    except Exception:
+                        pass
 
                 tool_results.append({
                     "type": "tool_result",
@@ -264,12 +326,18 @@ class DynamicToolExecutor:
                     "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
                 })
 
-                # 원래 이름으로 로깅
-                original_tool_name = self._restore_tool_name(tool_name)
-                logger.info(f"[{self._agent_name}] 도구 실행: {original_tool_name} -> 성공: {result.get('success', False)}")
+                logger.info(f"[{self._agent_name}] 도구 실행: {original_tool_name} -> 성공: {success}")
 
-            # tool_result 메시지 추가
+            # tool_result 메시지 추가 (이전 도구 결과가 자동으로 다음 라운드의 컨텍스트가 됨)
             messages.append({"role": "user", "content": tool_results})
+
+            # 멀티턴 도구 체이닝: 이전 도구의 출력을 요약하여 다음 라운드 힌트 제공
+            if len(all_tool_calls) > 1 and round_num < self._max_rounds - 1:
+                chain_summary = " → ".join(
+                    f"{tc.tool_name}({'성공' if r.get('success') else '실패'})"
+                    for tc, r in zip(all_tool_calls[-len(tool_uses):], all_raw_results[-len(tool_uses):])
+                )
+                logger.debug(f"[{self._agent_name}] 도구 체인: {chain_summary}")
 
         # 최대 라운드 도달
         return ExecutionResult(
@@ -289,6 +357,17 @@ class DynamicToolExecutor:
         Returns:
             실행 결과 딕셔너리
         """
+        # 사전 검증: filesystem 도구에 URL 전달 방지
+        if "filesystem" in tool_name:
+            for val in arguments.values():
+                if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
+                    logger.warning(f"[{self._agent_name}] filesystem 도구에 URL 전달 차단: {val[:100]}")
+                    return {
+                        "success": False,
+                        "error": f"URL은 filesystem 도구로 접근할 수 없습니다. mcp__fetch__* 또는 mcp__github__* 도구를 사용하세요.",
+                        "output": None,
+                    }
+
         tools = self._get_available_tools()
 
         # Claude API 형식 이름을 원래 형식으로 복원

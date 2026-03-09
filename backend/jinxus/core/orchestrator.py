@@ -69,7 +69,7 @@ class Orchestrator:
         self._core = create_jinxus_core()
 
         self._initialized = True
-        self._start_time = datetime.utcnow()
+        self._start_time = datetime.now()
         logger.info("JINXUS 시스템 초기화 완료")
 
     @property
@@ -88,7 +88,7 @@ class Orchestrator:
         """가동 시간 (초)"""
         if not self._start_time:
             return 0
-        return int((datetime.utcnow() - self._start_time).total_seconds())
+        return int((datetime.now() - self._start_time).total_seconds())
 
     async def run_task(
         self,

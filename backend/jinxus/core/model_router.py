@@ -18,16 +18,14 @@ from jinxus.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# 품질이 중요한 에이전트 (항상 메인 모델 사용)
-QUALITY_CRITICAL_AGENTS = {"JX_WRITER", "JX_ANALYST"}
+def _get_quality_critical_agents() -> set[str]:
+    """settings에서 품질 중요 에이전트 목록 로드"""
+    return set(get_settings().quality_critical_agents)
 
-# 복잡한 작업 키워드 (메인 모델 사용)
-COMPLEX_KEYWORDS = [
-    "분석", "작성", "설계", "최적화", "자소서",
-    "포트폴리오", "보고서", "논문", "리팩토링",
-    "아키텍처", "시스템", "전략", "기획",
-    "analyze", "design", "optimize", "architecture",
-]
+
+def _get_complex_keywords() -> list[str]:
+    """settings에서 복잡도 키워드 목록 로드"""
+    return get_settings().complex_keywords
 
 
 class FailureReason(Enum):
@@ -265,12 +263,12 @@ def select_model(agent_name: str, instruction: str) -> str:
     settings = get_settings()
 
     # 1. 품질이 중요한 에이전트 → 메인 모델 (opus)
-    if agent_name in QUALITY_CRITICAL_AGENTS:
+    if agent_name in _get_quality_critical_agents():
         return settings.claude_model
 
     # 2. 복잡한 키워드가 있으면 → 메인 모델
     instruction_lower = instruction.lower()
-    if any(kw in instruction_lower for kw in COMPLEX_KEYWORDS):
+    if any(kw in instruction_lower for kw in _get_complex_keywords()):
         return settings.claude_model
 
     # 3. 긴 명령 → 메인 모델 (복잡할 가능성 높음)
@@ -296,10 +294,9 @@ def select_model_for_core(user_input: str) -> str:
 
     # CORE는 대부분 메인 모델 사용 (정확한 분해가 중요)
     # 아주 짧은 간단한 대화만 폴백 사용
-    if len(user_input) < 50 and not any(kw in user_input.lower() for kw in COMPLEX_KEYWORDS):
+    if len(user_input) < 50 and not any(kw in user_input.lower() for kw in _get_complex_keywords()):
         # 인사, 간단한 질문 등
-        simple_patterns = ["안녕", "뭐해", "hi", "hello", "네", "응", "ㅇㅇ", "고마워", "감사"]
-        if any(p in user_input.lower() for p in simple_patterns):
+        if any(p in user_input.lower() for p in settings.simple_patterns):
             return settings.claude_fallback_model
 
     return settings.claude_model

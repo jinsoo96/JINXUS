@@ -146,7 +146,7 @@ class Scheduler(JinxTool):
                 next_run = job.next_run_time.isoformat()
 
             await self._meta_store.update_scheduled_task_run(
-                task_id, datetime.utcnow().isoformat(), next_run
+                task_id, datetime.now().isoformat(), next_run
             )
         except Exception as e:
             logger.error(f"Failed to update task run record: {e}")
@@ -270,7 +270,7 @@ class Scheduler(JinxTool):
                 "cron": cron_expr,
                 "task_prompt": task_prompt,
                 "is_active": True,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now().isoformat(),
             }
 
         # SQLite에 저장 (영속화)
@@ -513,7 +513,7 @@ class Scheduler(JinxTool):
             "cron": cron_expr,
             "task_prompt": task_description,
             "is_active": True,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
 
         return job_id

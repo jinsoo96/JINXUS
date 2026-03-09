@@ -108,6 +108,8 @@ class AutonomousRunner:
 
         settings = get_settings()
         self._client = Anthropic(api_key=settings.anthropic_api_key)
+        self._model = settings.claude_model
+        self._fast_model = settings.claude_fast_model
 
     def cancel(self):
         """실행 취소"""
@@ -266,7 +268,7 @@ class AutonomousRunner:
         """LLM으로 작업 계획 생성"""
         try:
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._model,
                 max_tokens=2000,
                 system=PLAN_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": task}],
@@ -312,7 +314,7 @@ class AutonomousRunner:
             )
 
             response = self._client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._model,
                 max_tokens=1500,
                 system=EVALUATE_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],

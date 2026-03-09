@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { UserPlus, RefreshCw } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { agentApi, type AgentRuntimeStatus } from '@/lib/api';
+import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import AgentCard from '../AgentCard';
 import AgentGraph from '../AgentGraph';
 import OrgChart from '../OrgChart';
@@ -16,8 +17,7 @@ export default function AgentsTab() {
   const [viewMode, setViewMode] = useState<'cards' | 'org'>('cards');
   const [runtimeMap, setRuntimeMap] = useState<Record<string, AgentRuntimeStatus>>({});
 
-  // 모든 에이전트 런타임 상태를 한 번에 fetch
-  const fetchAllRuntimes = useCallback(async () => {
+  const fetchAllRuntimes = async () => {
     try {
       const res = await agentApi.getAllRuntimeStatus();
       const map: Record<string, AgentRuntimeStatus> = {};
@@ -28,13 +28,13 @@ export default function AgentsTab() {
     } catch (err) {
       console.error('Failed to fetch runtime statuses:', err);
     }
-  }, []);
+  };
 
   useEffect(() => {
     fetchAllRuntimes();
-    const interval = setInterval(fetchAllRuntimes, 5000);
+    const interval = setInterval(fetchAllRuntimes, POLLING_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchAllRuntimes]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAgentHired = () => {
     loadAgents();

@@ -159,7 +159,7 @@ class BaseAgent(ABC):
         return {
             **state,
             "memory_context": memory_context,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now().isoformat(),
             "agent_name": self.name,
             "prompt_version": self._prompt_version,
             "retry_count": 0,
@@ -377,11 +377,27 @@ JSON으로 응답해:
 
         reflection_text = response.content[0].text
 
-        # 간단한 파싱 (실제로는 JSON 파싱 필요)
+        # JSON 파싱 시도
+        reflection = reflection_text
+        improvement_hint = ""
+        try:
+            import json
+            # JSON 블록 추출 (마크다운 코드블록 포함)
+            json_text = reflection_text
+            if "```" in json_text:
+                json_text = json_text.split("```")[1]
+                if json_text.startswith("json"):
+                    json_text = json_text[4:]
+            parsed = json.loads(json_text.strip())
+            reflection = parsed.get("reflection", reflection_text)
+            improvement_hint = parsed.get("improvement_hint", "")
+        except (json.JSONDecodeError, IndexError, KeyError):
+            pass  # JSON 파싱 실패 시 원본 텍스트 사용
+
         return {
             **state,
-            "reflection": reflection_text,
-            "improvement_hint": "",
+            "reflection": reflection,
+            "improvement_hint": improvement_hint,
         }
 
     async def _memory_write_node(self, state: AgentState) -> AgentState:
@@ -411,7 +427,7 @@ JSON으로 응답해:
         self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
         self._state_tracker.complete_task(self.name)
         duration_ms = int(
-            (datetime.utcnow() - datetime.fromisoformat(state["created_at"])).total_seconds() * 1000
+            (datetime.now() - datetime.fromisoformat(state["created_at"])).total_seconds() * 1000
         )
 
         return {
@@ -477,6 +493,39 @@ JSON으로 응답해:
 
         return min(score, 1.0)
 
+    # ===== 협업 인터페이스 =====
+
+    async def request_help(
+        self,
+        to_agent: str,
+        instruction: str,
+        context: list = None,
+        collab_session_id: Optional[str] = None,
+    ) -> dict:
+        """다른 에이전트에게 도움 요청 (협업)
+
+        예: JX_RESEARCHER가 코드 작성이 필요할 때 JX_CODER에게 요청
+            result = await self.request_help("JX_CODER", "이 코드 작성해줘")
+
+        Args:
+            to_agent: 도움을 줄 에이전트 이름
+            instruction: 요청 내용
+            context: 추가 컨텍스트
+            collab_session_id: 협업 세션 ID
+
+        Returns:
+            AgentResult 딕셔너리
+        """
+        from jinxus.core.collaboration import get_collaborator
+        collaborator = get_collaborator()
+        return await collaborator.request_help(
+            from_agent=self.name,
+            to_agent=to_agent,
+            instruction=instruction,
+            context=context,
+            collab_session_id=collab_session_id,
+        )
+
     # ===== 공개 인터페이스 =====
 
     async def run(self, instruction: str, context: list[dict] = None) -> dict:
@@ -517,6 +566,13 @@ JSON으로 응답해:
         config = {"configurable": {"thread_id": initial_state["task_id"]}}
         final_state = await self._graph.ainvoke(initial_state, config=config)
 
+        # tool_results에서 도구 이름 추출
+        tool_calls = []
+        for tr in final_state.get("tool_results", []):
+            names = tr.get("tool_calls", [])
+            if isinstance(names, list):
+                tool_calls.extend(names)
+
         return {
             "task_id": final_state["task_id"],
             "agent_name": self.name,
@@ -525,4 +581,5 @@ JSON으로 응답해:
             "output": final_state["output"],
             "failure_reason": final_state.get("failure_reason"),
             "duration_ms": final_state["duration_ms"],
+            "tool_calls": tool_calls,
         }

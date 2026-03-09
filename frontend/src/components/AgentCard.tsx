@@ -3,6 +3,7 @@
 import { Bot, Loader2, AlertCircle, Wrench } from 'lucide-react';
 import { type AgentRuntimeStatus } from '@/lib/api';
 import type { AgentInfo } from '@/types';
+import { useAppStore } from '@/store/useAppStore';
 
 interface AgentCardProps {
   agent: AgentInfo;
@@ -52,17 +53,7 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
     return name.replace('JX_', '').replace('JINXUS_', '');
   };
 
-  const getAgentRole = (name: string) => {
-    const roles: Record<string, string> = {
-      'JINXUS_CORE': '총괄 지휘관',
-      'JX_CODER': '코딩 전문가',
-      'JX_RESEARCHER': '리서치 전문가',
-      'JX_WRITER': '작문 전문가',
-      'JX_ANALYST': '데이터 분석가',
-      'JX_OPS': '운영 전문가',
-    };
-    return roles[name] || '에이전트';
-  };
+  const getAgentRole = useAppStore((s) => s.getAgentRole);
 
   return (
     <div

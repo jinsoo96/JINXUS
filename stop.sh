@@ -30,8 +30,8 @@ if pkill -f "next dev" 2>/dev/null; then
     echo -e "${GREEN}✓ 프론트엔드 프로세스 종료${NC}"
 fi
 
-if pkill -f "npm run dev" 2>/dev/null; then
-    echo -e "${GREEN}✓ npm 프로세스 종료${NC}"
+if pkill -f "next start" 2>/dev/null; then
+    echo -e "${GREEN}✓ 프론트엔드 프로덕션 프로세스 종료${NC}"
 fi
 
 # 포트 확인
@@ -41,9 +41,9 @@ if lsof -i :19000 > /dev/null 2>&1; then
     kill -9 $(lsof -t -i :19000) 2>/dev/null || true
 fi
 
-if lsof -i :1818 > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠ 포트 1818 아직 사용 중 - 강제 종료 시도${NC}"
-    kill -9 $(lsof -t -i :1818) 2>/dev/null || true
+if lsof -i :5000 > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ 포트 5000 아직 사용 중 - 강제 종료 시도${NC}"
+    kill -9 $(lsof -t -i :5000) 2>/dev/null || true
 fi
 
 echo ""
@@ -57,3 +57,4 @@ echo ""
 echo -e "${GREEN}✓ JINXUS 서버 중지 완료${NC}"
 echo ""
 echo "다시 시작하려면: ./start.sh"
+echo ""

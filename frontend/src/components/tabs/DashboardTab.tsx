@@ -1,8 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { agentApi, logsApi, systemApi, AgentRuntimeStatus, TaskLog } from '@/lib/api';
+import { agentApi, logsApi, AgentRuntimeStatus, TaskLog } from '@/lib/api';
+import { POLLING_INTERVAL_MS } from '@/lib/constants';
+import { formatTime, formatDateTime, getAgentStatusColor, getAgentStatusText } from '@/lib/utils';
+import toast from 'react-hot-toast';
 import {
   Activity,
   CheckCircle2,
@@ -18,19 +21,7 @@ import {
 } from 'lucide-react';
 import { StatCardSkeleton, ListSkeleton } from '@/components/Skeleton';
 
-// 에이전트 상태 색상
-const statusColors = {
-  working: 'bg-green-500',
-  idle: 'bg-zinc-500',
-  error: 'bg-red-500',
-};
-
-// 에이전트 상태 텍스트
-const statusText = {
-  working: '작업중',
-  idle: '대기',
-  error: '오류',
-};
+// 상태 색상/텍스트는 lib/utils.ts의 getAgentStatusColor, getAgentStatusText 사용
 
 export default function DashboardTab() {
   const { systemStatus } = useAppStore();
@@ -38,58 +29,56 @@ export default function DashboardTab() {
   // 상태
   const [agentStatuses, setAgentStatuses] = useState<AgentRuntimeStatus[]>([]);
   const [recentLogs, setRecentLogs] = useState<TaskLog[]>([]);
-  const [summary, setSummary] = useState<{
-    total_tasks: number;
-    agent_stats: Record<string, { total_tasks: number; success_rate: number; avg_duration_ms: number }>;
-  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 데이터 로드
-  const loadData = useCallback(async () => {
+  const loadData = async () => {
     try {
-      const [statusRes, logsRes, summaryRes] = await Promise.all([
+      const [statusRes, logsRes] = await Promise.all([
         agentApi.getAllRuntimeStatus(),
         logsApi.getLogs(undefined, 10, 0),
-        logsApi.getSummary(),
       ]);
 
       setAgentStatuses(statusRes.agents);
       setRecentLogs(logsRes.logs);
-      setSummary(summaryRes);
       setLastUpdate(new Date());
     } catch (error) {
       console.error('Dashboard data load error:', error);
+      toast.error('대시보드 데이터 로드 실패');
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
-  // 초기 로드 및 자동 갱신
+  // 초기 로드 및 자동 갱신 (비활성 탭에서는 폴링 중지)
   useEffect(() => {
     loadData();
 
     if (autoRefresh) {
-      const interval = setInterval(loadData, 5000); // 5초마다 갱신
-      return () => clearInterval(interval);
+      const poll = () => {
+        if (document.visibilityState === 'visible') loadData();
+      };
+      intervalRef.current = setInterval(poll, POLLING_INTERVAL_MS);
     }
-  }, [loadData, autoRefresh]);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [autoRefresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 작업 중인 에이전트 수
   const workingCount = agentStatuses.filter(a => a.status === 'working').length;
   const totalAgents = agentStatuses.length;
 
-  // 오늘 통계 계산 (NaN 방지)
-  const todayStats = summary ? (() => {
-    const stats = Object.values(summary.agent_stats);
-    const count = stats.length;
-    return {
-      totalTasks: summary.total_tasks,
-      successRate: count > 0 ? stats.reduce((acc, s) => acc + s.success_rate, 0) / count : 0,
-      avgDuration: count > 0 ? stats.reduce((acc, s) => acc + s.avg_duration_ms, 0) / count : 0,
-    };
-  })() : { totalTasks: 0, successRate: 0, avgDuration: 0 };
+  // 통계 (systemStatus에서 가져옴)
+  const todayStats = {
+    totalTasks: systemStatus?.total_tasks_processed ?? 0,
+    successRate: recentLogs.length > 0
+      ? recentLogs.filter(l => l.success).length / recentLogs.length
+      : 0,
+  };
 
   if (loading) {
     return (
@@ -124,7 +113,7 @@ export default function DashboardTab() {
           {/* 마지막 업데이트 */}
           {lastUpdate && (
             <span className="text-sm text-zinc-500">
-              마지막 업데이트: {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}
+              마지막 업데이트: {formatTime(lastUpdate)}
             </span>
           )}
 
@@ -229,7 +218,7 @@ export default function DashboardTab() {
                 className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-lg"
               >
                 <div className="flex items-center gap-3">
-                  <span className={`w-3 h-3 rounded-full ${statusColors[agent.status]}`} />
+                  <span className={`w-3 h-3 rounded-full ${getAgentStatusColor(agent.status)}`} />
                   <div>
                     <p className="font-medium">{agent.name}</p>
                     {agent.current_task && (
@@ -245,7 +234,7 @@ export default function DashboardTab() {
                     agent.status === 'error' ? 'bg-red-500/20 text-red-400' :
                     'bg-zinc-600/50 text-zinc-400'
                   }`}>
-                    {statusText[agent.status]}
+                    {getAgentStatusText(agent.status)}
                   </span>
                   {agent.current_node && (
                     <span className="text-xs text-zinc-500">
@@ -294,7 +283,7 @@ export default function DashboardTab() {
                       {log.agent_name}
                     </span>
                     <span className="text-xs text-zinc-500">
-                      {new Date(log.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}
+                      {formatTime(log.created_at)}
                     </span>
                   </div>
                   <p className="text-sm text-zinc-300 truncate">

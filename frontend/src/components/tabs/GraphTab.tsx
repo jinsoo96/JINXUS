@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { agentApi, AgentRuntimeStatus, AgentGraph, GraphNode, GraphEdge } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
+import { POLLING_INTERVAL_MS } from '@/lib/constants';
+import toast from 'react-hot-toast';
 import {
   GitBranch,
   RefreshCw,
@@ -62,13 +64,15 @@ export default function GraphTab() {
     if (registeredAgents.length === 0) loadAgents();
   }, []);
 
-  // 사용 가능한 에이전트 목록 (동적)
+  // 사용 가능한 에이전트 목록 (동적 - API에서 가져옴)
   const agents = registeredAgents.length > 0
     ? registeredAgents.map(a => a.name)
-    : ['JINXUS_CORE', 'JX_CODER', 'JX_RESEARCHER', 'JX_WRITER', 'JX_ANALYST', 'JX_OPS', 'JS_PERSONA'];
+    : [];
+
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 데이터 로드
-  const loadData = useCallback(async () => {
+  const loadData = async () => {
     try {
       // 에이전트 런타임 상태 로드
       const statusRes = await agentApi.getAllRuntimeStatus();
@@ -109,20 +113,28 @@ export default function GraphTab() {
       }
     } catch (error) {
       console.error('Graph data load error:', error);
+      toast.error('그래프 데이터 로드 실패');
     } finally {
       setLoading(false);
     }
-  }, [selectedAgent]);
+  };
 
   // 초기 로드 및 자동 갱신
   useEffect(() => {
+    setLoading(true);
     loadData();
 
+    if (intervalRef.current) clearInterval(intervalRef.current);
     if (autoRefresh) {
-      const interval = setInterval(loadData, 5000); // 5초마다 갱신
-      return () => clearInterval(interval);
+      const poll = () => {
+        if (document.visibilityState === 'visible') loadData();
+      };
+      intervalRef.current = setInterval(poll, POLLING_INTERVAL_MS);
     }
-  }, [loadData, autoRefresh]);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [selectedAgent, autoRefresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 현재 에이전트 상태
   const currentAgentStatus = agentStatuses.find(a => a.name === selectedAgent);
@@ -153,6 +165,7 @@ export default function GraphTab() {
             <select
               value={selectedAgent}
               onChange={(e) => setSelectedAgent(e.target.value)}
+              aria-label="에이전트 선택"
               className="appearance-none bg-zinc-800 border border-zinc-600 rounded-lg px-4 py-2 pr-8 text-sm focus:outline-none focus:border-primary"
             >
               {agents.map(agent => (
@@ -264,7 +277,7 @@ export default function GraphTab() {
               <div className="mt-8 pt-8 border-t border-zinc-700 w-full">
                 <p className="text-center text-sm text-zinc-500 mb-4">서브 에이전트</p>
                 <div className="flex flex-wrap justify-center gap-4">
-                  {['JX_CODER', 'JX_RESEARCHER', 'JX_WRITER', 'JX_ANALYST', 'JX_OPS'].map(agent => {
+                  {agents.filter(a => a !== 'JINXUS_CORE').map(agent => {
                     const status = agentStatuses.find(a => a.name === agent);
                     return (
                       <button

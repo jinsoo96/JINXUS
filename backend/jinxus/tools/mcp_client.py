@@ -134,8 +134,29 @@ class MCPClient:
 
         return tools
 
+    async def _auto_reconnect(self, server_name: str) -> bool:
+        """MCP 서버 자동 재연결 시도"""
+        try:
+            from jinxus.config.mcp_servers import get_server_by_name
+            server_config = get_server_by_name(server_name)
+            if not server_config or not server_config.enabled:
+                return False
+
+            logger.info(f"MCP 서버 자동 재연결 시도: {server_name}")
+            config = MCPServerConfig(
+                name=server_config.name,
+                command=server_config.command,
+                args=server_config.args,
+                env=server_config.env,
+                allowed_agents=server_config.allowed_agents,
+            )
+            return await self.connect_server(config)
+        except Exception as e:
+            logger.warning(f"MCP 서버 자동 재연결 실패 ({server_name}): {e}")
+            return False
+
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> ToolResult:
-        """MCP 도구 호출
+        """MCP 도구 호출 (연결 끊김 시 자동 재연결 1회 시도)
 
         Args:
             server_name: MCP 서버 이름
@@ -149,12 +170,16 @@ class MCPClient:
         start_time = time.time()
 
         if server_name not in self._sessions:
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"MCP 서버 '{server_name}' 연결되지 않음",
-                duration_ms=0,
-            )
+            # 자동 재연결 시도
+            if await self._auto_reconnect(server_name):
+                logger.info(f"MCP 서버 자동 재연결 성공: {server_name}")
+            else:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"MCP 서버 '{server_name}' 연결되지 않음",
+                    duration_ms=0,
+                )
 
         try:
             session = self._sessions[server_name]
@@ -188,11 +213,19 @@ class MCPClient:
 
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"MCP 도구 호출 실패 ({server_name}:{tool_name}): {e}")
+            error_str = str(e)
+            logger.error(f"MCP 도구 호출 실패 ({server_name}:{tool_name}): {error_str}")
+
+            # 연결 끊김 에러면 세션 제거 후 다음 호출에서 자동 재연결
+            if "closed" in error_str.lower() or "broken" in error_str.lower() or "eof" in error_str.lower():
+                self._sessions.pop(server_name, None)
+                self._tools_cache.pop(server_name, None)
+                logger.warning(f"MCP 서버 세션 제거 (다음 호출 시 재연결): {server_name}")
+
             return ToolResult(
                 success=False,
                 output=None,
-                error=str(e),
+                error=error_str,
                 duration_ms=duration_ms,
             )
 

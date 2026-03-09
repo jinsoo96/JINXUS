@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Loader2, X, ChevronDown, Clock, AlertCircle } from 'lucide-react';
 import { taskApi, type ActiveTask } from '@/lib/api';
+import { POLLING_INTERVAL_MS } from '@/lib/constants';
+import { formatTime, getTaskStatusColor } from '@/lib/utils';
 
 export default function TasksDropdown() {
   const [isOpen, setIsOpen] = useState(false);
@@ -47,7 +49,7 @@ export default function TasksDropdown() {
   useEffect(() => {
     if (!isOpen) return;
 
-    const interval = setInterval(fetchTasks, 5000);
+    const interval = setInterval(fetchTasks, POLLING_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [isOpen]);
 
@@ -65,23 +67,7 @@ export default function TasksDropdown() {
 
   const activeCount = tasks.length;
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'running':
-      case 'in_progress':
-        return 'text-blue-400';
-      case 'pending':
-        return 'text-yellow-400';
-      default:
-        return 'text-zinc-400';
-    }
-  };
-
-  const formatTime = (dateStr: string | null) => {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
-  };
+  // 상태 색상은 lib/utils.ts의 getTaskStatusColor 사용
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -129,12 +115,12 @@ export default function TasksDropdown() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white truncate">{task.description}</p>
                         <div className="flex items-center gap-3 mt-1 text-xs">
-                          <span className={getStatusColor(task.status)}>
+                          <span className={getTaskStatusColor(task.status)}>
                             {task.status === 'running' || task.status === 'in_progress' ? 'running' : task.status}
                           </span>
                           <span className="text-zinc-500 flex items-center gap-1">
                             <Clock size={10} />
-                            {formatTime(task.started_at || task.created_at)}
+                            {formatTime(task.started_at || task.created_at) || '-'}
                           </span>
                         </div>
                         {/* 진행률 바 */}

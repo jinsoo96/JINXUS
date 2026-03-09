@@ -25,10 +25,7 @@ export default function AgentGraph({ agentName }: AgentGraphProps) {
     };
 
     fetchGraph();
-
-    // 현재 노드 업데이트를 위한 폴링 (5s 통일)
-    const interval = setInterval(fetchGraph, 5000);
-    return () => clearInterval(interval);
+    // 폴링 제거 — 부모 컴포넌트(AgentsTab)가 이미 런타임 상태 폴링 중
   }, [agentName]);
 
   if (loading || !graph) {

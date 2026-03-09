@@ -30,6 +30,7 @@ export default function ChatTab() {
   const [showThinking, setShowThinking] = useState(true);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
 
+
   // Thinking 로그 추가 헬퍼
   const addThinkingLog = (step: string, detail?: string, agent?: string, status?: 'running' | 'done' | 'error') => {
     setThinkingLogs(prev => [...prev, {
@@ -127,30 +128,35 @@ export default function ChatTab() {
 
   const handleClearChat = async () => {
     if (messages.length === 0 && !isLoading) return;
-    if (confirm('현재 채팅을 삭제하시겠습니까?')) {
-      // 1. SSE 연결 즉시 중단
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
 
-      // 2. 백엔드에 취소 알림
-      if (currentTaskId) {
-        try {
-          await chatApi.cancelStream(currentTaskId);
-        } catch (e) {
-          console.warn('Cancel failed:', e);
-        }
-      }
+    // 1. 즉시 UI 초기화 (사용자 체감 반응)
+    clearMessages();
+    setLoading(false);
+    setStreamingContent('');
+    setCurrentAgent(null);
+    setThinkingLogs([]);
 
-      // 3. 모든 상태 초기화
-      setLoading(false);
-      setStreamingContent('');
-      setCurrentAgent(null);
-      setCurrentTaskId(null);
-      setThinkingLogs([]);
-      clearMessages();
-      setSessionId('');
+    // 2. SSE 연결 중단
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // 3. 백엔드 정리 (비동기)
+    const sid = sessionId;
+    const tid = currentTaskId;
+    setSessionId('');
+    setCurrentTaskId(null);
+
+    if (tid) {
+      chatApi.cancelStream(tid).catch(() => {});
+    }
+    if (sid) {
+      chatApi.deleteSession(sid).then(() => {
+        setSessions(prev => prev.filter(s => s.session_id !== sid));
+      }).catch((e) => {
+        console.warn('Session delete failed:', e);
+      });
     }
   };
 
@@ -722,6 +728,7 @@ export default function ChatTab() {
             taskId={currentTaskId}
             onStop={handleStopTask}
             onClose={() => setShowThinking(false)}
+            messages={messages}
           />
         )}
       </div>

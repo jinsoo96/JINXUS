@@ -63,3 +63,10 @@ frontend/src/
 1. 작업 내용은 `docs/03_DEVELOP_STATUS.md`에 버전별로 기록한다.
 2. 새 문서가 필요하면 `docs/` 안에 번호 붙여서 추가한다.
 3. 참조 링크와 레퍼런스는 `docs/05_REFERENCES.md`에 정리되어 있다.
+
+## Claude Code 내부 메모리
+
+- 경로: `~/.claude/projects/-home-jinsookim-jinxus/memory/MEMORY.md`
+- 세션 간 유지되는 메모리. 프로젝트 구조, 포트, 작업 현황, 유저 선호 등 저장.
+- git에 안 올라감 (프로젝트 코드와 무관).
+- 내용 확인/수정하고 싶으면 해당 파일 직접 열면 됨.

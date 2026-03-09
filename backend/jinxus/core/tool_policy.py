@@ -1,0 +1,130 @@
+"""Tool Policy Engine (B-6) — 에이전트별 도구 접근 정책
+
+각 에이전트가 사용할 수 있는 도구를 제한하여:
+1. 불필요한 도구 노출 방지 (LLM 혼동 감소)
+2. 보안 강화 (코드 실행 등 위험 도구 제한)
+3. 비용 절감 (불필요한 MCP 호출 방지)
+"""
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+# 에이전트별 도구 정책 정의
+# whitelist: 허용 도구 패턴 (None = 모두 허용)
+# blacklist: 차단 도구 패턴 (whitelist보다 우선)
+# max_tool_rounds: 에이전트별 최대 도구 호출 횟수 (None = 기본값 사용)
+AGENT_POLICIES: dict[str, dict] = {
+    "JX_RESEARCHER": {
+        "whitelist": [
+            "web_searcher", "naver_searcher", "weather",
+            "github_agent",
+            "mcp:brave_search:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*", "mcp:git:*",
+            "mcp:github:*",  # deprecated MCP GitHub 서버 차단 → github_agent 사용
+        ],
+        "max_tool_rounds": 10,
+    },
+    "JX_CODER": {
+        "whitelist": [
+            "code_executor", "web_searcher",
+            "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
+            "mcp:fetch:*",
+        ],
+        "blacklist": [],
+        "max_tool_rounds": 15,
+    },
+    "JX_WRITER": {
+        "whitelist": [
+            "web_searcher", "naver_searcher",
+            "mcp:brave_search:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*", "mcp:git:*",
+        ],
+        "max_tool_rounds": 8,
+    },
+    "JX_ANALYST": {
+        "whitelist": [
+            "web_searcher", "naver_searcher", "weather",
+            "mcp:brave_search:*", "mcp:fetch:*", "mcp:github:*",
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*",
+        ],
+        "max_tool_rounds": 10,
+    },
+    "JX_OPS": {
+        "whitelist": None,  # 모든 도구 허용 (운영 에이전트)
+        "blacklist": [],
+        "max_tool_rounds": 15,
+    },
+}
+
+
+def _match_pattern(tool_name: str, pattern: str) -> bool:
+    """도구 이름이 패턴과 매치되는지 확인
+
+    패턴:
+    - "web_searcher" → 정확히 일치
+    - "mcp:brave_search:*" → prefix 매칭
+    """
+    if pattern.endswith("*"):
+        prefix = pattern[:-1]
+        return tool_name.startswith(prefix)
+    return tool_name == pattern
+
+
+def filter_tools_for_agent(
+    agent_name: str,
+    tools: dict,
+) -> dict:
+    """에이전트 정책에 따라 도구 필터링
+
+    Args:
+        agent_name: 에이전트 이름
+        tools: {name: JinxTool} 딕셔너리
+
+    Returns:
+        필터링된 도구 딕셔너리
+    """
+    policy = AGENT_POLICIES.get(agent_name)
+
+    if not policy:
+        return tools  # 정책 없으면 모든 도구 허용
+
+    whitelist = policy.get("whitelist")
+    blacklist = policy.get("blacklist", [])
+
+    filtered = {}
+
+    for name, tool in tools.items():
+        # 블랙리스트 체크 (우선)
+        if any(_match_pattern(name, p) for p in blacklist):
+            continue
+
+        # 화이트리스트 체크
+        if whitelist is None:
+            # None = 모든 도구 허용
+            filtered[name] = tool
+        elif any(_match_pattern(name, p) for p in whitelist):
+            filtered[name] = tool
+
+    if len(filtered) != len(tools):
+        logger.debug(
+            f"[ToolPolicy] {agent_name}: {len(tools)} → {len(filtered)} 도구 "
+            f"(차단: {len(tools) - len(filtered)}개)"
+        )
+
+    return filtered
+
+
+def get_max_tool_rounds(agent_name: str, default: int = 15) -> int:
+    """에이전트별 최대 도구 호출 횟수 반환"""
+    policy = AGENT_POLICIES.get(agent_name)
+    if policy and policy.get("max_tool_rounds") is not None:
+        return policy["max_tool_rounds"]
+    return default

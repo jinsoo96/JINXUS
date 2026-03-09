@@ -1,9 +1,9 @@
 #!/bin/bash
 # JINXUS 프론트엔드 개발 모드 (핫리로드)
-# 사용: ./dev.sh [port] (기본: 1818)
+# 사용: ./dev.sh [port] (기본: 5000)
 # 코드 수정 시 자동 반영됨
 
-PORT=${1:-1818}
+PORT=${1:-5000}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
@@ -16,4 +16,5 @@ if [ -n "$PID" ]; then
 fi
 
 echo "[JINXUS] 개발 모드 시작 (핫리로드) — http://localhost:$PORT"
-exec npx next dev -p $PORT
+echo "[JINXUS] 원격 접속: http://100.75.83.105:$PORT (Tailscale)"
+exec npx next dev -p $PORT -H 0.0.0.0

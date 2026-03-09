@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Brain, X, StopCircle, ChevronRight, ChevronDown } from 'lucide-react';
+import { Brain, X, StopCircle, ChevronRight, ChevronDown, Wrench, Loader2 } from 'lucide-react';
+import { formatTimeWithSeconds } from '@/lib/utils';
+import { logsApi, type TaskLog } from '@/lib/api';
+import type { ChatMessage } from '@/types';
 
 export interface ThinkingLog {
   id: string;
@@ -18,6 +21,7 @@ interface ThinkingPanelProps {
   taskId: string | null;
   onStop: () => void;
   onClose: () => void;
+  messages: ChatMessage[];
 }
 
 export default function ThinkingPanel({
@@ -26,22 +30,40 @@ export default function ThinkingPanel({
   taskId,
   onStop,
   onClose,
+  messages,
 }: ThinkingPanelProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [isMinimized, setIsMinimized] = useState(false);
+
+  // 메시지별 실행 흐름 상태
+  const [expandedMsgId, setExpandedMsgId] = useState<string | null>(null);
+  const [msgLogs, setMsgLogs] = useState<Record<string, TaskLog[]>>({});
+  const [loadingMsgId, setLoadingMsgId] = useState<string | null>(null);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString('ko-KR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      timeZone: 'Asia/Seoul',
-    });
+  // 메시지별 실행 흐름 조회
+  const toggleMsgLogs = async (msgId: string) => {
+    if (expandedMsgId === msgId) {
+      setExpandedMsgId(null);
+      return;
+    }
+    setExpandedMsgId(msgId);
+
+    // 이미 캐시된 데이터가 있으면 재사용
+    if (msgLogs[msgId]) return;
+
+    setLoadingMsgId(msgId);
+    try {
+      const res = await logsApi.getLogsByTaskId(msgId);
+      setMsgLogs(prev => ({ ...prev, [msgId]: res.logs }));
+    } catch {
+      setMsgLogs(prev => ({ ...prev, [msgId]: [] }));
+    } finally {
+      setLoadingMsgId(null);
+    }
   };
 
   const getStepIcon = (step: string, status?: string) => {
@@ -96,8 +118,32 @@ export default function ThinkingPanel({
     }
   };
 
-  if (logs.length === 0 && !isActive) {
-    return null;
+  // assistant 메시지만 필터
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+
+  // 실시간 로그가 있거나 히스토리 메시지가 있으면 패널 표시
+  const hasContent = logs.length > 0 || isActive || assistantMessages.length > 0;
+
+  if (!hasContent) {
+    return (
+      <div className="w-72 border-l border-dark-border bg-dark-card flex flex-col h-full">
+        <div className="flex items-center justify-between p-3 border-b border-dark-border">
+          <div className="flex items-center gap-2">
+            <Brain size={18} className="text-zinc-400" />
+            <span className="font-medium text-sm">실행 로그</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-4">
+          <p className="text-xs text-zinc-500 text-center">대화를 시작하면 실행 흐름이 여기에 표시됩니다</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -106,7 +152,7 @@ export default function ThinkingPanel({
       <div className="flex items-center justify-between p-3 border-b border-dark-border">
         <div className="flex items-center gap-2">
           <Brain size={18} className={isActive ? 'text-primary animate-pulse' : 'text-zinc-400'} />
-          <span className="font-medium text-sm">Thinking Log</span>
+          <span className="font-medium text-sm">실행 로그</span>
           {isActive && (
             <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
           )}
@@ -130,32 +176,172 @@ export default function ThinkingPanel({
       {/* 로그 영역 */}
       {!isMinimized && (
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {logs.map((log) => (
-            <div
-              key={log.id}
-              className={`text-xs p-2 rounded-lg ${
-                log.status === 'running'
-                  ? 'bg-primary/10 border border-primary/30'
-                  : log.status === 'error'
-                  ? 'bg-red-500/10 border border-red-500/30'
-                  : 'bg-zinc-800/50'
-              }`}
-            >
-              <div className="flex items-center gap-2 text-zinc-400 mb-1">
-                <span>{getStepIcon(log.step, log.status)}</span>
-                <span className="text-zinc-500">{formatTime(log.timestamp)}</span>
-              </div>
-              <div className="text-zinc-200">
-                {log.agent && (
-                  <span className="text-primary font-medium">{log.agent} </span>
-                )}
-                <span>{getStepLabel(log.step)}</span>
-                {log.detail && (
-                  <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
-                )}
-              </div>
-            </div>
-          ))}
+          {/* 실시간 Thinking 로그 (작업 진행 중) */}
+          {isActive && logs.length > 0 && (
+            <>
+              <div className="text-xs font-medium text-zinc-400 mb-2">실시간</div>
+              {logs.map((log) => (
+                <div
+                  key={log.id}
+                  className={`text-xs p-2 rounded-lg ${
+                    log.status === 'running'
+                      ? 'bg-primary/10 border border-primary/30'
+                      : log.status === 'error'
+                      ? 'bg-red-500/10 border border-red-500/30'
+                      : 'bg-zinc-800/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-zinc-400 mb-1">
+                    <span>{getStepIcon(log.step, log.status)}</span>
+                    <span className="text-zinc-500">{formatTimeWithSeconds(log.timestamp)}</span>
+                  </div>
+                  <div className="text-zinc-200">
+                    {log.agent && (
+                      <span className="text-primary font-medium">{log.agent} </span>
+                    )}
+                    <span>{getStepLabel(log.step)}</span>
+                    {log.detail && (
+                      <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* 완료된 작업의 실시간 로그 (방금 완료) */}
+          {!isActive && logs.length > 0 && (
+            <>
+              <div className="text-xs font-medium text-zinc-400 mb-2">최근 작업</div>
+              {logs.map((log) => (
+                <div
+                  key={log.id}
+                  className={`text-xs p-2 rounded-lg ${
+                    log.status === 'error'
+                      ? 'bg-red-500/10 border border-red-500/30'
+                      : 'bg-zinc-800/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-zinc-400 mb-1">
+                    <span>{getStepIcon(log.step, log.status)}</span>
+                    <span className="text-zinc-500">{formatTimeWithSeconds(log.timestamp)}</span>
+                  </div>
+                  <div className="text-zinc-200">
+                    {log.agent && (
+                      <span className="text-primary font-medium">{log.agent} </span>
+                    )}
+                    <span>{getStepLabel(log.step)}</span>
+                    {log.detail && (
+                      <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* 메시지별 실행 흐름 히스토리 */}
+          {assistantMessages.length > 0 && (
+            <>
+              {(logs.length > 0 || isActive) && (
+                <div className="border-t border-dark-border my-2" />
+              )}
+              <div className="text-xs font-medium text-zinc-400 mb-2">대화 이력</div>
+              {assistantMessages.map((msg, idx) => (
+                <div key={msg.id} className="text-xs">
+                  {/* 메시지 요약 (클릭하여 펼치기) */}
+                  <button
+                    onClick={() => toggleMsgLogs(msg.id)}
+                    className={`w-full text-left p-2 rounded-lg transition-colors ${
+                      expandedMsgId === msg.id
+                        ? 'bg-primary/10 border border-primary/30'
+                        : 'bg-zinc-800/50 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <ChevronRight
+                        size={12}
+                        className={`transition-transform flex-shrink-0 ${
+                          expandedMsgId === msg.id ? 'rotate-90' : ''
+                        }`}
+                      />
+                      <span className="text-zinc-300 truncate flex-1">
+                        #{assistantMessages.length - idx} {msg.content.slice(0, 40)}{msg.content.length > 40 ? '...' : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 ml-5">
+                      <span className="text-zinc-500">
+                        {msg.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}
+                      </span>
+                      {msg.agentsUsed && msg.agentsUsed.length > 0 && (
+                        <span className="text-primary">{msg.agentsUsed.join(', ')}</span>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* 실행 흐름 상세 */}
+                  {expandedMsgId === msg.id && (
+                    <div className="mt-1 ml-3 pl-2 border-l-2 border-zinc-700 space-y-1.5">
+                      {loadingMsgId === msg.id ? (
+                        <div className="flex items-center gap-2 text-zinc-400 p-1">
+                          <Loader2 size={12} className="animate-spin" />
+                          <span>조회 중...</span>
+                        </div>
+                      ) : !msgLogs[msg.id] || msgLogs[msg.id].length === 0 ? (
+                        <div className="text-zinc-500 p-1">로그 없음</div>
+                      ) : (
+                        <>
+                          {msgLogs[msg.id].map((log) => (
+                            <div key={log.id} className="p-1.5 rounded bg-zinc-900/50">
+                              <div className="flex items-center gap-1.5">
+                                <span>{log.success ? '✅' : '❌'}</span>
+                                <span className="text-primary font-medium">{log.agent_name}</span>
+                                <span className="text-zinc-500">
+                                  {(log.duration_ms / 1000).toFixed(1)}s
+                                </span>
+                                <span className={`${
+                                  log.success_score >= 0.7 ? 'text-green-400' : log.success_score >= 0.4 ? 'text-yellow-400' : 'text-red-400'
+                                }`}>
+                                  {log.success_score.toFixed(1)}
+                                </span>
+                              </div>
+                              <div className="text-zinc-400 mt-0.5 truncate">
+                                {log.instruction}
+                              </div>
+                              {log.tool_calls && log.tool_calls.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {log.tool_calls.map((tool, ti) => (
+                                    <span
+                                      key={ti}
+                                      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded ${
+                                        tool.startsWith('mcp_')
+                                          ? 'bg-blue-500/10 text-blue-400'
+                                          : 'bg-zinc-800 text-zinc-400'
+                                      }`}
+                                    >
+                                      <Wrench size={9} />
+                                      {tool}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {log.failure_reason && (
+                                <div className="text-red-400 mt-0.5">{log.failure_reason}</div>
+                              )}
+                            </div>
+                          ))}
+                          <div className="text-zinc-500 p-1 border-t border-zinc-800">
+                            총 {(msgLogs[msg.id].reduce((s, l) => s + l.duration_ms, 0) / 1000).toFixed(1)}s | {msgLogs[msg.id].length}개 에이전트
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+
           <div ref={logsEndRef} />
         </div>
       )}
