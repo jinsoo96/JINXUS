@@ -639,6 +639,7 @@ class JinxusCore:
                     subtask["instruction"],
                     guarded_context,
                     progress_callback=progress_callback,
+                    memory_context=subtask.get("_memory_context"),
                 )
                 results.append(result)
 
@@ -654,13 +655,13 @@ class JinxusCore:
 
     async def _run_agent(
         self, task_id: str, agent, instruction: str, context: list = None,
-        progress_callback=None,
+        progress_callback=None, memory_context: list = None,
     ) -> AgentResult:
         """단일 에이전트 실행"""
         try:
             # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
             agent._progress_callback = progress_callback
-            result = await agent.run(instruction, context or [])
+            result = await agent.run(instruction, context or [], memory_context=memory_context)
             return {
                 "task_id": task_id,
                 "agent_name": agent.name,
@@ -1088,17 +1089,16 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
             return "chat"
 
         # 5단계: LLM 판단 (패턴에 안 걸린 애매한 케이스만)
+        # classify + needs_external_info 통합 → API 호출 1회로 축소
         classify_prompt = f"""사용자 입력을 분류해.
 
 입력: "{user_input}"
 
-이게 뭐야?
-A) 일상 대화/잡담/인사/감정표현 (외부 정보 전혀 불필요) → "chat"
-B) 작업이 필요한 요청 또는 외부 정보가 필요한 질문 → "task"
+A) chat - 일상 대화/잡담/인사/감정표현 (외부 정보 불필요)
+B) chat_search - 대화지만 실시간 정보 필요 (날씨, 뉴스, 주가 등)
+C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
 
-핵심 기준: 답변에 웹 검색, 코드 실행, 파일 접근 등 도구가 필요하면 무조건 "task"
-
-chat 또는 task 한 단어만 답해."""
+한 단어만: chat / chat_search / task"""
 
         try:
             response = self._client.messages.create(
@@ -1107,7 +1107,11 @@ chat 또는 task 한 단어만 답해."""
                 messages=[{"role": "user", "content": classify_prompt}],
             )
             result = response.content[0].text.strip().lower()
-            return "chat" if "chat" in result else "task"
+            if "chat_search" in result:
+                return "chat_search"
+            elif "chat" in result:
+                return "chat"
+            return "task"
         except Exception:
             return "task"  # 에러 시 안전하게 task로
 
@@ -1279,14 +1283,60 @@ chat 또는 task 한 단어만 답해."""
         }
 
     async def run_stream(self, user_input: str, session_id: str = None):
-        """진짜 SSE 스트리밍 — 단계별 실시간 전송"""
+        """진짜 SSE 스트리밍 — 단계별 실시간 전송 + 실시간 로그"""
         if not session_id:
             session_id = str(uuid.uuid4())
 
         task_id = str(uuid.uuid4())
 
-        # 시작 이벤트
+        # 통합 이벤트 큐: 내부 이벤트 + Python 로그 모두 여기로
+        merged_queue: asyncio.Queue = asyncio.Queue()
+
+        # 로그 스트리머: Python 로거 → merged_queue에 "log" 이벤트로 전달
+        from jinxus.core.log_streamer import TaskLogHandler
+        log_handler = TaskLogHandler(merged_queue, event_wrap=True)
+        log_handler.attach()
+
+        # 시작 이벤트 (무조건 먼저 보내서 프론트에서 task_id 확보)
         yield {"event": "start", "data": {"task_id": task_id, "session_id": session_id}}
+
+        # inner 스트림을 백그라운드 태스크로 실행 → 이벤트를 merged_queue에 넣기
+        async def _produce():
+            try:
+                async for event in self._run_stream_inner(user_input, session_id, task_id):
+                    await merged_queue.put(event)
+            except Exception as e:
+                logger.error(f"run_stream 치명적 오류: {e}", exc_info=True)
+                await merged_queue.put({"event": "error", "data": {"error": f"처리 중 오류 발생: {str(e)[:300]}"}})
+                await merged_queue.put({"event": "done", "data": {"task_id": task_id, "agents_used": ["JINXUS_CORE"], "success": False}})
+                self._state_tracker.complete_task(self.name)
+            finally:
+                await merged_queue.put(None)  # 종료 시그널
+
+        producer = asyncio.create_task(_produce())
+
+        try:
+            # merged_queue에서 이벤트+로그를 꺼내서 즉시 yield
+            while True:
+                item = await merged_queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            if not producer.done():
+                producer.cancel()
+            # 남은 항목 flush
+            while not merged_queue.empty():
+                try:
+                    item = merged_queue.get_nowait()
+                    if item is not None:
+                        yield item
+                except asyncio.QueueEmpty:
+                    break
+            log_handler.detach()
+
+    async def _run_stream_inner(self, user_input: str, session_id: str, task_id: str):
+        """run_stream 내부 로직 (예외 시 상위에서 error/done 이벤트 보장)"""
 
         # === 응답 캐시 확인 ===
         from jinxus.core.response_cache import get_response_cache
@@ -1299,12 +1349,18 @@ chat 또는 task 한 단어만 답해."""
             for i in range(0, len(cached_response), chunk_size):
                 yield {"event": "message", "data": {"content": cached_response[i:i+chunk_size], "chunk": True}}
                 await asyncio.sleep(0.01)
-            await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
-            await self._memory.save_short_term(session_id, "assistant", cached_response[:500], {"task_id": task_id})
+            try:
+                await asyncio.wait_for(self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id}), timeout=5.0)
+                await asyncio.wait_for(self._memory.save_short_term(session_id, "assistant", cached_response[:500], {"task_id": task_id}), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("캐시 응답 메모리 저장 타임아웃 (5s), 건너뜀")
             yield {"event": "done", "data": {"task_id": task_id, "agents_used": [cached.get("agent_name", "CACHE")], "success": True, "cached": True}}
             return
 
         # === 세션 신선도 평가 (Session Freshness Policy) ===
+        import time as _t
+        _task_start = _t.time()
+        logger.info(f"task={task_id[:8]} session={session_id[:8]} input={user_input[:80]!r}")
         await self._check_session_freshness(session_id)
 
         # === 상태 추적: 작업 시작 ===
@@ -1314,20 +1370,29 @@ chat 또는 task 한 단어만 답해."""
         # === 1. intake (메모리 로드) ===
         yield {"event": "manager_thinking", "data": {"step": "intake", "detail": "대화 기록 로드 중..."}}
 
+        _mem_start = _t.time()
         conversation_history = await self._memory.get_short_term(session_id, limit=10)
+        logger.debug(f"short_term.get {(_t.time()-_mem_start)*1000:.0f}ms → {len(conversation_history)}건")
         yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"대화 기록 {len(conversation_history)}개 로드"}}
 
+        _mem_start = _t.time()
         memory_context = self._memory.search_all_memories(user_input, limit=5)
+        logger.debug(f"search_all_memories {(_t.time()-_mem_start)*1000:.0f}ms → {len(memory_context)}건")
         yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"관련 기억 {len(memory_context)}개 검색 완료"}}
         await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
 
         # === 1.5. 입력 분류: chat이면 decompose 건너뛰기 ===
+        yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "입력 유형 분류 중... (chat / task)"}}
+        _cls_start = _t.time()
         input_type = await self._classify_input(user_input)
+        logger.info(f"_classify_input → {input_type!r} ({(_t.time()-_cls_start)*1000:.0f}ms)")
+        yield {"event": "manager_thinking", "data": {"step": "classify", "detail": f"분류 결과: {input_type}"}}
 
-        if input_type == "chat":
-            # 단순 대화: decompose/dispatch 없이 직접 스트리밍
-            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "일상 대화 감지 → 직접 응답"}}
-            subtasks = [{"task_id": "sub_001", "assigned_agent": "DIRECT", "instruction": user_input, "depends_on": [], "priority": "normal"}]
+        if input_type in ("chat", "chat_search"):
+            # 단순 대화 (또는 검색 필요 대화): decompose/dispatch 없이 직접 스트리밍
+            detail = "일상 대화 감지 → 직접 응답" if input_type == "chat" else "대화 + 검색 필요 → 직접 응답"
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": detail}}
+            subtasks = [{"task_id": "sub_001", "assigned_agent": "DIRECT", "instruction": user_input, "depends_on": [], "priority": "normal", "_needs_search": input_type == "chat_search"}]
             execution_mode = "sequential"
         else:
             # === 2. decompose (명령 분해) ===
@@ -1336,15 +1401,28 @@ chat 또는 task 한 단어만 답해."""
 
             decompose_prompt = self._get_decompose_prompt(user_input, memory_context, conversation_history)
             yield {"event": "manager_thinking", "data": {"step": "decompose", "detail": "에이전트 배정 결정 중..."}}
+            logger.debug(f"decompose API call model={self._model} prompt_len={len(decompose_prompt)}")
+            _dec_start = _t.time()
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=2048,
                 system=self._get_system_prompt(),
                 messages=[{"role": "user", "content": decompose_prompt}],
             )
+            _dec_ms = (_t.time() - _dec_start) * 1000
+            logger.info(f"decompose API {_dec_ms:.0f}ms usage=({response.usage.input_tokens}in/{response.usage.output_tokens}out)")
             decomposition = self._parse_decomposition(response.content[0].text)
             subtasks = decomposition.get("subtasks", [])
             execution_mode = decomposition.get("execution_mode", "sequential")
+            logger.info(f"decompose result: {len(subtasks)} subtasks, mode={execution_mode}")
+
+            # 분해 결과 상세 로그
+            if subtasks:
+                agent_list = [t.get("assigned_agent", "?") for t in subtasks]
+                yield {"event": "manager_thinking", "data": {
+                    "step": "decompose",
+                    "detail": f"배정: {' → '.join(agent_list)} ({execution_mode})"
+                }}
 
         # 서브태스크가 없으면 직접 응답
         if not subtasks:
@@ -1381,19 +1459,22 @@ chat 또는 task 한 단어만 답해."""
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
             yield {"event": "agent_started", "data": {"agent": "JINXUS_CORE"}}
 
-            # 외부 정보 필요 시 웹 검색 먼저 수행
+            # 외부 정보 필요 시 웹 검색 (classify에서 이미 판별됨 → API 호출 절약)
             search_context = ""
-            yield {"event": "manager_thinking", "data": {"step": "check", "detail": "외부 정보 필요 여부 확인 중..."}}
-            if await self._needs_external_info(user_input):
-                yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "Brave Search로 웹 검색 중..."}}
+            needs_search = subtasks[0].get("_needs_search", False)
+            if needs_search:
+                yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "웹 검색 중..."}}
                 search_context = await self._quick_web_search(user_input)
                 if search_context:
-                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 수집 완료 ✓"}}
+                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 수집 완료"}}
                 else:
                     yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 없음, 내부 지식 사용"}}
 
             # 모델 라우팅: 단순 대화는 sonnet, 복잡한 작업은 opus
             selected_model = select_model_for_core(user_input)
+            logger.info(f"model_router → {selected_model}")
+            model_short = selected_model.split("-")[-1] if "-" in selected_model else selected_model
+            yield {"event": "manager_thinking", "data": {"step": "thinking", "detail": f"모델 선택: {model_short}"}}
 
             # 대화 기록을 Claude messages 형식으로 변환
             messages = []
@@ -1401,6 +1482,7 @@ chat 또는 task 한 단어만 답해."""
                 for msg in conversation_history[-10:]:
                     role = "user" if msg.get("role") == "user" else "assistant"
                     messages.append({"role": role, "content": msg.get("content", "")})
+                yield {"event": "manager_thinking", "data": {"step": "thinking", "detail": f"대화 맥락 {len(conversation_history)}건 포함"}}
 
             # 검색 결과가 있으면 질문에 포함
             final_input = user_input
@@ -1409,6 +1491,9 @@ chat 또는 task 한 단어만 답해."""
             messages.append({"role": "user", "content": final_input})
 
             # messages.stream() 사용하여 토큰 단위 스트리밍
+            yield {"event": "manager_thinking", "data": {"step": "thinking", "detail": "Claude API 호출, 응답 스트리밍 시작..."}}
+            logger.debug(f"stream call model={selected_model} messages={len(messages)} sys_prompt_len={len(self._get_system_prompt())}")
+            _stream_start = _t.time()
             full_response = ""
             with self._client.messages.stream(
                 model=selected_model,
@@ -1419,6 +1504,8 @@ chat 또는 task 한 단어만 답해."""
                 for text_chunk in stream.text_stream:
                     full_response += text_chunk
                     yield {"event": "message", "data": {"content": text_chunk, "chunk": True}}
+            _stream_ms = (_t.time() - _stream_start) * 1000
+            logger.info(f"stream 완료 {_stream_ms:.0f}ms response_len={len(full_response)}")
 
             results.append({
                 "task_id": subtasks[0]["task_id"],
@@ -1436,7 +1523,7 @@ chat 또는 task 한 단어만 답해."""
             # 에이전트 실행
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
 
-            # 대화 맥락을 서브에이전트 instruction에 보강
+            # 대화 맥락을 서브에이전트 instruction에 보강 + memory_context 전달
             if conversation_history:
                 context_summary = "\n".join(
                     f"[{'주인님' if m.get('role') == 'user' else 'JINXUS'}]: {m.get('content', '')[:300]}"
@@ -1448,6 +1535,9 @@ chat 또는 task 한 단어만 답해."""
                             f"[이전 대화 맥락]\n{context_summary}\n\n"
                             f"[현재 요청]\n{task['instruction']}"
                         )
+            # CORE의 memory_context를 서브에이전트에 전달 (중복 Qdrant 검색 방지)
+            for task in subtasks:
+                task["_memory_context"] = memory_context
 
             # SSE 이벤트 큐: 에이전트 실행 중 실시간 이벤트 전달
             event_queue: asyncio.Queue = asyncio.Queue()
@@ -1507,13 +1597,20 @@ chat 또는 task 한 단어만 답해."""
             self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 
             # 결과 취합 후 스트리밍
+            success_count = sum(1 for r in results if r["success"])
+            fail_count = len(results) - success_count
+            yield {"event": "manager_thinking", "data": {"step": "aggregate", "detail": f"결과 취합 중... (성공 {success_count}, 실패 {fail_count})"}}
+
             if len(results) == 1:
                 aggregated = self._strip_agent_identity(results[0]["output"])
             else:
+                yield {"event": "manager_thinking", "data": {"step": "aggregate", "detail": f"Claude API로 {len(results)}개 결과 통합 중..."}}
                 aggregated = await self._aggregate_results(user_input, results)
 
             # XML 태그 등 불필요한 형식 제거
             aggregated = self._sanitize_output(aggregated)
+
+            yield {"event": "manager_thinking", "data": {"step": "aggregate", "detail": f"응답 생성 완료 ({len(aggregated)}자), 스트리밍..."}}
 
             # 취합 결과를 청크로 스트리밍 (빠르게)
             chunk_size = 50
@@ -1521,35 +1618,41 @@ chat 또는 task 한 단어만 답해."""
                 yield {"event": "message", "data": {"content": aggregated[i:i+chunk_size], "chunk": True}}
                 await asyncio.sleep(0.01)  # 프론트가 받을 수 있게 약간의 딜레이
 
-        # === 4. 메모리 저장 ===
+        # === 4. 메모리 저장 (타임아웃 적용, done 이벤트 차단 방지) ===
         self._state_tracker.update_node(self.name, GraphNode.REFLECT)
         self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
-        for result in results:
-            if result["agent_name"] != "JINXUS_CORE":
-                await self._memory.log_agent_stat(
-                    main_task_id=task_id,
-                    agent_name=result["agent_name"],
-                    instruction=user_input,
-                    success=result["success"],
-                    success_score=result["success_score"],
-                    duration_ms=result["duration_ms"],
-                    failure_reason=result.get("failure_reason"),
-                    output=result.get("output"),  # A/B 테스트용
-                )
+        try:
+            async def _save_memory():
+                for result in results:
+                    if result["agent_name"] != "JINXUS_CORE":
+                        await self._memory.log_agent_stat(
+                            main_task_id=task_id,
+                            agent_name=result["agent_name"],
+                            instruction=user_input,
+                            success=result["success"],
+                            success_score=result["success_score"],
+                            duration_ms=result["duration_ms"],
+                            failure_reason=result.get("failure_reason"),
+                            output=result.get("output"),
+                        )
 
-        # 단기기억 저장
-        final_response = results[0]["output"] if results else ""
-        await self._memory.save_short_term(session_id, "assistant", final_response[:500], {"task_id": task_id})
+                final_response = results[0]["output"] if results else ""
+                await self._memory.save_short_term(session_id, "assistant", final_response[:500], {"task_id": task_id})
 
-        # 응답 캐시 저장 (task 결과만, 성공한 경우)
-        if results and all(r["success"] for r in results) and final_response:
-            await cache.set(
-                user_input, final_response,
-                agent_name=results[0].get("agent_name", "JINXUS_CORE"),
-                metadata={"agents_used": list(set(agents_used)) if agents_used else ["JINXUS_CORE"]},
-            )
+                if results and all(r["success"] for r in results) and final_response:
+                    await cache.set(
+                        user_input, final_response,
+                        agent_name=results[0].get("agent_name", "JINXUS_CORE"),
+                        metadata={"agents_used": list(set(agents_used)) if agents_used else ["JINXUS_CORE"]},
+                    )
 
-        # 완료 이벤트
+            await asyncio.wait_for(_save_memory(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"메모리 저장 타임아웃 (10s), 건너뛰고 done 이벤트 전송: {task_id}")
+        except Exception as e:
+            logger.error(f"메모리 저장 오류 (무시): {e}")
+
+        # 완료 이벤트 (무조건 도달)
         self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
         yield {
             "event": "done",

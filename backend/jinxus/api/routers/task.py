@@ -7,6 +7,7 @@ from typing import Dict, Optional, Callable
 
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 
 from jinxus.api.models import TaskRequest, TaskResponse, TaskStatusResponse
 from jinxus.config import get_settings
@@ -289,32 +290,52 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
     }
     await store.create(task_id, task_data)
 
-    # 자율 모드인 경우 BackgroundWorker를 통해 실행
-    if request.autonomous:
-        from jinxus.core.background_worker import get_background_worker
-        worker = get_background_worker()
+    # 모든 작업을 BackgroundWorker를 통해 실행 (이벤트 스트림 지원)
+    from jinxus.core.background_worker import get_background_worker
+    worker = get_background_worker()
 
-        notify_cb = None
-        if _telegram_notify:
-            async def notify_cb(message: str, image_paths: list[str] = None):
-                await _telegram_notify(message)
+    notify_cb = None
+    if _telegram_notify:
+        async def notify_cb(message: str, image_paths: list[str] = None):
+            await _telegram_notify(message)
 
-        bg_task_id = await worker.submit(
-            task_description=request.message,
-            session_id=session_id,
-            notify_callback=notify_cb,
-            autonomous=True,
-            max_steps=request.max_steps,
-            timeout_seconds=request.timeout_seconds,
-        )
-        await store.update(task_id, {
-            "status": "in_progress",
-            "bg_task_id": bg_task_id,
-        })
-    else:
-        # asyncio.Task로 추적하여 취소 가능하게
-        task = asyncio.create_task(_run_task(task_id, request.message, session_id))
-        _running_tasks[task_id] = task
+    bg_task_id = await worker.submit(
+        task_description=request.message,
+        session_id=session_id,
+        notify_callback=notify_cb,
+        autonomous=request.autonomous,
+        max_steps=request.max_steps,
+        timeout_seconds=request.timeout_seconds,
+    )
+    await store.update(task_id, {
+        "status": "in_progress",
+        "bg_task_id": bg_task_id,
+        "started_at": datetime.now().isoformat(),
+    })
+
+    # BackgroundWorker 완료 시 Task API 상태 동기화
+    async def _sync_task_status():
+        """BackgroundWorker 작업 완료까지 대기 후 Task Store 상태 갱신"""
+        while True:
+            await asyncio.sleep(2)
+            bg_task = worker.get_task(bg_task_id)
+            if bg_task is None:
+                break
+            if bg_task.status.value in ("completed", "failed", "cancelled"):
+                updates = {
+                    "status": bg_task.status.value,
+                    "completed_at": bg_task.completed_at.isoformat() if bg_task.completed_at else datetime.now().isoformat(),
+                }
+                if bg_task.result:
+                    updates["result"] = bg_task.result
+                if bg_task.error:
+                    updates["result"] = bg_task.error
+                if bg_task.started_at and bg_task.completed_at:
+                    updates["duration_ms"] = int((bg_task.completed_at - bg_task.started_at).total_seconds() * 1000)
+                await store.update(task_id, updates)
+                break
+
+    asyncio.create_task(_sync_task_status())
 
     return TaskResponse(
         task_id=task_id,
@@ -439,6 +460,70 @@ async def list_active_tasks():
         "active_tasks": all_active,
         "count": len(all_active),
     }
+
+
+@router.get("/{task_id}/stream")
+async def stream_task_progress(task_id: str):
+    """작업 진행 상황 SSE 스트림
+
+    BackgroundWorker 인메모리 이벤트 큐를 통해 실시간 전달.
+    작업 완료/실패/취소 시 자동 종료.
+    """
+    from jinxus.core.background_worker import get_background_worker
+
+    worker = get_background_worker()
+
+    async def event_generator():
+        # 현재 상태 먼저 전송
+        store = get_task_store()
+        task = await store.get(task_id)
+
+        # bg_task_id가 있으면 BackgroundWorker의 task_id 사용
+        subscribe_id = task_id
+        if task:
+            bg_id = task.get("bg_task_id")
+            if bg_id:
+                subscribe_id = bg_id
+
+            yield f"event: status\ndata: {json.dumps({'status': task['status'], 'task_id': task_id}, ensure_ascii=False)}\n\n"
+            if task["status"] in ("completed", "failed", "cancelled"):
+                yield f"event: done\ndata: {json.dumps({'status': task['status'], 'result': task.get('result', '')[:2000]}, ensure_ascii=False)}\n\n"
+                return
+
+        # 이벤트 큐 구독 (BackgroundWorker의 실제 task_id로)
+        event_queue = worker.subscribe_events(subscribe_id)
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                    event_type = event.pop("event", "progress")
+                    yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                    # 종료 이벤트
+                    if event_type in ("completed", "failed"):
+                        return
+                except asyncio.TimeoutError:
+                    # keepalive
+                    yield f": keepalive\n\n"
+
+                    # 작업 상태 확인 (이미 끝났는지)
+                    task = await store.get(task_id)
+                    if task and task["status"] in ("completed", "failed", "cancelled"):
+                        yield f"event: done\ndata: {json.dumps({'status': task['status'], 'result': task.get('result', '')[:2000]}, ensure_ascii=False)}\n\n"
+                        return
+        finally:
+            worker.unsubscribe_events(subscribe_id, event_queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.delete("/active/{task_id}")

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Brain, X, StopCircle, ChevronRight, ChevronDown, Wrench, Loader2 } from 'lucide-react';
+import { Brain, X, StopCircle, ChevronRight, ChevronDown, Wrench, Loader2, Terminal, Eye } from 'lucide-react';
 import { formatTimeWithSeconds } from '@/lib/utils';
 import { logsApi, type TaskLog } from '@/lib/api';
 import type { ChatMessage } from '@/types';
@@ -34,6 +34,8 @@ export default function ThinkingPanel({
 }: ThinkingPanelProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [isMinimized, setIsMinimized] = useState(false);
+  // 뷰 모드: 'summary' (기존 이모지 뷰) vs 'terminal' (raw 로그 뷰)
+  const [viewMode, setViewMode] = useState<'summary' | 'terminal'>('terminal');
 
   // 메시지별 실행 흐름 상태
   const [expandedMsgId, setExpandedMsgId] = useState<string | null>(null);
@@ -89,6 +91,7 @@ export default function ThinkingPanel({
       case 'fallback': return '🔄';
       case 'cancelled': return '⛔';
       case 'done': return '✅';
+      case 'raw_log': return '>';
       default: return '💭';
     }
   };
@@ -159,6 +162,13 @@ export default function ThinkingPanel({
         </div>
         <div className="flex items-center gap-1">
           <button
+            onClick={() => setViewMode(viewMode === 'terminal' ? 'summary' : 'terminal')}
+            className={`p-1 rounded transition-colors ${viewMode === 'terminal' ? 'bg-zinc-700 text-green-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
+            title={viewMode === 'terminal' ? '요약 뷰' : '터미널 뷰'}
+          >
+            {viewMode === 'terminal' ? <Terminal size={14} /> : <Eye size={14} />}
+          </button>
+          <button
             onClick={() => setIsMinimized(!isMinimized)}
             className="p-1 hover:bg-zinc-800 rounded transition-colors"
           >
@@ -176,67 +186,89 @@ export default function ThinkingPanel({
       {/* 로그 영역 */}
       {!isMinimized && (
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {/* 실시간 Thinking 로그 (작업 진행 중) */}
-          {isActive && logs.length > 0 && (
+          {/* 실시간 로그 */}
+          {logs.length > 0 && (
             <>
-              <div className="text-xs font-medium text-zinc-400 mb-2">실시간</div>
-              {logs.map((log) => (
-                <div
-                  key={log.id}
-                  className={`text-xs p-2 rounded-lg ${
-                    log.status === 'running'
-                      ? 'bg-primary/10 border border-primary/30'
-                      : log.status === 'error'
-                      ? 'bg-red-500/10 border border-red-500/30'
-                      : 'bg-zinc-800/50'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 text-zinc-400 mb-1">
-                    <span>{getStepIcon(log.step, log.status)}</span>
-                    <span className="text-zinc-500">{formatTimeWithSeconds(log.timestamp)}</span>
-                  </div>
-                  <div className="text-zinc-200">
-                    {log.agent && (
-                      <span className="text-primary font-medium">{log.agent} </span>
-                    )}
-                    <span>{getStepLabel(log.step)}</span>
-                    {log.detail && (
-                      <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
+              <div className="text-xs font-medium text-zinc-400 mb-2">
+                {isActive ? '실시간' : '최근 작업'}
+              </div>
 
-          {/* 완료된 작업의 실시간 로그 (방금 완료) */}
-          {!isActive && logs.length > 0 && (
-            <>
-              <div className="text-xs font-medium text-zinc-400 mb-2">최근 작업</div>
-              {logs.map((log) => (
-                <div
-                  key={log.id}
-                  className={`text-xs p-2 rounded-lg ${
-                    log.status === 'error'
-                      ? 'bg-red-500/10 border border-red-500/30'
-                      : 'bg-zinc-800/50'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 text-zinc-400 mb-1">
-                    <span>{getStepIcon(log.step, log.status)}</span>
-                    <span className="text-zinc-500">{formatTimeWithSeconds(log.timestamp)}</span>
-                  </div>
-                  <div className="text-zinc-200">
-                    {log.agent && (
-                      <span className="text-primary font-medium">{log.agent} </span>
-                    )}
-                    <span>{getStepLabel(log.step)}</span>
-                    {log.detail && (
-                      <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
-                    )}
-                  </div>
+              {viewMode === 'terminal' ? (
+                /* 터미널 모드: raw 로그를 모노스페이스로 표시 */
+                <div className="bg-black/80 rounded-lg border border-zinc-800 p-2 font-mono text-[11px] leading-relaxed max-h-[60vh] overflow-y-auto">
+                  {logs.map((log) => {
+                    if (log.step === 'raw_log') {
+                      // Python 로거 출력 그대로
+                      const line = log.detail || '';
+                      const isError = line.includes('ERROR') || line.includes('FAIL');
+                      const isWarn = line.includes('WARN');
+                      const isToolCall = line.includes('TOOL_CALL');
+                      const isToolResult = line.includes('TOOL_RESULT');
+                      return (
+                        <div
+                          key={log.id}
+                          className={`whitespace-pre-wrap break-all ${
+                            isError ? 'text-red-400' :
+                            isWarn ? 'text-yellow-400' :
+                            isToolCall ? 'text-cyan-400' :
+                            isToolResult ? 'text-blue-300' :
+                            'text-green-300/80'
+                          }`}
+                        >
+                          {line}
+                        </div>
+                      );
+                    }
+                    // manager_thinking 등 → 요약 라인으로 표시
+                    const ts = log.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                    const prefix = log.step === 'error' ? '❌' : log.step === 'done' ? '✅' : '→';
+                    const agentTag = log.agent ? `[${log.agent}] ` : '';
+                    return (
+                      <div
+                        key={log.id}
+                        className={`${
+                          log.status === 'error' ? 'text-red-400' :
+                          log.step === 'done' ? 'text-green-400' :
+                          'text-zinc-400'
+                        }`}
+                      >
+                        <span className="text-zinc-600">{ts}</span> {prefix} {agentTag}{getStepLabel(log.step)}{log.detail ? ` | ${log.detail}` : ''}
+                      </div>
+                    );
+                  })}
+                  {isActive && <span className="text-green-400 animate-pulse">▌</span>}
                 </div>
-              ))}
+              ) : (
+                /* 요약 모드: 기존 카드 형태 (raw_log 제외) */
+                <>
+                  {logs.filter(l => l.step !== 'raw_log').map((log) => (
+                    <div
+                      key={log.id}
+                      className={`text-xs p-2 rounded-lg ${
+                        log.status === 'running'
+                          ? 'bg-primary/10 border border-primary/30'
+                          : log.status === 'error'
+                          ? 'bg-red-500/10 border border-red-500/30'
+                          : 'bg-zinc-800/50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-zinc-400 mb-1">
+                        <span>{getStepIcon(log.step, log.status)}</span>
+                        <span className="text-zinc-500">{formatTimeWithSeconds(log.timestamp)}</span>
+                      </div>
+                      <div className="text-zinc-200">
+                        {log.agent && (
+                          <span className="text-primary font-medium">{log.agent} </span>
+                        )}
+                        <span>{getStepLabel(log.step)}</span>
+                        {log.detail && (
+                          <p className="text-zinc-400 mt-0.5 break-words">{log.detail}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
             </>
           )}
 
@@ -346,8 +378,8 @@ export default function ThinkingPanel({
         </div>
       )}
 
-      {/* 중지 버튼 */}
-      {isActive && taskId && (
+      {/* 중지 버튼 - taskId 없어도 isActive면 표시 */}
+      {isActive && (
         <div className="p-3 border-t border-dark-border">
           <button
             onClick={onStop}

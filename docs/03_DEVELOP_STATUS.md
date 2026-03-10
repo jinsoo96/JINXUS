@@ -2,6 +2,38 @@
 
 ## 버전 v1.5.0 (진행 중)
 
+### 2026-03-10 에이전트 실행 효율화 리팩토링
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| EFF-1 | classify + needs_info 통합 | 완료 | `_classify_input`이 chat/chat_search/task 3가지로 분류. chat 경로에서 `_needs_external_info` API 호출 제거 (3호출→1호출) |
+| EFF-2 | evaluate 스킵 (성공 시) | 완료 | `post_execute`에서 TASK_COMPLETE 설정된 경우 `_evaluate_node`에서 재평가 건너뜀 |
+| EFF-3 | reflect 조건부 실행 | 완료 | 실패(score < 0.5) 시 Claude 반성 API 호출 스킵. max_tokens 1024→512 축소 |
+| EFF-4 | 서브에이전트 memory 중복 제거 | 완료 | CORE의 memory_context를 서브에이전트에 전달. `_receive_node`에서 기존 컨텍스트 있으면 Qdrant 재검색 스킵 |
+| EFF-5 | DynamicToolExecutor 캐싱 | 완료 | 도구 스키마, 도구 목록, system_prompt+guide 캐싱. 매 라운드 재빌드 제거 |
+
+### 2026-03-10 백그라운드 작업 웹 UI 연결
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| BG-1 | 백그라운드 작업 생성 (웹 UI) | 완료 | ChatTab에 백그라운드 실행 버튼(Cog 아이콘) 추가. taskApi.createTask() → POST /task (autonomous=true) |
+| BG-2 | 작업 진행 SSE 스트림 | 완료 | GET /task/{id}/stream 엔드포인트 추가. BackgroundWorker 인메모리 이벤트 큐 → SSE. started/progress/completed/failed 이벤트 |
+| BG-3 | 프론트엔드 스트림 구독 | 완료 | taskApi.streamTaskProgress()로 SSE 구독. ThinkingPanel 터미널 뷰에 단계별 진행 표시. 완료 시 결과 자동 채팅에 표시 |
+| BG-4 | Task API 통합 | 완료 | 모든 작업(autonomous/single)을 BackgroundWorker 경유로 통일. Task Store ↔ BackgroundWorker 상태 자동 동기화 |
+| BG-5 | 탭 lazy load 최적화 | 완료 | next/dynamic으로 탭 컴포넌트 lazy import. dev 번들 8.5MB → 프로덕션 307KB |
+
+### 2026-03-10 SSE 스트리밍 안정성 강화
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| STB-1 | run_stream 예외 보호 | 완료 | run_stream을 run_stream + _run_stream_inner로 분리. 어떤 예외든 error + done 이벤트 반드시 발송. 프론트엔드 무한 로딩 방지 |
+| STB-2 | 메모리 저장 타임아웃 | 완료 | 메모리/캐시 저장을 asyncio.wait_for(10s)로 감싸서 Redis hang 시 done 이벤트 차단 방지 |
+| STB-3 | SSE done 보장 (chat.py) | 완료 | event_generator에서 스트림 종료 시 done 이벤트 미발송 감지 → 강제 done 전송 |
+| STB-4 | 강제 중지 버튼 개선 | 완료 | taskId 없어도 중지 가능. ThinkingPanel에서 isActive만으로 버튼 표시. 프론트엔드 상태 무조건 초기화 |
+| STB-5 | 로딩 타임아웃 자동 중지 | 완료 | 5분 응답 없으면 자동으로 작업 중지 + 에러 토스트 표시 |
+| STB-6 | 실행로그 상세화 | 완료 | base_agent 모든 노드에서 progress_callback 호출. jinxus_core 직접 응답 경로에도 분류/모델선택/API호출/취합 단계별 이벤트 추가 |
+| STB-7 | 실시간 터미널 로그 | 완료 | TaskLogHandler: Python 로거(jinxus.*)를 SSE "log" 이벤트로 실시간 전달. DynamicToolExecutor에 TOOL_CALL/TOOL_RESULT 로그 추가. ThinkingPanel 터미널/요약 뷰 토글 |
+
 ### 2026-03-09 대화 맥락 + 인프라 강화
 
 | # | 항목 | 상태 | 설명 |

@@ -53,6 +53,7 @@ async def chat(request: ChatRequest):
     async def event_generator():
         task_id = None
         cancel_event = None
+        got_done = False
 
         try:
             async for event in orchestrator.run_task_stream(
@@ -71,7 +72,11 @@ async def chat(request: ChatRequest):
                         "event": "cancelled",
                         "data": json.dumps({"task_id": task_id, "message": "사용자가 작업을 취소했습니다"}, ensure_ascii=False),
                     }
+                    got_done = True
                     break
+
+                if event["event"] == "done":
+                    got_done = True
 
                 yield {
                     "event": event["event"],
@@ -84,13 +89,21 @@ async def chat(request: ChatRequest):
                 "event": "cancelled",
                 "data": json.dumps({"task_id": task_id, "message": "작업이 취소되었습니다"}, ensure_ascii=False),
             }
+            got_done = True
         except Exception as e:
-            logger.error(f"SSE 스트림 에러: {e}")
+            logger.error(f"SSE 스트림 에러: {e}", exc_info=True)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e)}, ensure_ascii=False),
+                "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
             }
         finally:
+            # done 이벤트를 못 보냈으면 강제로 보내서 프론트 로딩 해제
+            if not got_done:
+                logger.warning(f"SSE 스트림이 done 없이 종료됨, 강제 done 전송: {task_id}")
+                yield {
+                    "event": "done",
+                    "data": json.dumps({"task_id": task_id, "agents_used": ["JINXUS_CORE"], "success": False}, ensure_ascii=False),
+                }
             if task_id:
                 cleanup_cancel_event(task_id)
 

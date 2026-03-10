@@ -1,18 +1,21 @@
 'use client';
 
 import { useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { useAppStore } from '@/store/useAppStore';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
-import DashboardTab from '@/components/tabs/DashboardTab';
 import ChatTab from '@/components/tabs/ChatTab';
-import GraphTab from '@/components/tabs/GraphTab';
-import AgentsTab from '@/components/tabs/AgentsTab';
-import MemoryTab from '@/components/tabs/MemoryTab';
-import LogsTab from '@/components/tabs/LogsTab';
-import ToolsTab from '@/components/tabs/ToolsTab';
-import SettingsTab from '@/components/tabs/SettingsTab';
 import ErrorBoundary from '@/components/ErrorBoundary';
+
+// 탭 lazy load — 첫 로드 시 ChatTab만 즉시 로드, 나머지는 필요할 때
+const DashboardTab = dynamic(() => import('@/components/tabs/DashboardTab'), { ssr: false });
+const GraphTab = dynamic(() => import('@/components/tabs/GraphTab'), { ssr: false });
+const AgentsTab = dynamic(() => import('@/components/tabs/AgentsTab'), { ssr: false });
+const MemoryTab = dynamic(() => import('@/components/tabs/MemoryTab'), { ssr: false });
+const LogsTab = dynamic(() => import('@/components/tabs/LogsTab'), { ssr: false });
+const ToolsTab = dynamic(() => import('@/components/tabs/ToolsTab'), { ssr: false });
+const SettingsTab = dynamic(() => import('@/components/tabs/SettingsTab'), { ssr: false });
 
 export default function Home() {
   const { activeTab, setActiveTab, loadSystemStatus, loadAgents } = useAppStore();

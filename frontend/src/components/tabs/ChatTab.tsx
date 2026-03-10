@@ -2,10 +2,10 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { chatApi, feedbackApi, type ChatSession, type SSEEvent } from '@/lib/api';
+import { chatApi, feedbackApi, taskApi, type ChatSession, type SSEEvent } from '@/lib/api';
 import {
   Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2,
-  MessageSquare, Clock, Globe, RefreshCw, ChevronDown, Brain
+  MessageSquare, Clock, Globe, RefreshCw, ChevronDown, Brain, Cog
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import ThinkingPanel, { type ThinkingLog } from '@/components/ThinkingPanel';
@@ -43,29 +43,33 @@ export default function ChatTab() {
     }]);
   };
 
-  // 작업 중지 (SSE 스트리밍 취소)
+  // 작업 중지 (SSE 스트리밍 취소) - taskId 없어도 강제 중지 가능
   const handleStopTask = async () => {
-    if (!currentTaskId) return;
     try {
-      // 1. 프론트엔드 SSE 연결 즉시 중단
+      // 1. 프론트엔드 SSE 연결 즉시 중단 (taskId 유무 무관)
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
       }
 
-      // 2. 백엔드에 취소 알림 (비동기로)
-      const result = await chatApi.cancelStream(currentTaskId);
-      if (result.success) {
-        addThinkingLog('cancelled', '사용자가 작업을 중지했습니다', undefined, 'error');
+      // 2. 백엔드에 취소 알림 (taskId 있을 때만)
+      if (currentTaskId) {
+        try {
+          const result = await chatApi.cancelStream(currentTaskId);
+          addThinkingLog('cancelled', result.success ? '사용자가 작업을 중지했습니다' : result.message, undefined, 'error');
+        } catch {
+          // 백엔드 취소 실패해도 무시
+        }
       } else {
-        addThinkingLog('cancelled', result.message, undefined, 'error');
+        addThinkingLog('cancelled', '작업을 강제 중지했습니다', undefined, 'error');
       }
-      setLoading(false);
-      setCurrentTaskId(null);
     } catch (error) {
       console.error('Failed to cancel stream:', error);
-      // 실패해도 UI는 중지
+    } finally {
+      // UI 상태 무조건 초기화
       setLoading(false);
+      setStreamingContent('');
+      setCurrentAgent(null);
       setCurrentTaskId(null);
     }
   };
@@ -198,6 +202,19 @@ export default function ChatTab() {
     };
   }, []);
 
+  // 로딩 타임아웃: 5분 넘게 응답 없으면 자동 중지
+  useEffect(() => {
+    if (!isLoading) return;
+    const timeout = setTimeout(() => {
+      if (isLoading) {
+        addThinkingLog('timeout', '5분 타임아웃 - 작업 자동 중지', undefined, 'error');
+        handleStopTask();
+        toast.error('응답 타임아웃 (5분)');
+      }
+    }, 5 * 60 * 1000);
+    return () => clearTimeout(timeout);
+  }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // SSE 스트리밍 전송
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -271,6 +288,12 @@ export default function ChatTab() {
               if (event.data.content) {
                 fullResponse += event.data.content;
                 setStreamingContent(fullResponse);
+              }
+              break;
+            case 'log':
+              // 실제 Python 로거 출력 → 터미널 로그로 표시
+              if (event.data.line) {
+                addThinkingLog('raw_log', event.data.line, undefined, 'running');
               }
               break;
             case 'done':
@@ -352,6 +375,156 @@ export default function ChatTab() {
       setCurrentAgent(null);
       setCurrentTaskId(null);
       abortControllerRef.current = null;
+    }
+  };
+
+  // 백그라운드 작업 실행 (자율 모드)
+  const handleBackgroundSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const command = input.trim();
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `[백그라운드] ${command}`,
+      timestamp: new Date(),
+    };
+
+    addMessage(userMessage);
+    setInput('');
+    setLoading(true);
+
+    // Thinking 초기화
+    setThinkingLogs([]);
+    addThinkingLog('start', '백그라운드 작업 제출 중...', undefined, 'running');
+
+    try {
+      const result = await taskApi.createTask({
+        message: command,
+        session_id: sessionId || undefined,
+        autonomous: true,
+      });
+
+      const bgTaskId = result.task_id;
+      setCurrentTaskId(bgTaskId);
+      addThinkingLog('start', `백그라운드 작업 시작: ${bgTaskId.slice(0, 8)}`, undefined, 'running');
+
+      // SSE로 진행 상황 구독
+      const streamController = taskApi.streamTaskProgress(
+        bgTaskId,
+        (event) => {
+          switch (event.event) {
+            case 'status':
+              addThinkingLog('raw_log', `상태: ${event.data.status}`, undefined, 'running');
+              break;
+            case 'started':
+              addThinkingLog('raw_log', `작업 시작됨 (autonomous=${event.data.autonomous})`, undefined, 'running');
+              break;
+            case 'progress':
+              addThinkingLog('raw_log', String(event.data.message || '진행 중...'), undefined, 'running');
+              break;
+            case 'completed': {
+              const preview = String(event.data.result_preview || '');
+              addThinkingLog('done', `완료 (${event.data.duration_s}초)`, undefined, 'done');
+
+              // 결과를 채팅에 표시
+              taskApi.getTaskStatus(bgTaskId).then((detail) => {
+                const assistantMessage: ChatMessage = {
+                  id: bgTaskId,
+                  role: 'assistant',
+                  content: detail.result || preview || '작업 완료',
+                  timestamp: new Date(),
+                  agentsUsed: detail.agents_used,
+                  success: true,
+                };
+                addMessage(assistantMessage);
+              }).catch(() => {
+                addMessage({
+                  id: bgTaskId,
+                  role: 'assistant',
+                  content: preview || '작업 완료 (결과 조회 실패)',
+                  timestamp: new Date(),
+                  success: true,
+                });
+              });
+
+              setLoading(false);
+              setCurrentTaskId(null);
+              break;
+            }
+            case 'failed':
+              addThinkingLog('error', `실패: ${event.data.error}`, undefined, 'error');
+              addMessage({
+                id: bgTaskId,
+                role: 'assistant',
+                content: `작업 실패: ${event.data.error}`,
+                timestamp: new Date(),
+                success: false,
+              });
+              setLoading(false);
+              setCurrentTaskId(null);
+              break;
+            case 'done': {
+              // SSE 스트림 종료 이벤트
+              const status = String(event.data.status || 'unknown');
+              if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+                // 이미 위에서 처리됨
+              } else {
+                addThinkingLog('done', '스트림 종료', undefined, 'done');
+              }
+              setLoading(false);
+              setCurrentTaskId(null);
+              break;
+            }
+          }
+        },
+        (error) => {
+          addThinkingLog('error', error.message, undefined, 'error');
+          // 에러 시에도 폴링으로 결과 확인 시도
+          const poll = setInterval(async () => {
+            try {
+              const detail = await taskApi.getTaskStatus(bgTaskId);
+              if (detail.status === 'completed' || detail.status === 'failed') {
+                clearInterval(poll);
+                addMessage({
+                  id: bgTaskId,
+                  role: 'assistant',
+                  content: detail.result || '작업 완료',
+                  timestamp: new Date(),
+                  success: detail.status === 'completed',
+                });
+                setLoading(false);
+                setCurrentTaskId(null);
+              }
+            } catch { /* ignore */ }
+          }, 5000);
+          // 최대 30분 폴링
+          setTimeout(() => clearInterval(poll), 30 * 60 * 1000);
+        },
+        () => {
+          // onDone - 스트림 종료
+        },
+      );
+
+      // abort 시 스트림도 종료
+      abortControllerRef.current = new AbortController();
+      abortControllerRef.current.signal.addEventListener('abort', () => {
+        streamController.abort();
+        taskApi.cancelTask(bgTaskId).catch(() => {});
+      });
+
+    } catch (error) {
+      addThinkingLog('error', error instanceof Error ? error.message : '작업 생성 실패', undefined, 'error');
+      addMessage({
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `백그라운드 작업 생성 실패: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+        timestamp: new Date(),
+        success: false,
+      });
+      setLoading(false);
+      toast.error('백그라운드 작업 생성 실패');
     }
   };
 
@@ -710,12 +883,22 @@ export default function ChatTab() {
             type="submit"
             disabled={!input.trim() || isLoading}
             className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="실시간 전송 (Ctrl+Enter)"
           >
             <Send size={20} />
           </button>
+          <button
+            type="button"
+            onClick={handleBackgroundSubmit}
+            disabled={!input.trim() || isLoading}
+            className="px-4 py-3 bg-amber-600 hover:bg-amber-500 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="백그라운드 실행 (긴 작업용, 자율 모드)"
+          >
+            <Cog size={20} />
+          </button>
         </div>
         <p className="mt-2 text-xs text-zinc-500 text-center">
-          Ctrl+Enter로 전송 | 실시간 스트리밍 | 텔레그램 대화도 여기서 확인
+          Ctrl+Enter 실시간 전송 | <Cog size={10} className="inline" /> 백그라운드 (긴 작업)
         </p>
       </form>
         </div>

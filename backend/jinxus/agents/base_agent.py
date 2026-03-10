@@ -77,6 +77,7 @@ class BaseAgent(ABC):
         self._client = Anthropic(api_key=settings.anthropic_api_key)
         self._model = settings.claude_model
         self._memory = get_jinx_memory()
+        self._progress_callback = None  # JINXUS_CORE에서 주입
         self._tools = get_tools_for_agent(self.name)
         self._prompt_version = "v1.0"
         self._graph = self._build_graph()
@@ -149,12 +150,18 @@ class BaseAgent(ABC):
         self._state_tracker.start_task(self.name, state["instruction"])
         self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-        # 장기기억에서 유사 경험 검색
-        memory_context = self._memory.search_long_term(
-            agent_name=self.name,
-            query=state["instruction"],
-            limit=5,
-        )
+        # CORE에서 전달받은 memory_context가 있으면 재검색 스킵
+        existing_context = state.get("memory_context")
+        if existing_context:
+            await self._report_progress("작업 수신 (CORE 컨텍스트 사용)")
+            memory_context = existing_context
+        else:
+            await self._report_progress("작업 수신, 관련 기억 검색 중...")
+            memory_context = self._memory.search_long_term(
+                agent_name=self.name,
+                query=state["instruction"],
+                limit=5,
+            )
 
         return {
             **state,
@@ -169,6 +176,7 @@ class BaseAgent(ABC):
     async def _plan_node(self, state: AgentState) -> AgentState:
         """실행 계획 수립"""
         self._state_tracker.update_node(self.name, GraphNode.PLAN)
+        await self._report_progress(f"실행 계획 수립 중... (도구: {', '.join(list(self._tools.keys())[:5]) if self._tools else '없음'})")
         system_prompt = self._get_system_prompt()
         plan_prompt = self._get_plan_prompt(state)
 
@@ -180,6 +188,7 @@ class BaseAgent(ABC):
         )
 
         plan_text = response.content[0].text
+        await self._report_progress(f"계획 수립 완료 → 실행 단계 진입")
 
         # 간단한 계획 파싱 (실제로는 더 정교하게)
         plan = [{"step": 1, "action": plan_text}]
@@ -206,6 +215,7 @@ class BaseAgent(ABC):
         success=False로 마킹하여 evaluate에서 조기 종료되도록 한다.
         """
         self._state_tracker.update_node(self.name, GraphNode.PRE_EXECUTE_GUARD)
+        await self._report_progress("컨텍스트 예산 검사 중...")
 
         guard = get_context_guard(self._model)
 
@@ -309,17 +319,27 @@ class BaseAgent(ABC):
         pass
 
     async def _evaluate_node(self, state: AgentState) -> AgentState:
-        """실행 결과 평가"""
+        """실행 결과 평가
+
+        post_execute에서 completion_signal로 이미 성공/실패가 결정된 경우 재평가 건너뜀.
+        """
         self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
-        # 기본 평가: 도구 결과 기반
+
+        # post_execute에서 이미 결정된 경우 → 그대로 통과 (API 호출 절약)
+        if state.get("success") is True:
+            await self._report_progress("실행 성공 확인 → 평가 생략")
+            return {**state, "success_score": state.get("success_score", 0.9)}
+
         tool_results = state.get("tool_results", [])
+        tool_count = len(tool_results)
+        await self._report_progress(f"실행 결과 평가 중... (도구 결과 {tool_count}개)")
 
         if not tool_results:
             return {
                 **state,
                 "success": False,
                 "success_score": 0.0,
-                "failure_reason": "No tool results",
+                "failure_reason": state.get("failure_reason", "No tool results"),
                 "retry_count": state["retry_count"] + 1,
             }
 
@@ -331,8 +351,8 @@ class BaseAgent(ABC):
             else 0.0
         )
 
-        failure_reason = None
-        if not all_success:
+        failure_reason = state.get("failure_reason")
+        if not all_success and not failure_reason:
             errors = [r.get("error") for r in tool_results if r.get("error")]
             failure_reason = "; ".join(errors) if errors else "Tool execution failed"
 
@@ -345,25 +365,38 @@ class BaseAgent(ABC):
         }
 
     async def _reflect_node(self, state: AgentState) -> AgentState:
-        """작업 반성 및 개선점 도출"""
+        """작업 반성 및 개선점 도출
+
+        최적화: 명확한 실패(score < 0.5)는 반성 스킵 — 실패 원인이 이미 명확하므로
+        API 호출 낭비 방지. 성공 또는 아슬아슬한 실패만 반성.
+        """
         self._state_tracker.update_node(self.name, GraphNode.REFLECT)
-        reflection_prompt = f"""
-작업 결과를 분석하고 반성해줘.
+
+        # 명확한 실패 → 반성 스킵 (API 호출 절약)
+        score = state.get("success_score", 0.0)
+        if not state.get("success") and score < 0.5:
+            await self._report_progress(f"명확한 실패 (점수: {score:.1f}) → 반성 생략")
+            return {
+                **state,
+                "reflection": state.get("failure_reason", "실행 실패"),
+                "improvement_hint": "",
+            }
+
+        status = "성공" if state["success"] else "실패"
+        await self._report_progress(f"작업 반성 중... (결과: {status}, 점수: {score:.1f})")
+        reflection_prompt = f"""작업 결과를 분석하고 반성해줘.
 
 ## 원본 지시
 {state['instruction']}
 
 ## 실행 결과
 성공: {state['success']}
-점수: {state['success_score']}
+점수: {score}
 실패 이유: {state.get('failure_reason', 'N/A')}
 
-## 도구 사용 결과
-{state.get('tool_results', [])}
-
 ## 요청
-1. 이번 작업에서 잘한 점과 부족한 점을 분석해줘.
-2. 다음에 같은 유형의 작업을 할 때 개선할 점을 제안해줘.
+1. 잘한 점과 부족한 점을 분석해줘.
+2. 다음에 개선할 점을 제안해줘.
 
 JSON으로 응답해:
 {{"reflection": "...", "improvement_hint": "..."}}
@@ -371,7 +404,7 @@ JSON으로 응답해:
 
         response = self._client.messages.create(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=512,
             messages=[{"role": "user", "content": reflection_prompt}],
         )
 
@@ -382,7 +415,6 @@ JSON으로 응답해:
         improvement_hint = ""
         try:
             import json
-            # JSON 블록 추출 (마크다운 코드블록 포함)
             json_text = reflection_text
             if "```" in json_text:
                 json_text = json_text.split("```")[1]
@@ -392,7 +424,7 @@ JSON으로 응답해:
             reflection = parsed.get("reflection", reflection_text)
             improvement_hint = parsed.get("improvement_hint", "")
         except (json.JSONDecodeError, IndexError, KeyError):
-            pass  # JSON 파싱 실패 시 원본 텍스트 사용
+            pass
 
         return {
             **state,
@@ -403,6 +435,7 @@ JSON으로 응답해:
     async def _memory_write_node(self, state: AgentState) -> AgentState:
         """장기기억에 작업 결과 저장"""
         self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
+        await self._report_progress("기억 저장 중...")
         # 중요도 계산
         importance_score = self._calc_importance(state)
 
@@ -426,6 +459,7 @@ JSON으로 응답해:
         """최종 결과 반환"""
         self._state_tracker.update_node(self.name, GraphNode.RETURN_RESULT)
         self._state_tracker.complete_task(self.name)
+        await self._report_progress("결과 반환")
         duration_ms = int(
             (datetime.now() - datetime.fromisoformat(state["created_at"])).total_seconds() * 1000
         )
@@ -434,6 +468,16 @@ JSON으로 응답해:
             **state,
             "duration_ms": duration_ms,
         }
+
+    # ===== 진행 보고 =====
+
+    async def _report_progress(self, detail: str):
+        """SSE progress_callback이 설정되어 있으면 호출"""
+        if hasattr(self, '_progress_callback') and self._progress_callback:
+            try:
+                await self._progress_callback(f"[{self.name}] {detail}")
+            except Exception:
+                pass  # 콜백 실패는 무시
 
     # ===== 헬퍼 메서드 =====
 
@@ -528,12 +572,13 @@ JSON으로 응답해:
 
     # ===== 공개 인터페이스 =====
 
-    async def run(self, instruction: str, context: list[dict] = None) -> dict:
+    async def run(self, instruction: str, context: list[dict] = None, memory_context: list = None) -> dict:
         """에이전트 실행
 
         Args:
             instruction: JINXUS_CORE로부터 받은 지시
             context: 추가 컨텍스트 (이전 에이전트 결과 등)
+            memory_context: CORE에서 전달된 메모리 컨텍스트 (있으면 재검색 스킵)
 
         Returns:
             AgentResult 딕셔너리
@@ -557,7 +602,7 @@ JSON으로 응답해:
             "completion_reason": None,
             "agent_name": self.name,
             "prompt_version": self._prompt_version,
-            "memory_context": [],
+            "memory_context": memory_context or [],
             "duration_ms": 0,
             "created_at": "",
         }

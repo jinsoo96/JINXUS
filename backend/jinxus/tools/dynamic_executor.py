@@ -113,13 +113,16 @@ class DynamicToolExecutor:
         from jinxus.core.tool_policy import get_max_tool_rounds
         self._max_rounds = max_tool_rounds if max_tool_rounds != 15 else get_max_tool_rounds(agent_name, default=15)
         self._tools_cache: Optional[dict[str, JinxTool]] = None
+        self._schemas_cache: Optional[list[dict]] = None
+        self._enhanced_system_prompt_cache: dict[str, str] = {}
 
     def _get_available_tools(self) -> dict[str, JinxTool]:
-        """에이전트가 사용 가능한 도구 로드 (Tool Policy Engine 적용)"""
+        """에이전트가 사용 가능한 도구 로드 (Tool Policy Engine 적용, 캐시)"""
+        if self._tools_cache is not None:
+            return self._tools_cache
         from . import get_tools_for_agent
         from jinxus.core.tool_policy import filter_tools_for_agent
         raw_tools = get_tools_for_agent(self._agent_name)
-        # Tool Policy Engine으로 에이전트별 도구 필터링
         self._tools_cache = filter_tools_for_agent(self._agent_name, raw_tools)
         return self._tools_cache
 
@@ -190,10 +193,15 @@ class DynamicToolExecutor:
             ExecutionResult: 실행 결과
         """
         tools = self._get_available_tools()
-        tool_schemas = self._build_tool_schemas()
+        # 스키마 캐시: 도구 목록은 실행 중 변하지 않으므로 한 번만 빌드
+        if self._schemas_cache is None:
+            self._schemas_cache = self._build_tool_schemas()
+        tool_schemas = self._schemas_cache
 
-        # 도구 선택 가이드라인 추가 (MCP 도구 잘못 선택 방지)
-        enhanced_system_prompt = system_prompt + self.TOOL_SELECTION_GUIDE
+        # 시스템 프롬프트 + 가이드 캐시: 같은 프롬프트면 재연결 안 함
+        if system_prompt not in self._enhanced_system_prompt_cache:
+            self._enhanced_system_prompt_cache[system_prompt] = system_prompt + self.TOOL_SELECTION_GUIDE
+        enhanced_system_prompt = self._enhanced_system_prompt_cache[system_prompt]
 
         # 도구가 없으면 일반 대화
         if not tool_schemas:
@@ -222,6 +230,11 @@ class DynamicToolExecutor:
 
         # 도구 호출 루프
         for round_num in range(self._max_rounds):
+            import time as _round_time
+            _round_start = _round_time.time()
+            msg_count = len(messages)
+            logger.debug(f"[{self._agent_name}] round={round_num} messages={msg_count} model={self._model} tools={len(tool_schemas)}")
+
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=4096,
@@ -229,6 +242,8 @@ class DynamicToolExecutor:
                 messages=messages,
                 tools=tool_schemas,
             )
+            _api_ms = (_round_time.time() - _round_start) * 1000
+            logger.debug(f"[{self._agent_name}] Claude API 응답 {_api_ms:.0f}ms usage=({response.usage.input_tokens}in/{response.usage.output_tokens}out) stop={response.stop_reason}")
 
             # 응답 처리
             assistant_content = []
@@ -250,6 +265,7 @@ class DynamicToolExecutor:
 
             # 도구 호출이 없으면 완료
             if not tool_uses:
+                logger.debug(f"[{self._agent_name}] 도구 호출 없음, 텍스트 응답 {len(final_text)}자 반환")
                 return ExecutionResult(
                     success=True,
                     output=final_text,
@@ -277,6 +293,10 @@ class DynamicToolExecutor:
                 # 원래 이름으로 로깅
                 original_tool_name = self._restore_tool_name(tool_name)
 
+                # 도구 입력 요약 (긴 값은 잘라서)
+                input_summary = {k: (str(v)[:80] + "..." if len(str(v)) > 80 else v) for k, v in tool_input.items()}
+                logger.info(f"[{self._agent_name}] TOOL_CALL {original_tool_name}({input_summary})")
+
                 # 도구 호출 시작 콜백
                 if tool_callback:
                     try:
@@ -292,6 +312,8 @@ class DynamicToolExecutor:
                 all_raw_results.append(result)
 
                 success = result.get("success", False)
+                result_preview = str(result.get("output") or result.get("error", ""))[:150]
+                logger.info(f"[{self._agent_name}] TOOL_RESULT {original_tool_name} {'OK' if success else 'FAIL'} {_tool_duration:.0f}ms | {result_preview}")
 
                 # 도구 실행 메트릭 기록
                 try:

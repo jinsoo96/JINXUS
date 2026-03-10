@@ -61,6 +61,8 @@ class BackgroundWorker:
         self._running = False
         self._orchestrator = None
         self._autonomous_runners: dict = {}  # task_id -> AutonomousRunner
+        # 인메모리 이벤트 큐 (task_id -> list[asyncio.Queue]) — SSE 구독자용
+        self._event_subscribers: dict[str, list[asyncio.Queue]] = {}
 
     async def start(self):
         """워커 시작"""
@@ -271,6 +273,31 @@ class BackgroundWorker:
         # 3. 최대 5개로 제한
         return attachments[:5]
 
+    def subscribe_events(self, task_id: str) -> asyncio.Queue:
+        """작업 이벤트 구독 (SSE 스트림용). Queue를 반환."""
+        q: asyncio.Queue = asyncio.Queue()
+        if task_id not in self._event_subscribers:
+            self._event_subscribers[task_id] = []
+        self._event_subscribers[task_id].append(q)
+        return q
+
+    def unsubscribe_events(self, task_id: str, q: asyncio.Queue):
+        """이벤트 구독 해제"""
+        subs = self._event_subscribers.get(task_id, [])
+        if q in subs:
+            subs.remove(q)
+        if not subs:
+            self._event_subscribers.pop(task_id, None)
+
+    async def _publish_progress(self, task_id: str, event_type: str, data: dict):
+        """인메모리 이벤트 큐로 진행 상황 전파 (웹 UI 실시간 스트림용)"""
+        event = {"event": event_type, "task_id": task_id, **data}
+        for q in self._event_subscribers.get(task_id, []):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # 구독자가 느리면 건너뜀
+
     async def _execute_task(self, task: BackgroundTask, worker_id: int):
         """작업 실행"""
         task.status = TaskStatus.RUNNING
@@ -280,7 +307,11 @@ class BackgroundWorker:
 
         # 진행 보고 콜백 생성
         async def progress_callback(message: str):
-            """작업 진행 상황을 알림으로 전송"""
+            """작업 진행 상황을 알림 + Redis Pub/Sub으로 전송"""
+            # Redis Pub/Sub (웹 UI)
+            await self._publish_progress(task.task_id, "progress", {"message": message})
+
+            # 텔레그램 알림
             if task.notify_callback:
                 try:
                     await task.notify_callback(f"📊 진행 보고\n{message}")
@@ -303,6 +334,12 @@ class BackgroundWorker:
             # 상태 영속화: running
             await self._persist_status(task.task_id, "running")
 
+            # 시작 이벤트 publish
+            await self._publish_progress(task.task_id, "started", {
+                "description": task.description[:100],
+                "autonomous": task.autonomous,
+            })
+
             if task.autonomous:
                 await self._execute_autonomous(task, progress_callback)
             else:
@@ -323,6 +360,11 @@ class BackgroundWorker:
             await self._persist_status(task.task_id, "failed", error=str(e))
 
             logger.error(f"[Worker-{worker_id}] 작업 실패: {task.task_id[:8]} - {e}")
+
+            # 실패 이벤트 publish
+            await self._publish_progress(task.task_id, "failed", {
+                "error": str(e)[:500],
+            })
 
             # 실패 알림
             if task.notify_callback:
@@ -347,7 +389,7 @@ class BackgroundWorker:
         result = await self._orchestrator.run_task(
             user_input=task.description,
             session_id=task.session_id,
-            progress_callback=progress_callback if task.notify_callback else None,
+            progress_callback=progress_callback,
         )
 
         task.status = TaskStatus.COMPLETED
@@ -357,6 +399,12 @@ class BackgroundWorker:
 
         duration = (task.completed_at - task.started_at).total_seconds()
         logger.info(f"[BackgroundWorker] 작업 완료: {task.task_id[:8]} ({duration:.1f}초)")
+
+        # 완료 이벤트 publish
+        await self._publish_progress(task.task_id, "completed", {
+            "duration_s": round(duration, 1),
+            "result_preview": task.result[:500] if task.result else "",
+        })
 
         if task.notify_callback:
             try:
@@ -390,7 +438,7 @@ class BackgroundWorker:
             result = await runner.run(
                 task=task.description,
                 session_id=task.session_id,
-                progress_callback=progress_callback if task.notify_callback else None,
+                progress_callback=progress_callback,
             )
 
             task.status = TaskStatus.COMPLETED

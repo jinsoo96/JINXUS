@@ -76,7 +76,7 @@ export interface StoredMessage {
 
 // SSE 이벤트 타입
 export interface SSEEvent {
-  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled';
+  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log';
   data: {
     task_id?: string;
     session_id?: string;
@@ -94,6 +94,7 @@ export interface SSEEvent {
     success?: boolean;
     error?: string;
     message?: string;        // cancelled, error 메시지
+    line?: string;           // log - raw Python logger output
   };
 }
 
@@ -619,10 +620,106 @@ export interface ActiveTask {
   source: 'background' | 'api';
 }
 
+export interface TaskCreateRequest {
+  message: string;
+  session_id?: string;
+  autonomous?: boolean;
+  max_steps?: number;
+  timeout_seconds?: number;
+}
+
+export interface TaskDetail {
+  task_id: string;
+  status: string;
+  result: string | null;
+  agents_used: string[];
+  duration_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export const taskApi = {
   // 활성 작업 목록 조회
   getActiveTasks: async (): Promise<{ active_tasks: ActiveTask[]; count: number }> => {
     return apiCall<{ active_tasks: ActiveTask[]; count: number }>('/task/active/list');
+  },
+
+  // 작업 생성 (백그라운드 실행)
+  createTask: async (req: TaskCreateRequest): Promise<{ task_id: string; status: string; message: string }> => {
+    return apiCall<{ task_id: string; status: string; message: string }>('/task', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  },
+
+  // 작업 상태 조회
+  getTaskStatus: async (taskId: string): Promise<TaskDetail> => {
+    return apiCall<TaskDetail>(`/task/${taskId}`);
+  },
+
+  // 작업 진행 상황 SSE 스트림
+  streamTaskProgress: (
+    taskId: string,
+    onEvent: (event: { event: string; data: Record<string, unknown> }) => void,
+    onError: (error: Error) => void,
+    onDone: () => void,
+  ): AbortController => {
+    const controller = new AbortController();
+
+    fetch(`${API_BASE}/task/${taskId}/stream`, {
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = 'progress';
+      let currentData = '';
+
+      const flush = () => {
+        if (currentData) {
+          try {
+            const data = JSON.parse(currentData);
+            onEvent({ event: currentEvent, data });
+            if (currentEvent === 'done' || currentEvent === 'completed' || currentEvent === 'failed') {
+              onDone();
+            }
+          } catch { /* ignore */ }
+        }
+        currentEvent = 'progress';
+        currentData = '';
+      };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { flush(); onDone(); break; }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.trim() === '') {
+              flush();
+            } else if (line.startsWith('event:')) {
+              currentEvent = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              currentData += line.slice(5).trim();
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }).catch((err) => {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      onError(err instanceof Error ? err : new Error(String(err)));
+    });
+
+    return controller;
   },
 
   // 작업 취소
