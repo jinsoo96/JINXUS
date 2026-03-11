@@ -62,6 +62,55 @@ AGENT_POLICIES: dict[str, dict] = {
         "blacklist": [],
         "max_tool_rounds": 15,
     },
+    # === JX_CODER 하위 전문가 팀 ===
+    "JX_FRONTEND": {
+        "whitelist": [
+            "code_executor",
+            "mcp:filesystem:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "mcp:git:*", "mcp:github:*",  # git/github는 JX_CODER가 직접 처리
+        ],
+        "max_tool_rounds": 12,
+    },
+    "JX_BACKEND": {
+        "whitelist": [
+            "code_executor", "web_searcher", "github_agent",
+            "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
+        ],
+        "blacklist": [],
+        "max_tool_rounds": 15,
+    },
+    "JX_INFRA": {
+        "whitelist": [
+            "code_executor",
+            "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "mcp:github:*",  # GitHub 조작은 JX_CODER 경유
+        ],
+        "max_tool_rounds": 12,
+    },
+    "JX_REVIEWER": {
+        "whitelist": [
+            "mcp:filesystem:*", "mcp:fetch:*",  # 코드 읽기만
+        ],
+        "blacklist": [
+            "code_executor",  # 리뷰어는 코드 실행 불가
+            "mcp:git:*", "mcp:github:*",
+        ],
+        "max_tool_rounds": 8,
+    },
+    "JX_TESTER": {
+        "whitelist": [
+            "code_executor",
+            "mcp:filesystem:*",  # 코드 읽기 + 테스트 실행
+        ],
+        "blacklist": [
+            "mcp:git:*", "mcp:github:*",
+        ],
+        "max_tool_rounds": 15,
+    },
 }
 
 

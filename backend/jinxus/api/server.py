@@ -107,6 +107,41 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize scheduler: {e}")
 
+    # 상태 추적기 Redis 초기화
+    try:
+        from jinxus.agents.state_tracker import get_state_tracker
+        tracker = get_state_tracker()
+        await tracker.init_redis()
+    except Exception as e:
+        logger.debug(f"StateTracker Redis init failed (in-memory mode): {e}")
+
+    # 메트릭 복원 + 주기적 스냅샷
+    metrics_task = None
+    try:
+        from jinxus.core.metrics import get_metrics
+        import redis.asyncio as aioredis
+        metrics_redis = aioredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            password=settings.redis_password if settings.redis_password else None,
+            decode_responses=True,
+        )
+        metrics = get_metrics()
+        await metrics.restore_snapshot(metrics_redis)
+
+        async def _periodic_metrics_save():
+            while True:
+                await asyncio.sleep(300)  # 5분
+                try:
+                    await metrics.save_snapshot(metrics_redis)
+                except Exception:
+                    pass
+
+        metrics_task = asyncio.create_task(_periodic_metrics_save())
+        print("Metrics snapshot: restore done, auto-save every 5m")
+    except Exception as e:
+        logger.debug(f"Metrics snapshot init failed: {e}")
+
     # 메모리 자동 정리 (6시간 간격)
     memory_cleanup_task = None
     try:
@@ -146,6 +181,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to shutdown scheduler: {e}")
 
+    # 메트릭 최종 스냅샷 저장
+    if metrics_task:
+        metrics_task.cancel()
+        try:
+            await metrics.save_snapshot(metrics_redis)
+            await metrics_redis.close()
+        except Exception:
+            pass
+
     if memory_cleanup_task:
         memory_cleanup_task.cancel()
     if telegram_task:
@@ -160,7 +204,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="JINXUS",
         description="Just Intelligent Nexus, eXecutes Under Supremacy - 진수의 AI 비서 시스템",
-        version="1.5.0",
+        version=settings.jinxus_version,
         lifespan=lifespan,
         debug=settings.jinxus_debug,
     )
@@ -192,7 +236,7 @@ def create_app() -> FastAPI:
         return {
             "name": "JINXUS",
             "tagline": "명령만 해. 나머지는 내가 다 한다.",
-            "version": "1.5.0",
+            "version": settings.jinxus_version,
             "status": "running",
         }
 

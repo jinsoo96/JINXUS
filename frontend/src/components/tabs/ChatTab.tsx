@@ -283,6 +283,16 @@ export default function ChatTab() {
               }
               setCurrentAgent(null);
               break;
+
+            case 'team_progress':
+              // JX_CODER 전문가 팀 진행 이벤트
+              addThinkingLog(
+                'team_progress',
+                event.data.detail || event.data.message,
+                event.data.specialist || event.data.agent,
+                event.data.status === 'done' ? 'done' : event.data.status === 'error' ? 'error' : 'running'
+              );
+              break;
             case 'message':
               // content 필드에 청크 데이터가 있음
               if (event.data.content) {

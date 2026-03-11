@@ -76,7 +76,7 @@ export interface StoredMessage {
 
 // SSE 이벤트 타입
 export interface SSEEvent {
-  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log';
+  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log' | 'team_progress';
   data: {
     task_id?: string;
     session_id?: string;
@@ -95,6 +95,8 @@ export interface SSEEvent {
     error?: string;
     message?: string;        // cancelled, error 메시지
     line?: string;           // log - raw Python logger output
+    specialist?: string;     // team_progress - 전문가 이름
+    status?: string;         // team_progress - 'running' | 'done' | 'error'
   };
 }
 

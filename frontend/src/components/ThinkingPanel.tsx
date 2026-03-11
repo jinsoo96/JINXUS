@@ -89,6 +89,7 @@ export default function ThinkingPanel({
       case 'web_search': return '🌐';
       case 'thinking': return '🧠';
       case 'fallback': return '🔄';
+      case 'team_progress': return '👥';
       case 'cancelled': return '⛔';
       case 'done': return '✅';
       case 'raw_log': return '>';
@@ -114,6 +115,7 @@ export default function ThinkingPanel({
       case 'web_search': return '웹 검색';
       case 'thinking': return '분석 중';
       case 'fallback': return '대체 처리';
+      case 'team_progress': return '전문가 팀';
       case 'cancelled': return '취소됨';
       case 'done': return '완료';
       case 'error': return '오류';

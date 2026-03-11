@@ -683,6 +683,19 @@ class JinxusCore:
                 "duration_ms": 0,
             }
 
+    async def _delegate_to_researcher(self, instruction: str) -> Optional[dict]:
+        """chat_search 경로에서 빠른 검색 실패 시 JX_RESEARCHER에게 위임"""
+        agent = self._agents.get("JX_RESEARCHER")
+        if not agent:
+            logger.warning("JX_RESEARCHER 에이전트가 등록되지 않음")
+            return None
+        try:
+            result = await agent.run(instruction, [])
+            return result
+        except Exception as e:
+            logger.error(f"JX_RESEARCHER 위임 실패: {e}")
+            return None
+
     async def _needs_external_info(self, user_input: str) -> bool:
         """외부 정보(웹 검색)가 필요한 질문인지 빠르게 판단"""
         check_prompt = f"""이 질문에 답하려면 실시간 외부 정보가 필요한가?
@@ -1053,6 +1066,10 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
             "뉴스", "속보", "최근", "요즘", "오늘", "내일", "어제",
             # 검색/조사
             "검색", "찾아", "알아봐", "조사", "분석해", "리서치",
+            # 장소/맛집/추천 (외부 검색 필요)
+            "맛집", "추천", "근처", "주변", "식당", "카페", "가게", "맛있는",
+            "볼거리", "관광", "여행", "호텔", "숙소", "병원", "약국",
+            "역", "길", "교통", "노선", "시간표",
             # 코딩/개발
             "코드", "코딩", "프로그래밍", "버그", "에러", "디버그", "리팩토링",
             # 파일/깃
@@ -1465,10 +1482,23 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             if needs_search:
                 yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "웹 검색 중..."}}
                 search_context = await self._quick_web_search(user_input)
-                if search_context:
+                search_failed = not search_context or "웹 검색 실패" in search_context
+                if not search_failed:
                     yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 수집 완료"}}
                 else:
-                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 없음, 내부 지식 사용"}}
+                    # 빠른 검색 실패 → JX_RESEARCHER로 에스컬레이션
+                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "빠른 검색 실패, JX_RESEARCHER에게 위임..."}}
+                    try:
+                        researcher_result = await self._delegate_to_researcher(user_input)
+                        if researcher_result and researcher_result.get("success"):
+                            search_context = f"\n\n[검색 결과]\n{researcher_result['output']}\n"
+                        else:
+                            search_context = ""
+                            yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 없음, 내부 지식 사용"}}
+                    except Exception as e:
+                        logger.warning(f"JX_RESEARCHER 에스컬레이션 실패: {e}")
+                        search_context = ""
+                        yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 없음, 내부 지식 사용"}}
 
             # 모델 라우팅: 단순 대화는 sonnet, 복잡한 작업은 opus
             selected_model = select_model_for_core(user_input)

@@ -1,8 +1,9 @@
 """JINXUS 메트릭 수집 - 에이전트/도구/캐시 성능 추적
 
-외부 의존성 없이 인메모리 메트릭 수집.
+인메모리 수집 + Redis 주기적 스냅샷 (재시작 시 복원 가능).
 /status/metrics API로 조회 가능.
 """
+import json
 import time
 import logging
 from collections import defaultdict
@@ -131,6 +132,50 @@ class JinxusMetrics:
         self.cache_hits = 0
         self.cache_misses = 0
         self.token_usage.clear()
+
+    # ── Redis 스냅샷 ──
+
+    _REDIS_KEY = "jinxus:metrics_snapshot"
+
+    async def save_snapshot(self, redis_client) -> bool:
+        """현재 메트릭을 Redis에 스냅샷 저장"""
+        try:
+            report = self.get_report()
+            await redis_client.set(
+                self._REDIS_KEY,
+                json.dumps(report, ensure_ascii=False),
+                ex=86400 * 7,  # 7일 TTL
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"메트릭 스냅샷 저장 실패: {e}")
+            return False
+
+    async def restore_snapshot(self, redis_client) -> bool:
+        """Redis에서 이전 메트릭 스냅샷 복원"""
+        try:
+            raw = await redis_client.get(self._REDIS_KEY)
+            if not raw:
+                return False
+            snapshot = json.loads(raw)
+            # 에이전트/도구/API 메트릭 복원
+            for name, data in snapshot.get("agents", {}).items():
+                bucket = self.agent_metrics[name]
+                bucket.count = data.get("count", 0)
+                bucket.error_count = data.get("error_count", 0)
+            for name, data in snapshot.get("tools", {}).items():
+                bucket = self.tool_metrics[name]
+                bucket.count = data.get("count", 0)
+                bucket.error_count = data.get("error_count", 0)
+            self.cache_hits = snapshot.get("cache", {}).get("hits", 0)
+            self.cache_misses = snapshot.get("cache", {}).get("misses", 0)
+            for model, tokens in snapshot.get("tokens", {}).items():
+                self.token_usage[model] = tokens
+            logger.info(f"[Metrics] 이전 스냅샷 복원 완료 (agents={len(snapshot.get('agents', {}))})")
+            return True
+        except Exception as e:
+            logger.debug(f"메트릭 스냅샷 복원 실패: {e}")
+            return False
 
 
 # 싱글톤

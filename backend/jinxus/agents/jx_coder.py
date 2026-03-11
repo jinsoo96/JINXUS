@@ -1,23 +1,27 @@
-"""JX_CODER - 코드 작성/실행/디버깅 전문 에이전트
+"""JX_CODER - 코딩팀 오케스트레이터
 
-LangGraph 패턴 적용:
-- retry 로직 (최대 3회, 지수 백오프)
-- reflect (반성 → 개선점 도출)
-- memory_write (장기기억 저장)
+JX_CODER는 코딩 작업의 총괄 팀장이다.
+직접 코드를 작성하기도 하지만, 복잡한 작업은 전문가 팀에게 분배한다.
 
-코드 실행 방식:
-- 복잡한 작업: Claude Code CLI (프로젝트, 패키지, 멀티파일)
-- 간단한 작업: python3 직접 실행 (빠른 스크립트)
+전문가 팀:
+- JX_FRONTEND: 프론트엔드 (React, Next.js, Vue, Svelte, Flutter 등)
+- JX_BACKEND: 백엔드 (FastAPI, Django, Express, Go, Rust 등)
+- JX_INFRA: 인프라 (Docker, K8s, CI/CD, 클라우드 등)
+- JX_REVIEWER: 코드 리뷰 (품질, 보안, 성능)
+- JX_TESTER: 테스트/검증 (pytest, Jest, 타입 체크 등)
 
-v2.0: DynamicToolExecutor 통합
-- MCP 도구 자동 사용 (git, github, fetch, playwright 등)
-- Claude tool_use 기반 동적 도구 선택
+작업 흐름:
+1. 작업 분류 → 필요한 전문가 결정
+2. 전문가 배치 (병렬 가능)
+3. 결과 수집 → 리뷰/테스트 (선택)
+4. 최종 결과 취합 → JINXUS_CORE에 보고
 """
 import asyncio
+import json
+import re
 import tempfile
 import uuid
 import time
-import re
 import logging
 from typing import Optional
 from pathlib import Path
@@ -34,16 +38,13 @@ logger = logging.getLogger(__name__)
 
 
 class JXCoder:
-    """코드 전문가 에이전트
+    """코딩팀 오케스트레이터
 
-    블루프린트 그래프 구조:
-    [receive] → [plan] → [execute] → [evaluate] → [reflect] → [memory_write] → [return_result]
-                              ↑             │
-                              └──[retry]────┘  (최대 3회)
+    간단한 작업은 직접 처리, 복잡한 작업은 전문가 팀에게 분배.
     """
 
     name = "JX_CODER"
-    description = "코드 작성, 실행, 디버깅을 전담하는 에이전트"
+    description = "코딩팀 총괄 오케스트레이터 (프론트/백엔드/인프라/리뷰/테스트 전문가 팀 보유)"
     max_retries = 3
 
     def __init__(self):
@@ -52,40 +53,311 @@ class JXCoder:
         self._model = settings.claude_model
         self._fast_model = settings.claude_fast_model
         self._memory = get_jinx_memory()
-        self._prompt_version = "v2.0"  # 동적 도구 실행 버전
+        self._prompt_version = "v3.0"  # 팀 오케스트레이터 버전
         self._code_executor = CodeExecutor()
-        # 동적 도구 실행기 (MCP 포함: git, github, fetch 등)
         self._executor: Optional[DynamicToolExecutor] = None
         self._use_dynamic_tools = settings.use_dynamic_tools if hasattr(settings, 'use_dynamic_tools') else True
-        # 상태 추적기 (실시간 UI 연동)
         self._state_tracker = get_state_tracker()
         self._state_tracker.register_agent(self.name)
+        self._progress_callback = None
+
+        # 전문가 팀 (지연 초기화)
+        self._specialists: dict = {}
+        self._specialists_initialized = False
+
+    def _init_specialists(self):
+        """전문가 팀 지연 초기화"""
+        if self._specialists_initialized:
+            return
+        try:
+            from jinxus.agents.coding import CODING_SPECIALISTS
+            for name, cls in CODING_SPECIALISTS.items():
+                self._specialists[name] = cls()
+                logger.info(f"[JX_CODER] 전문가 등록: {name}")
+            self._specialists_initialized = True
+        except Exception as e:
+            logger.error(f"[JX_CODER] 전문가 팀 초기화 실패: {e}")
 
     def _get_executor(self) -> DynamicToolExecutor:
-        """동적 도구 실행기 지연 로드"""
         if self._executor is None:
             self._executor = get_dynamic_executor(self.name)
         return self._executor
 
-    async def _classify_task(self, instruction: str) -> dict:
-        """작업 유형을 Claude가 판단
+    async def _decompose_task(self, instruction: str) -> dict:
+        """작업을 분석하여 전문가 배치 계획 수립
 
         Returns:
-            {"needs_mcp": bool, "is_complex": bool, "reason": str}
+            {
+                "mode": "direct" | "delegate",
+                "specialists": ["JX_FRONTEND", "JX_BACKEND", ...],
+                "tasks": [{"agent": "JX_FRONTEND", "instruction": "..."}],
+                "needs_review": bool,
+                "needs_test": bool,
+                "execution": "parallel" | "sequential",
+                "reason": str,
+            }
         """
+        decompose_prompt = f"""코딩 작업을 분석하여 전문가 배치를 결정해.
+
+작업: "{instruction}"
+
+사용 가능한 전문가:
+- JX_FRONTEND: 프론트엔드 (React, Next.js, Vue, Svelte, CSS, 컴포넌트, UI/UX)
+- JX_BACKEND: 백엔드 (FastAPI, Django, Express, DB, API, 인증, 큐)
+- JX_INFRA: 인프라 (Docker, CI/CD, 배포, 서버, 모니터링)
+- JX_REVIEWER: 코드 리뷰 (품질, 보안, 성능 분석)
+- JX_TESTER: 테스트 (단위/통합/E2E, 타입 체크)
+
+판단 기준:
+- 단순 스크립트, 단일 파일 작업: "direct" (내가 직접 처리)
+- 프론트+백엔드 동시: 전문가 2명 이상 배치
+- "리뷰해줘", "코드 리뷰": JX_REVIEWER만 배치
+- "테스트", "검증", "타입 체크": JX_TESTER만 배치
+- 큰 기능 구현: 전문가 작업 → JX_REVIEWER + JX_TESTER 후속
+
+JSON으로 답변:
+{{
+    "mode": "direct 또는 delegate",
+    "specialists": ["필요한 전문가 이름"],
+    "tasks": [
+        {{"agent": "전문가 이름", "instruction": "구체적이고 self-contained인 지시사항"}}
+    ],
+    "needs_review": true/false,
+    "needs_test": true/false,
+    "execution": "parallel 또는 sequential",
+    "reason": "판단 이유 한 줄"
+}}"""
+
+        try:
+            response = self._client.messages.create(
+                model=self._fast_model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": decompose_prompt}],
+            )
+            text = response.content[0].text
+
+            # JSON 추출
+            match = re.search(r'\{[\s\S]*\}', text)
+            if match:
+                result = json.loads(match.group())
+                return result
+        except Exception as e:
+            logger.warning(f"[JX_CODER] 작업 분해 실패, 직접 처리: {e}")
+
+        # 분해 실패 시 직접 처리
+        return {
+            "mode": "direct",
+            "specialists": [],
+            "tasks": [],
+            "needs_review": False,
+            "needs_test": False,
+            "execution": "parallel",
+            "reason": "분해 실패, 직접 처리",
+        }
+
+    async def _run_specialist(
+        self, agent_name: str, instruction: str, context: list = None
+    ) -> dict:
+        """전문가 에이전트 실행 (실패 시 직접 처리 fallback)"""
+        specialist = self._specialists.get(agent_name)
+        if not specialist:
+            logger.warning(f"[JX_CODER] 전문가 {agent_name} 없음, 직접 처리로 전환")
+            return await self._fallback_direct(agent_name, instruction, context)
+
+        # 프로그레스 콜백 전달
+        if self._progress_callback:
+            specialist._progress_callback = self._progress_callback
+
+        # 팀 진행 이벤트
+        await self._report_progress(f"[{agent_name}] 작업 시작", agent_name=agent_name)
+
+        try:
+            result = await specialist.run(instruction, context)
+            status = "완료" if result.get("success") else "실패"
+            await self._report_progress(
+                f"[{agent_name}] {status}", agent_name=agent_name
+            )
+
+            # 전문가 실패 시 직접 처리 fallback
+            if not result.get("success"):
+                logger.warning(f"[JX_CODER] {agent_name} 실패, 직접 처리 시도")
+                await self._report_progress(
+                    f"[{agent_name}] 실패 → JX_CODER 직접 처리로 전환"
+                )
+                fallback = await self._fallback_direct(agent_name, instruction, context)
+                if fallback.get("success"):
+                    return fallback
+                # fallback도 실패하면 원래 전문가 결과 반환
+            return result
+        except Exception as e:
+            logger.error(f"[JX_CODER] {agent_name} 실행 예외: {e}")
+            await self._report_progress(f"[{agent_name}] 예외 → 직접 처리 전환")
+            return await self._fallback_direct(agent_name, instruction, context)
+
+    async def _fallback_direct(
+        self, agent_name: str, instruction: str, context: list = None
+    ) -> dict:
+        """전문가 실패 시 JX_CODER가 직접 처리"""
+        start_time = time.time()
+        try:
+            result = await self._execute_with_retry(instruction, context or [])
+            duration_ms = int((time.time() - start_time) * 1000)
+            return {
+                "task_id": str(uuid.uuid4()),
+                "agent_name": f"{agent_name}(fallback→JX_CODER)",
+                "success": result.get("success", False),
+                "success_score": result.get("score", 0.5),
+                "output": result.get("output", ""),
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+            }
+        except Exception as e:
+            logger.error(f"[JX_CODER] fallback 직접 처리도 실패: {e}")
+            return {
+                "task_id": str(uuid.uuid4()),
+                "agent_name": f"{agent_name}(fallback→JX_CODER)",
+                "success": False,
+                "success_score": 0.0,
+                "output": f"전문가 및 직접 처리 모두 실패: {e}",
+                "failure_reason": str(e),
+                "duration_ms": int((time.time() - start_time) * 1000),
+            }
+
+    async def _execute_delegated(
+        self, plan: dict, instruction: str, context: list
+    ) -> dict:
+        """전문가 팀에게 위임 실행"""
+        self._init_specialists()
+
+        tasks = plan.get("tasks", [])
+        execution = plan.get("execution", "parallel")
+        needs_review = plan.get("needs_review", False)
+        needs_test = plan.get("needs_test", False)
+
+        if not tasks:
+            # 전문가 목록만 있고 tasks가 없는 경우
+            specialists = plan.get("specialists", [])
+            tasks = [{"agent": s, "instruction": instruction} for s in specialists]
+
+        # === 1단계: 메인 작업 실행 ===
+        await self._report_progress(
+            f"전문가 팀 배치: {', '.join(t['agent'] for t in tasks)} ({execution})"
+        )
+
+        main_results = []
+
+        if execution == "parallel" and len(tasks) > 1:
+            # 병렬 실행
+            coros = [
+                self._run_specialist(t["agent"], t["instruction"], context)
+                for t in tasks
+            ]
+            main_results = await asyncio.gather(*coros, return_exceptions=True)
+            # 예외를 결과로 변환
+            main_results = [
+                r if isinstance(r, dict) else {
+                    "agent_name": tasks[i]["agent"],
+                    "success": False,
+                    "output": str(r),
+                    "failure_reason": str(r),
+                }
+                for i, r in enumerate(main_results)
+            ]
+        else:
+            # 순차 실행 (이전 결과를 컨텍스트로 전달)
+            accumulated_context = list(context) if context else []
+            for task in tasks:
+                result = await self._run_specialist(
+                    task["agent"], task["instruction"], accumulated_context
+                )
+                main_results.append(result)
+                if result.get("success"):
+                    accumulated_context.append(result)
+
+        # === 2단계: 리뷰 / 테스트 (메인 결과 기반) ===
+        review_results = []
+
+        if needs_review or needs_test:
+            review_tasks = []
+            main_outputs = [r for r in main_results if r.get("success")]
+
+            if needs_review and "JX_REVIEWER" in self._specialists:
+                code_summary = "\n\n".join(
+                    f"### {r.get('agent_name', '?')} 결과:\n{r.get('output', '')[:1000]}"
+                    for r in main_outputs
+                )
+                review_instruction = (
+                    f"아래 코드 작업 결과를 리뷰해줘.\n\n"
+                    f"원본 요청: {instruction}\n\n{code_summary}"
+                )
+                review_tasks.append(("JX_REVIEWER", review_instruction))
+
+            if needs_test and "JX_TESTER" in self._specialists:
+                code_summary = "\n\n".join(
+                    f"### {r.get('agent_name', '?')} 결과:\n{r.get('output', '')[:1000]}"
+                    for r in main_outputs
+                )
+                test_instruction = (
+                    f"아래 코드에 대한 테스트를 작성하고 검증해줘.\n\n"
+                    f"원본 요청: {instruction}\n\n{code_summary}"
+                )
+                review_tasks.append(("JX_TESTER", test_instruction))
+
+            if review_tasks:
+                await self._report_progress(
+                    f"리뷰/테스트 단계: {', '.join(t[0] for t in review_tasks)}"
+                )
+                review_coros = [
+                    self._run_specialist(agent, inst, main_results)
+                    for agent, inst in review_tasks
+                ]
+                review_results = await asyncio.gather(*review_coros, return_exceptions=True)
+                review_results = [
+                    r if isinstance(r, dict) else {
+                        "success": False, "output": str(r)
+                    }
+                    for r in review_results
+                ]
+
+        # === 3단계: 결과 취합 ===
+        all_results = main_results + review_results
+        all_success = all(r.get("success", False) for r in main_results)
+        avg_score = (
+            sum(r.get("success_score", 0.0) for r in all_results) / len(all_results)
+            if all_results else 0.0
+        )
+
+        # 최종 보고서 생성
+        output_parts = []
+        for r in all_results:
+            agent = r.get("agent_name", "?")
+            status = "성공" if r.get("success") else "실패"
+            output_parts.append(
+                f"### [{agent}] {status}\n{r.get('output', '결과 없음')[:2000]}"
+            )
+
+        combined_output = "\n\n---\n\n".join(output_parts)
+
+        return {
+            "success": all_success,
+            "score": avg_score,
+            "output": combined_output,
+            "error": None if all_success else "일부 전문가 작업 실패",
+            "code": None,
+            "specialists_used": [t["agent"] for t in tasks],
+        }
+
+    # ===== 기존 직접 실행 로직 (단순 작업용) =====
+
+    async def _classify_task(self, instruction: str) -> dict:
+        """작업 유형을 Claude가 판단 (직접 실행용)"""
         classify_prompt = f"""이 코딩 요청을 분류해.
 
 요청: "{instruction}"
 
 다음 두 가지를 판단해:
-
 1. MCP 도구 필요? (git/github 조작, 브라우저 자동화, 웹 크롤링 등)
-   - yes: git commit, PR 생성, 웹페이지 스크린샷, 크롤링 등
-   - no: 일반 코드 작성, 알고리즘, 함수 구현 등
-
-2. 복잡한 작업? (Claude Code CLI 필요)
-   - yes: 프로젝트 생성, 패키지 설치, 여러 파일 수정, 프레임워크 설정 등
-   - no: 단일 함수, 간단한 스크립트, 알고리즘 구현 등
+2. 복잡한 작업? (프로젝트 생성, 패키지 설치, 여러 파일 수정, 프레임워크 설정 등)
 
 JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
 
@@ -95,10 +367,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 max_tokens=50,
                 messages=[{"role": "user", "content": classify_prompt}],
             )
-            import json
-            import re
             text = response.content[0].text
-            # JSON 추출
             match = re.search(r'\{[^}]+\}', text)
             if match:
                 result = json.loads(match.group())
@@ -108,63 +377,61 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 }
         except Exception:
             pass
-        # 에러 시 기본값: 단순 코드 실행
         return {"needs_mcp": False, "is_complex": False}
 
     def _get_system_prompt(self) -> str:
         from datetime import datetime
         today = datetime.now().strftime("%Y년 %m월 %d일")
 
-        return f"""너는 JX_CODER야. 주인님을 모시는 JINXUS의 코딩 전문가.
-
-## 현재 날짜
+        return f"""너는 JX_CODER야. JINXUS의 코딩팀 총괄.
 오늘은 {today}이다.
 
 ## 역할
-주인님의 코딩 요청을 받아 실행 가능한 Python 코드를 작성한다.
+주인님의 코딩 요청을 받아 직접 처리하거나, 전문가 팀에게 배분한다.
 
-## 코드 작성 원칙
+## 직접 처리 (단순 작업)
 - 반드시 실행 가능한 완전한 코드 작성
 - 필요한 import 문 포함
 - 결과를 print()로 출력
 - try-except로 에러 핸들링
 
-## 출력 형식 (중요!)
-- 절대로 <invoke>, <parameter>, <tool> 같은 XML 태그를 텍스트로 출력하지 마라
-- 도구 호출 과정을 텍스트로 보여주지 마라
-- 최종 결과만 깔끔하게 정리해서 보고해라
-
-## 응답 형식
-반드시 ```python 블록 안에 코드를 작성해.
+## 출력 형식
+- XML 태그 출력 금지. 도구 호출 과정 노출 금지.
+- 최종 결과만 깔끔하게 보고.
+- 코드 블록은 ```python 사용.
 """
 
-    async def run(self, instruction: str, context: list = None) -> dict:
-        """에이전트 실행 (전체 그래프 흐름)"""
+    async def run(self, instruction: str, context: list = None, memory_context: list = None) -> dict:
+        """에이전트 실행 (전체 흐름)"""
         start_time = time.time()
         task_id = str(uuid.uuid4())
 
         try:
-            # === [receive] 작업 시작 ===
             self._state_tracker.start_task(self.name, instruction)
             self._state_tracker.update_node(self.name, GraphNode.RECEIVE)
 
-            memory_context = []
-            try:
-                memory_context = self._memory.search_long_term(
-                    agent_name=self.name,
-                    query=instruction,
-                    limit=3,
-                )
-            except Exception:
-                pass  # 메모리 실패해도 진행
+            if not memory_context:
+                try:
+                    memory_context = self._memory.search_long_term(
+                        agent_name=self.name, query=instruction, limit=3
+                    )
+                except Exception:
+                    memory_context = []
 
-            # === [plan] 실행 계획 ===
+            # === [plan] 작업 분해 ===
             self._state_tracker.update_node(self.name, GraphNode.PLAN)
-            plan = {"strategy": "generate_and_execute", "instruction": instruction}
+            plan = await self._decompose_task(instruction)
+            await self._report_progress(f"작업 분석 완료: {plan.get('reason', '')} (mode={plan['mode']})")
 
-            # === [execute] + [evaluate] + [retry] ===
+            # === [execute] 실행 ===
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
-            result = await self._execute_with_retry(instruction, context, memory_context)
+
+            if plan["mode"] == "delegate" and plan.get("specialists"):
+                # 전문가 팀에게 위임
+                result = await self._execute_delegated(plan, instruction, context or [])
+            else:
+                # 직접 실행 (기존 로직)
+                result = await self._execute_with_retry(instruction, context, memory_context)
 
             # === [evaluate] 평가 ===
             self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
@@ -190,89 +457,68 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 "failure_reason": result.get("error"),
                 "duration_ms": duration_ms,
                 "reflection": reflection,
+                "specialists_used": result.get("specialists_used", []),
             }
 
         except Exception as e:
             self._state_tracker.set_error(self.name, str(e))
             raise
         finally:
-            # 작업 완료 (성공/실패 무관)
             self._state_tracker.complete_task(self.name)
 
     async def _execute_with_retry(
         self, instruction: str, context: list, memory_context: list
     ) -> dict:
-        """실행 + 평가 + 재시도 (최대 3회, 지수 백오프)"""
+        """직접 실행 + 재시도 (최대 3회)"""
         last_error = None
 
         for attempt in range(self.max_retries):
             try:
-                # === [execute] ===
-                result = await self._execute(instruction, context, memory_context, last_error)
-
-                # === [evaluate] ===
+                result = await self._execute_direct(instruction, context, memory_context, last_error)
                 if result["success"]:
                     return result
-
-                # 실패 시 다음 시도를 위해 에러 저장
                 last_error = result.get("error", "Unknown error")
-
-                # 지수 백오프 (마지막 시도가 아니면)
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt  # 1, 2, 4초
-                    await asyncio.sleep(wait_time)
-
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 last_error = str(e)
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
 
-        # 모든 재시도 실패
         return {
             "success": False,
             "score": 0.0,
-            "output": f"죄송합니다 주인님, {self.max_retries}번 시도했지만 실패했습니다.\n마지막 오류: {last_error}",
+            "output": f"죄송합니다, {self.max_retries}번 시도했지만 실패했습니다.\n마지막 오류: {last_error}",
             "error": last_error,
             "code": None,
         }
 
-    async def _execute(
+    async def _execute_direct(
         self, instruction: str, context: list, memory_context: list, last_error: str = None
     ) -> dict:
-        """단일 실행 시도
-
-        MCP 도구 필요: DynamicToolExecutor 사용 (git, github, fetch 등)
-        복잡한 작업: Claude Code CLI 사용
-        간단한 작업: 코드 생성 후 python3 직접 실행
-        """
-        # Claude가 작업 유형 판단
+        """직접 실행 (단순 작업)"""
         task_type = await self._classify_task(instruction)
 
-        # MCP 도구가 필요한 작업 (git, github, fetch 등)
         if self._use_dynamic_tools and task_type["needs_mcp"]:
             result = await self._execute_with_mcp_tools(instruction, memory_context, last_error)
             if result["success"]:
                 return result
-            # MCP 실패 시 다른 방법으로 폴백
 
-        # 복잡한 작업은 Claude Code CLI로 처리
         if task_type["is_complex"]:
             return await self._execute_with_claude_code(instruction, last_error)
 
-        # 간단한 작업은 기존 방식 (코드 생성 + python3)
         return await self._execute_simple(instruction, context, memory_context, last_error)
 
     async def _execute_with_mcp_tools(
         self, instruction: str, memory_context: list, last_error: str = None
     ) -> dict:
-        """MCP 도구 사용 실행 (git, github, fetch, playwright 등)"""
+        """MCP 도구 사용 실행"""
         logger.info(f"[JX_CODER] MCP 도구 사용 → DynamicToolExecutor")
         self._state_tracker.update_tools(self.name, ["mcp:git", "mcp:github", "mcp:fetch"])
 
         try:
             executor = self._get_executor()
 
-            # 메모리 컨텍스트
             memory_str = ""
             if memory_context:
                 memory_str = "\n\n참고: 과거 유사 작업\n" + "\n".join(
@@ -286,24 +532,20 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
             system_prompt = self._get_system_prompt() + """
 
 ## MCP 도구 활용 지침
-- Git 작업: mcp:git 도구 사용 (commit, push, pull, branch 등)
-- GitHub 작업: mcp:github 도구 사용 (PR, issue, repository 등)
+- Git 작업: mcp:git 도구 사용
+- GitHub 작업: mcp:github 도구 사용
 - 웹페이지 가져오기: mcp:fetch 도구 사용
 - 브라우저 자동화: mcp:playwright 도구 사용
-- 필요한 도구를 적절히 선택하여 주인님의 요청을 수행해
 """
 
             context = f"{memory_str}\n{error_context}" if memory_str or error_context else None
 
-            # 도구 호출 콜백 (실시간 이벤트)
             tool_cb = None
-            if hasattr(self, '_progress_callback') and self._progress_callback:
+            if self._progress_callback:
                 cb = self._progress_callback
                 async def tool_cb(tool_name: str, status: str):
                     if status == "calling":
                         await cb(f"🔧 [{self.name}] {tool_name} 호출 중...")
-                    elif status == "error":
-                        await cb(f"❌ [{self.name}] {tool_name} 실패")
 
             result = await executor.execute(
                 instruction=instruction,
@@ -314,12 +556,10 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
 
             if result.success:
                 tools_used = [tc.tool_name for tc in result.tool_calls]
-                tools_str = ", ".join(tools_used) if tools_used else "없음"
-
                 return {
                     "success": True,
                     "score": 0.95 if tools_used else 0.85,
-                    "output": f"주인님, 작업이 완료되었습니다.\n\n## 결과\n{result.output}\n\n## 사용된 도구\n{tools_str}",
+                    "output": result.output,
                     "error": None,
                     "code": None,
                     "tool_calls": tools_used,
@@ -331,7 +571,6 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "output": "",
                     "error": result.error,
                     "code": None,
-                    "tool_calls": [],
                 }
 
         except Exception as e:
@@ -342,7 +581,6 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 "output": "",
                 "error": str(e),
                 "code": None,
-                "tool_calls": [],
             }
 
     async def _execute_with_claude_code(
@@ -393,7 +631,6 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "output": output,
                     "error": None,
                     "code": None,
-                    "working_dir": working_dir,
                 }
             else:
                 return {
@@ -418,12 +655,10 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
         self, instruction: str, context: list, memory_context: list, last_error: str = None
     ) -> dict:
         """간단한 작업: 코드 생성 후 python3 직접 실행"""
-        # 이전 실패가 있으면 프롬프트에 포함
         error_context = ""
         if last_error:
             error_context = f"\n\n이전 시도에서 오류 발생: {last_error}\n이 오류를 피해서 다시 작성해줘."
 
-        # 메모리 컨텍스트
         memory_str = ""
         if memory_context:
             memory_str = "\n\n참고: 과거 유사 작업\n" + "\n".join(
@@ -456,7 +691,6 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 "code": None,
             }
 
-        # 코드 실행
         exec_result = await self._execute_python(code)
 
         if exec_result["success"]:
@@ -478,7 +712,6 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                 "output": output,
                 "error": None,
                 "code": code,
-                "stdout": exec_result["stdout"],
             }
         else:
             return {
@@ -490,40 +723,37 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
             }
 
     async def _reflect(self, instruction: str, result: dict) -> str:
-        """반성: 이번 작업에서 배운 점"""
+        """반성"""
         if not result["success"]:
-            return f"실패 원인: {result.get('error', 'Unknown')}. 다음에는 이 패턴을 피해야 함."
+            return f"실패 원인: {result.get('error', 'Unknown')}."
 
-        # 성공 시 간단한 반성
-        reflect_prompt = f"""방금 완료한 작업:
-요청: {instruction}
-결과: 성공
-
-이 작업에서 배운 핵심 포인트를 1-2문장으로 정리해줘."""
+        specialists = result.get("specialists_used", [])
+        if specialists:
+            return f"전문가 팀({', '.join(specialists)}) 위임 처리 성공."
 
         try:
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=256,
-                messages=[{"role": "user", "content": reflect_prompt}],
+                messages=[{"role": "user", "content": f"작업 '{instruction}' 성공. 핵심 배움 1-2문장."}],
             )
             return response.content[0].text
         except Exception:
-            return "작업 성공. 추가 반성 없음."
+            return "작업 성공."
 
     async def _memory_write(
         self, task_id: str, instruction: str, result: dict, reflection: str
     ) -> None:
         """장기기억에 저장"""
         try:
-            # 중요도 계산
             importance = 0.3
             if not result["success"]:
-                importance += 0.4  # 실패에서 배움
-            if len(reflection) > 50:
+                importance += 0.4
+            if result.get("specialists_used"):
                 importance += 0.2
+            if len(reflection) > 50:
+                importance += 0.1
 
-            # 저장 조건: 실패했거나 중요도가 높으면
             if not result["success"] or importance > 0.5:
                 self._memory.save_long_term(
                     agent_name=self.name,
@@ -537,7 +767,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     prompt_version=self._prompt_version,
                 )
         except Exception:
-            pass  # 메모리 저장 실패해도 계속 진행
+            logger.warning(f"[JX_CODER] 메모리 저장 실패")
 
     def _extract_code(self, text: str) -> Optional[str]:
         """응답에서 Python 코드 추출"""
@@ -593,3 +823,12 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "stderr": str(e),
                     "exit_code": -1,
                 }
+
+    async def _report_progress(self, detail: str, agent_name: str = None):
+        """SSE 프로그레스 콜백"""
+        if self._progress_callback:
+            try:
+                prefix = f"[{agent_name or self.name}]"
+                await self._progress_callback(f"{prefix} {detail}")
+            except Exception as e:
+                logger.debug(f"[JX_CODER] 프로그레스 콜백 실패: {e}")

@@ -65,7 +65,7 @@ export default function Sidebar() {
               />
               <div>
                 <h2 className="font-bold text-lg text-primary">JINXUS</h2>
-                <p className="text-xs text-zinc-500">v1.5.0</p>
+                <p className="text-xs text-zinc-500">v1.6.0</p>
               </div>
             </div>
             <button

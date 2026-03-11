@@ -1,13 +1,17 @@
 """에이전트 상태 추적기
 
 에이전트의 실시간 상태를 추적하고 UI에 제공한다.
+도구 호출 로그는 Redis에 영속화 (재시작 시에도 유지).
 """
+import json
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 from enum import Enum
 
+logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 
@@ -59,15 +63,39 @@ class AgentStateTracker:
 
     _instance: Optional["AgentStateTracker"] = None
 
+    _REDIS_KEY = "jinxus:tool_call_logs"
+    _REDIS_MAX_LOGS = 500
+
     def __init__(self):
         self._states: Dict[str, AgentRuntimeState] = {}
         self._tool_call_logs: deque[dict] = deque(maxlen=100)
+        self._redis = None
+        self._redis_ready = False
 
     @classmethod
     def get_instance(cls) -> "AgentStateTracker":
         if cls._instance is None:
             cls._instance = AgentStateTracker()
         return cls._instance
+
+    async def init_redis(self) -> None:
+        """Redis 연결 초기화 (서버 시작 시 호출)"""
+        try:
+            import redis.asyncio as aioredis
+            from jinxus.config import get_settings
+            settings = get_settings()
+            self._redis = aioredis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                password=settings.redis_password if settings.redis_password else None,
+                decode_responses=True,
+            )
+            await self._redis.ping()
+            self._redis_ready = True
+            logger.info("[StateTracker] Redis 연결 완료 — 도구 로그 영속화 활성화")
+        except Exception as e:
+            logger.warning(f"[StateTracker] Redis 연결 실패, 인메모리 모드: {e}")
+            self._redis_ready = False
 
     def register_agent(self, agent_name: str) -> None:
         """에이전트 등록"""
@@ -162,6 +190,13 @@ class AgentStateTracker:
             "error": error[:200] if error else None,
         }
         self._tool_call_logs.append(entry)
+        # Redis 영속화 (비동기, 실패해도 인메모리에는 남음)
+        if self._redis_ready and self._redis:
+            try:
+                import asyncio
+                asyncio.get_event_loop().create_task(self._persist_log(entry))
+            except Exception:
+                pass
 
     def get_tool_call_logs(self, limit: int = 50) -> List[dict]:
         """최근 도구 호출 로그 반환 (최신순)
@@ -175,6 +210,26 @@ class AgentStateTracker:
         logs = list(self._tool_call_logs)
         logs.reverse()
         return logs[:limit]
+
+
+    async def _persist_log(self, entry: dict) -> None:
+        """도구 로그를 Redis에 영속화"""
+        try:
+            await self._redis.lpush(self._REDIS_KEY, json.dumps(entry, ensure_ascii=False))
+            await self._redis.ltrim(self._REDIS_KEY, 0, self._REDIS_MAX_LOGS - 1)
+        except Exception as e:
+            logger.debug(f"[StateTracker] Redis 로그 저장 실패: {e}")
+
+    async def get_tool_call_logs_persistent(self, limit: int = 50) -> List[dict]:
+        """Redis에서 영속 도구 로그 조회 (재시작 후에도 유지)"""
+        if not self._redis_ready or not self._redis:
+            return self.get_tool_call_logs(limit)
+        try:
+            raw = await self._redis.lrange(self._REDIS_KEY, 0, limit - 1)
+            return [json.loads(r) for r in raw]
+        except Exception as e:
+            logger.warning(f"[StateTracker] Redis 로그 조회 실패: {e}")
+            return self.get_tool_call_logs(limit)
 
 
 def get_state_tracker() -> AgentStateTracker:

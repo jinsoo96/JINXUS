@@ -1,6 +1,36 @@
 # JINXUS 개발 현황
 
-## 버전 v1.5.0 (진행 중)
+## 버전 v1.6.0 (진행 중)
+
+### 2026-03-11 JX_CODER 전문가 팀 체계 구축
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| TEAM-1 | JX_CODER 미니 오케스트레이터 승격 | 완료 | JX_CODER가 단순 실행자 → 팀장으로 승격. 작업 분해(`_decompose_task`)로 전문가 배치, 병렬/순차 실행, 리뷰+테스트 후속 단계 |
+| TEAM-2 | JX_FRONTEND 전문가 | 완료 | React/Next.js/Vue/Svelte/Angular/Flutter, TypeScript, TailwindCSS, Zustand/Redux, Vite/Webpack, 접근성, Core Web Vitals |
+| TEAM-3 | JX_BACKEND 전문가 | 완료 | Python/Go/Rust/Java/Kotlin/C#, FastAPI/Django/Express/Gin/Actix-web/Spring, PostgreSQL/Redis/MongoDB, OAuth2/JWT, Celery/Kafka |
+| TEAM-4 | JX_INFRA 전문가 | 완료 | Docker/K8s/Helm, GitHub Actions/ArgoCD, AWS/GCP/Azure/Vercel, Terraform/Ansible, Nginx/Caddy, Prometheus/Grafana/Sentry |
+| TEAM-5 | JX_REVIEWER 전문가 | 완료 | OWASP Top 10, SOLID/DRY/KISS, 성능 분석 (N+1, Big O), GoF 패턴/안티패턴, 다국어 리뷰 (Python/TS/Go/Rust/Java) |
+| TEAM-6 | JX_TESTER 전문가 | 완료 | pytest/Jest/Vitest/Go test, Playwright/Cypress, 타입 체크 (mypy/tsc), 커버리지, AAA 패턴, hypothesis/property testing |
+| TEAM-7 | Tool Policy 확장 | 완료 | 5개 전문가별 도구 접근 정책 추가. REVIEWER는 읽기 전용, TESTER/FRONTEND/INFRA는 git/github 제한 |
+| TEAM-8 | 전문가 격리 | 완료 | `agents/coding/` 하위 디렉토리 배치. CORE 자동 스캔 대상에서 제외 — JX_CODER만 내부적으로 관리 |
+
+### 2026-03-11 v1.6.0 품질 강화 + 영속화 + UX
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| QA-1 | Silent error 수정 | 완료 | 5개 전문가 에이전트 메모리 검색 `except Exception: pass` → `logger.warning()` 추가. 프로젝트 원칙 준수 |
+| QA-2 | 전문가 실패 fallback | 완료 | `_run_specialist()` 실패 시 JX_CODER 직접 처리(`_fallback_direct`) 자동 전환. 전문가 예외 시에도 작업 중단 방지 |
+| QA-3 | 팀 진행 SSE 이벤트 | 완료 | `_report_progress(agent_name=)` 확장. 전문가 시작/완료/실패/fallback 단계별 이벤트 발송 |
+| QA-4 | 버전 중앙화 | 완료 | `settings.jinxus_version` 추가. server.py 2곳 하드코딩 제거 (`settings.jinxus_version` 참조). 프론트엔드 v1.5.0→v1.6.0 |
+| QA-5 | 도구 로그 Redis 영속화 | 완료 | `state_tracker` 도구 호출 로그를 Redis(`jinxus:tool_call_logs`)에 실시간 저장. 최대 500건 유지. 재시작 후에도 조회 가능 |
+| QA-6 | 메트릭 Redis 스냅샷 | 완료 | `metrics.py`에 `save_snapshot`/`restore_snapshot` 추가. 서버 시작 시 이전 스냅샷 복원, 5분 간격 자동 저장, 종료 시 최종 저장 |
+| QA-7 | 프론트엔드 팀 진행 표시 | 완료 | SSEEvent에 `team_progress` 타입 추가. ThinkingPanel에 전문가 팀 아이콘(👥)/라벨 추가. ChatTab에 이벤트 핸들러 추가 |
+| QA-8 | progress callback 에러 로깅 | 완료 | `_report_progress` silent `except: pass` → `logger.debug()` 추가 |
+
+---
+
+## 버전 v1.5.0
 
 ### 2026-03-10 에이전트 실행 효율화 리팩토링
 
