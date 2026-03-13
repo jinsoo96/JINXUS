@@ -53,6 +53,7 @@ server.log
 frontend.log
 nohup.out
 
-# 내부 문서
-docs/
+# 내부 문서 (dev_notes는 추적 허용)
+docs/*
 !docs/dev_notes/
+!docs/dev_notes/**
