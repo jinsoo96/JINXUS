@@ -165,6 +165,15 @@ async def register_mcp_tools() -> dict[str, JinxTool]:
                     # 연결된 서버의 도구들을 레지스트리에 추가
                     tools = await mcp_client.list_tools(server_config.name)
                     for tool_info in tools:
+                        # MCP spec 어노테이션 파싱 (서버가 직접 제공하는 경우 우선 사용)
+                        annot_from_spec = None
+                        if tool_info.get("annotations"):
+                            try:
+                                from jinxus.core.tool_annotation import ToolAnnotations
+                                annot_from_spec = ToolAnnotations.from_dict(tool_info["annotations"])
+                            except Exception:
+                                pass  # 파싱 실패 시 이름 기반 추론으로 fallback
+
                         adapter = MCPToolAdapter(
                             mcp_client=mcp_client,
                             server_name=server_config.name,
@@ -172,8 +181,13 @@ async def register_mcp_tools() -> dict[str, JinxTool]:
                             description=tool_info.get("description", ""),
                             allowed_agents=server_config.allowed_agents,
                             input_schema=tool_info.get("input_schema"),
+                            annotations=annot_from_spec,  # None이면 _annotation_hook이 자동 추론
                         )
                         TOOL_REGISTRY[adapter.name] = adapter
+                        logger.debug(
+                            f"MCP 도구 등록: {adapter.name} "
+                            f"| annotations={adapter.annotations}"
+                        )
                 else:
                     logger.warning(f"MCP 서버 연결 실패: {server_config.name}")
             except Exception as e:

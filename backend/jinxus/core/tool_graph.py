@@ -689,6 +689,36 @@ class ToolGraph:
 _WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "tool_graph_weights.json")
 
 
+def _resolve_annotation_for_tool(tool_name: str) -> Optional["ToolAnnotations"]:
+    """도구 이름에서 어노테이션을 추론한다.
+
+    MCP 동적 로드 도구는 이름이 ``mcp:서버:실제도구명`` 형식이므로,
+    맨 앞의 ``mcp:서버:`` 접두어를 제거하고 실제 도구명으로 추론한다.
+
+    예)
+        "mcp:brave-search:brave_web_search" → "brave_web_search" → read_only=True
+        "mcp:filesystem:list_directory"     → "list_directory"    → read_only=True
+        "mcp:github:create_issue"           → "create_issue"      → read_only=False
+        "code_executor"                     → "code_executor"     → open_world=True
+
+    _ANNOTATION_AVAILABLE 이 False 인 환경에서는 None 을 반환한다 (graceful fallback).
+    """
+    if not _ANNOTATION_AVAILABLE:
+        return None
+    try:
+        # MCP 도구: "mcp:<server>:<tool_name>" → 마지막 세그먼트만 사용
+        if tool_name.startswith("mcp:"):
+            parts = tool_name.split(":")
+            # parts = ["mcp", "server", "tool_name"] — 최소 3개 필요
+            if len(parts) >= 3:
+                actual_tool_name = parts[-1]  # 실제 도구 이름만 추출
+                return infer_annotations_from_name(actual_tool_name)
+            # 세그먼트 부족 시 그대로 시도
+        return infer_annotations_from_name(tool_name)
+    except Exception:
+        return None
+
+
 def build_jinxus_tool_graph() -> ToolGraph:
     """JINXUS의 기존 도구 + MCP 도구를 그래프로 구축
 
@@ -755,13 +785,25 @@ def build_jinxus_tool_graph() -> ToolGraph:
     # ── 노드 등록 ──
     for tool_name, tool in TOOL_REGISTRY.items():
         meta = _NODE_META.get(tool_name, {})
-        # graph-tool-call 패턴: 도구 이름에서 어노테이션 자동 추론
-        auto_annotations = None
-        if _ANNOTATION_AVAILABLE:
-            try:
-                auto_annotations = infer_annotations_from_name(tool_name)
-            except Exception:
-                pass
+
+        # graph-tool-call 패턴: 어노테이션 성정 우선순위
+        # 1순위: MCPToolAdapter 에 이미 주입된 어노테이션 (등록 시점에 _annotation_hook 적용됨)
+        # 2순위: 없으면 이름 기반 작업 (_resolve_annotation_for_tool)
+        adapter_annotations = getattr(tool, "annotations", None)
+        if adapter_annotations is not None:
+            # 어댑터에 이미 어노테이션 있음 → 재추론 불필요
+            auto_annotations = adapter_annotations
+        else:
+            # MCP 동적 로드 도구(mcp:server:tool)는 _resolve_annotation_for_tool() 로
+            # 실제 도구명 세그먼트만 추출하여 추론 — 기존 정적 도구와 동일한 파이프라인 적용
+            auto_annotations = _resolve_annotation_for_tool(tool_name)
+
+        # MCP 도구: 서버명을 카테고리로 자동 설정 (메타 없는 경우)
+        if not meta and tool_name.startswith("mcp:"):
+            parts = tool_name.split(":")
+            mcp_category = f"mcp:{parts[1]}" if len(parts) >= 2 else "mcp"
+            meta = {"category": mcp_category, "keywords": []}
+
         graph.add_node(ToolNode(
             name=tool.name,
             description=tool.description,

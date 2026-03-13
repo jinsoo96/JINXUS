@@ -10,6 +10,14 @@ from contextlib import AsyncExitStack
 
 from .base import JinxTool, ToolResult
 
+# ── 어노테이션 자동 추론 (graceful import) ──────────────────────
+try:
+    from jinxus.core.tool_annotation import ToolAnnotations, infer_annotations_from_name
+    _ANNOTATION_AVAILABLE = True
+except ImportError:
+    _ANNOTATION_AVAILABLE = False
+    ToolAnnotations = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 
@@ -246,11 +254,29 @@ class MCPClient:
         return server_name in self._sessions
 
 
+def _annotation_hook(tool_name: str, server_name: str) -> Optional["ToolAnnotations"]:
+    """MCP 동적 로드 도구에 어노테이션 자동 추론을 적용하는 훅.
+
+    MCP 도구 이름(예: ``brave_web_search``)에서 동사를 분석해
+    ToolAnnotations 를 자동 생성한다.
+
+    _ANNOTATION_AVAILABLE 이 False 인 환경에서는 None 을 반환한다
+    (graceful fallback).
+    """
+    if not _ANNOTATION_AVAILABLE:
+        return None
+    try:
+        return infer_annotations_from_name(tool_name)
+    except Exception:
+        return None
+
+
 class MCPToolAdapter(JinxTool):
     """MCP 서버를 JINXUS 도구로 감싸는 어댑터
 
     기존 JinxTool 인터페이스와 호환되게 MCP 도구를 노출한다.
     자동 캐싱 지원 (읽기 전용 도구만)
+    어노테이션 자동 추론 지원 (_annotation_hook 통해 주입)
     """
 
     # 캐싱 가능한 MCP 도구 패턴 (읽기 전용)
@@ -275,6 +301,7 @@ class MCPToolAdapter(JinxTool):
         description: str = "",
         allowed_agents: list[str] = None,
         input_schema: dict = None,
+        annotations: Optional["ToolAnnotations"] = None,
     ):
         super().__init__()
         self._mcp_client = mcp_client
@@ -289,6 +316,9 @@ class MCPToolAdapter(JinxTool):
             "properties": {},
             "required": [],
         }
+
+        # 어노테이션: 외부 주입 우선, 없으면 이름 기반 자동 추론
+        self.annotations = annotations if annotations is not None else _annotation_hook(tool_name, server_name)
 
         # 캐싱 가능 여부 사전 계산
         self._is_cacheable = self._check_cacheable()
