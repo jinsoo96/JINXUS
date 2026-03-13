@@ -3,7 +3,8 @@
 도구 간 관계를 그래프로 모델링하고, 사용자 쿼리에서
 관련 도구 워크플로우를 자동으로 구성한다.
 
-v2: BM25 + 그래프 BFS + wRRF 퓨전, 히스토리 디모션, JSON 영속화
+v3: BM25 + 그래프 BFS + wRRF 퓨전 + 어노테이션 정렬 스코어
+    + 이름 기반 자동 의존성 탐지 + MCP 도구 자동 메타데이터
 참고: https://github.com/SonAIengine/graph-tool-call
 """
 import json
@@ -15,6 +16,30 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+# graph-tool-call 패턴: 어노테이션 및 의도 분류기
+try:
+    from jinxus.core.tool_annotation import (
+        ToolAnnotations,
+        infer_annotations_from_name,
+        compute_annotation_scores,
+    )
+    from jinxus.core.tool_intent import classify_intent
+    _ANNOTATION_AVAILABLE = True
+except ImportError:
+    _ANNOTATION_AVAILABLE = False
+    # fallback stub — ToolNode의 타입 힌트용
+    class ToolAnnotations:  # type: ignore[no-redef]
+        pass
+
+    def infer_annotations_from_name(name: str) -> None:  # type: ignore[misc]
+        return None
+
+    def compute_annotation_scores(*args, **kwargs) -> dict:  # type: ignore[misc]
+        return {}
+
+    def classify_intent(query: str):  # type: ignore[misc]
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +64,10 @@ class ToolNode:
     actions: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     weight: float = 1.0  # 기본 가중치 (학습으로 변동)
+    annotations: Optional["ToolAnnotations"] = field(default=None, repr=False)  # graph-tool-call 어노테이션
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "name": self.name,
             "description": self.description,
             "category": self.category,
@@ -50,10 +76,17 @@ class ToolNode:
             "keywords": self.keywords,
             "weight": self.weight,
         }
+        if self.annotations is not None:
+            d["annotations"] = self.annotations.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "ToolNode":
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        d = {k: v for k, v in data.items() if k in cls.__dataclass_fields__ and k != "annotations"}
+        node = cls(**d)
+        if "annotations" in data and _ANNOTATION_AVAILABLE:
+            node.annotations = ToolAnnotations.from_dict(data["annotations"])
+        return node
 
 
 @dataclass
@@ -250,12 +283,13 @@ class BM25Scorer:
 class ToolGraph:
     """그래프 기반 도구 탐색 엔진
 
-    v2: BM25 + BFS 그래프 확장 + wRRF 랭크 퓨전
+    v3: BM25 + BFS 그래프 확장 + wRRF 랭크 퓨전 + 어노테이션 정렬 스코어
     """
 
-    # wRRF 가중치
-    _WEIGHT_BM25 = 0.35
-    _WEIGHT_GRAPH = 0.65
+    # wRRF 가중치 (graph-tool-call RetrievalEngine 패턴 반영)
+    _WEIGHT_BM25 = 0.30
+    _WEIGHT_GRAPH = 0.55
+    _WEIGHT_ANNOTATION = 0.15  # 어노테이션 정렬 점수 (신규)
     _WRRF_K = 60  # RRF 상수
 
     def __init__(self):
@@ -315,9 +349,10 @@ class ToolGraph:
 
         1. BM25로 키워드 기반 점수 계산
         2. BFS로 그래프 기반 점수 계산 (BM25 상위를 seed로)
-        3. wRRF로 두 소스 랭크 퓨전
-        4. history 디모션 (최근 사용 도구 점수 감쇠)
-        5. 위상 정렬로 실행 순서 결정
+        3. 어노테이션-의도 정렬 점수 (graph-tool-call 패턴)
+        4. wRRF로 세 소스 랭크 퓨전
+        5. history 디모션 (최근 사용 도구 점수 감쇠)
+        6. 위상 정렬로 실행 순서 결정
         """
         self._ensure_bm25_index()
 
@@ -350,18 +385,40 @@ class ToolGraph:
                 seed_names, max_depth, agent_name
             )
 
-        # ── 3단계: wRRF 퓨전 ──
-        final_scores = self._wrrf_fuse([
+        # ── 3단계: 어노테이션-의도 정렬 점수 (graph-tool-call 패턴) ──
+        annotation_scores: dict[str, float] = {}
+        if _ANNOTATION_AVAILABLE:
+            try:
+                intent = classify_intent(query)
+                if not intent.is_neutral:
+                    tool_annotations = {
+                        name: node.annotations
+                        for name, node in self._nodes.items()
+                    }
+                    annotation_scores = compute_annotation_scores(intent, tool_annotations)
+                    # [0,1] → wRRF용 점수로 정규화 (0.5 중립 제외)
+                    annotation_scores = {
+                        k: v for k, v in annotation_scores.items() if v != 0.5
+                    }
+            except Exception as e:
+                logger.debug(f"[ToolGraph] 어노테이션 점수 계산 실패 (무시): {e}")
+
+        # ── 4단계: wRRF 퓨전 ──
+        fusion_sources: list[tuple[dict[str, float], float]] = [
             (bm25_scores, self._WEIGHT_BM25),
             (graph_scores, self._WEIGHT_GRAPH),
-        ])
+        ]
+        if annotation_scores:
+            fusion_sources.append((annotation_scores, self._WEIGHT_ANNOTATION))
+
+        final_scores = self._wrrf_fuse(fusion_sources)
 
         # BM25에만 있는 도구도 포함 (seed 노드)
         for name, score in bm25_scores.items():
             if name not in final_scores:
                 final_scores[name] = score * self._WEIGHT_BM25 / (self._WRRF_K + 1)
 
-        # ── 4단계: history 디모션 ──
+        # ── 5단계: history 디모션 ──
         if history:
             for tool_name in history:
                 if tool_name in final_scores:
@@ -539,8 +596,8 @@ class ToolGraph:
                     if node:
                         node.weight = min(node.weight + 0.3, 5.0)
                         history_tools.append(tool_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[ToolGraph] 메타 스토어 히스토리 조회 실패, 히스토리 없이 진행: {e}")
 
         return self.retrieve(query, top_k=top_k, agent_name=agent_name, history=history_tools)
 
@@ -698,12 +755,20 @@ def build_jinxus_tool_graph() -> ToolGraph:
     # ── 노드 등록 ──
     for tool_name, tool in TOOL_REGISTRY.items():
         meta = _NODE_META.get(tool_name, {})
+        # graph-tool-call 패턴: 도구 이름에서 어노테이션 자동 추론
+        auto_annotations = None
+        if _ANNOTATION_AVAILABLE:
+            try:
+                auto_annotations = infer_annotations_from_name(tool_name)
+            except Exception:
+                pass
         graph.add_node(ToolNode(
             name=tool.name,
             description=tool.description,
             category=meta.get("category", "general"),
             allowed_agents=list(tool.allowed_agents) if tool.allowed_agents else [],
             keywords=meta.get("keywords", []),
+            annotations=auto_annotations,
         ))
 
     # ── 엣지 등록 ──
@@ -746,11 +811,105 @@ def build_jinxus_tool_graph() -> ToolGraph:
     graph.add_edge(ToolEdge("github_agent", "github_graphql", EdgeType.CONFLICTS_WITH,
                             weight=0.3, description="같은 API rate limit 공유"))
 
+    # ── 이름 기반 자동 의존성 탐지 (graph-tool-call 패턴) ──
+    # 도구 이름의 접두어 패턴으로 CRUD 관계 자동 탐지
+    _auto_detect_name_based_edges(graph)
+
     # ── 저장된 가중치 복원 ──
     graph.load_weights(_WEIGHTS_FILE)
 
     logger.info(f"ToolGraph built: {len(graph._nodes)} nodes, {len(graph._edges)} edges")
     return graph
+
+
+def _auto_detect_name_based_edges(graph: ToolGraph) -> None:
+    """graph-tool-call dependency.py 패턴: 도구 이름 기반 CRUD 자동 의존성 탐지.
+
+    동일 리소스를 다루는 도구 식별 후 CRUD 순서 기반으로
+    PRECEDES / REQUIRES 엓지를 자동으로 추가한다.
+
+    - list_*/get_* 시리즈는 SIMILAR_TO
+    - create_*/list_* 시리즈는 PRECEDES (create 머저, list로 확인)
+    - delete_* 도구는 대응 get_* 에 REQUIRES
+    """
+    if not _ANNOTATION_AVAILABLE:
+        return
+
+    import re as _re
+
+    # CRUD 동사 접두어 순서 (graph-tool-call _CRUD_ORDER 패턴)
+    _CRUD_ORDER = {"create": 0, "add": 0, "post": 0, "list": 1, "get": 1,
+                   "fetch": 1, "search": 1, "update": 2, "edit": 2, "set": 2,
+                   "delete": 3, "remove": 3, "clear": 3}
+
+    def _split_name(name: str) -> tuple[str, str]:
+        """(동사, 리소스) 분리. 'github_agent' 스타일 스킵."""
+        n = _re.sub(r"([a-z])([A-Z])", r"\1_\2", name).lower()
+        parts = [p for p in n.replace("-", "_").split("_") if p]
+        if not parts:
+            return "", name
+        verb = parts[0]
+        resource = "_".join(parts[1:]) if len(parts) > 1 else ""
+        return verb, resource
+
+    # 제외할 이미 명시된 엓지 파어
+    existing_pairs: set[tuple[str, str]] = {
+        (e.source, e.target) for e in graph.get_all_edges()
+    }
+
+    nodes = graph.get_all_nodes()
+    added = 0
+
+    for i, a in enumerate(nodes):
+        verb_a, res_a = _split_name(a.name)
+        if not res_a or verb_a not in _CRUD_ORDER:
+            continue
+        order_a = _CRUD_ORDER[verb_a]
+        annot_a = infer_annotations_from_name(a.name)
+
+        for b in nodes[i + 1:]:
+            if a.name == b.name:
+                continue
+            verb_b, res_b = _split_name(b.name)
+            if not res_b or verb_b not in _CRUD_ORDER:
+                continue
+
+            # 동일 리소스인 경우만 적용
+            if res_a != res_b:
+                continue
+
+            order_b = _CRUD_ORDER[verb_b]
+            annot_b = infer_annotations_from_name(b.name)
+
+            # list_X ⇔ get_X 두 개는 SIMILAR_TO
+            if annot_a and annot_b and annot_a.read_only_hint and annot_b.read_only_hint:
+                pair = (a.name, b.name)
+                if pair not in existing_pairs:
+                    graph.add_edge(ToolEdge(
+                        source=a.name, target=b.name,
+                        edge_type=EdgeType.SIMILAR_TO,
+                        weight=0.85,
+                        description=f"자동 탐지: 동일 리소스 읽기 도구",
+                    ))
+                    existing_pairs.add(pair)
+                    added += 1
+                continue
+
+            # CRUD 순서대로 PRECEDES (a 먹저 b 나중)
+            if order_a < order_b:
+                pair = (a.name, b.name)
+                if pair not in existing_pairs:
+                    graph.add_edge(ToolEdge(
+                        source=a.name, target=b.name,
+                        edge_type=EdgeType.PRECEDES,
+                        weight=0.75,
+                        description=f"자동 탐지: CRUD 순서 ({verb_a}→{verb_b})",
+                    ))
+                    existing_pairs.add(pair)
+                    added += 1
+
+    if added:
+        logger.info(f"[ToolGraph] 이름 기반 자동 엳지 {added}개 추가")
 
 
 def save_tool_graph() -> None:
