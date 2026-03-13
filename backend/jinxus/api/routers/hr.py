@@ -23,6 +23,7 @@ class HireRequest(BaseModel):
     capabilities: List[str] = []
     tools: List[str] = []
     role: str = "senior"
+    system_prompt: Optional[str] = None
 
 
 class SpawnRequest(BaseModel):
@@ -77,6 +78,7 @@ async def hire_agent(request: HireRequest):
         capabilities=request.capabilities,
         tools=request.tools,
         role=role_map.get(request.role, AgentRole.SENIOR),
+        system_prompt=request.system_prompt,
     )
 
     try:
@@ -90,16 +92,22 @@ async def hire_agent(request: HireRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class FireRequest(BaseModel):
+    """에이전트 해고 요청"""
+    reason: Optional[str] = None
+
+
 @router.post("/fire/{agent_id}")
-async def fire_agent(agent_id: str):
-    """에이전트 해고
+async def fire_agent(agent_id: str, request: FireRequest = None):
+    """에이전트 해고 (Soft-Delete)
 
     Args:
         agent_id: 해고할 에이전트 ID
     """
     hr = get_hr_manager()
+    reason = request.reason if request else ""
 
-    success = await hr.fire(agent_id)
+    success = await hr.fire(agent_id, reason=reason or "")
 
     if not success:
         raise HTTPException(status_code=400, detail="에이전트를 해고할 수 없습니다.")
@@ -107,7 +115,45 @@ async def fire_agent(agent_id: str):
     return {
         "success": True,
         "agent_id": agent_id,
-        "message": "에이전트 해고 완료",
+        "message": "에이전트 해고 완료 (soft-delete)",
+    }
+
+
+@router.post("/rehire/{agent_id}")
+async def rehire_agent(agent_id: str):
+    """해고된 에이전트 재고용
+
+    Args:
+        agent_id: 재고용할 에이전트 ID
+    """
+    hr = get_hr_manager()
+
+    record = await hr.rehire(agent_id)
+
+    if not record:
+        raise HTTPException(status_code=400, detail="에이전트를 재고용할 수 없습니다.")
+
+    return {
+        "success": True,
+        "agent": record.to_dict(),
+        "message": f"에이전트 '{record.name}' 재고용 완료",
+    }
+
+
+@router.get("/fired")
+async def list_fired_agents():
+    """해고된 에이전트 목록 조회"""
+    hr = get_hr_manager()
+
+    if not hr._initialized:
+        from jinxus.core import get_orchestrator
+        orchestrator = get_orchestrator()
+        hr.initialize(orchestrator)
+
+    records = hr.get_fired_records()
+    return {
+        "agents": [r.to_dict() for r in records],
+        "total": len(records),
     }
 
 

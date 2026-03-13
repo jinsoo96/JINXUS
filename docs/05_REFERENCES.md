@@ -8,6 +8,7 @@
 | **Geny** | [github.com/CocoRoF/Geny](https://github.com/CocoRoF/Geny) | FastAPI + LangGraph 백엔드 구조, 단기/장기 메모리 분리 레이어 개념, context_guard / model_fallback 노드 아이디어, 역할 기반 프롬프트 분리 방식 → JinxBrain 그래프 구조와 JinxMemory 3계층 설계에 반영. **2차 심층 분석 (2026-03-08)**: 난이도 기반 그래프 분기, Session Freshness Policy, Resilience Node 패턴, Tool Policy Engine, LangGraph Checkpointer 5개 패턴 식별 → [07_GENY_ANALYSIS.md](07_GENY_ANALYSIS.md) 참조 |
 | **XGEN / SON BLOG** | [infoedu.co.kr](https://infoedu.co.kr) | K3s + Jenkins + ArgoCD CI/CD 파이프라인 구성, Istio 서비스 메시 + Observability 스택, GPU 모델 서빙 아키텍처, Qdrant 기반 임베딩 최적화 → Phase 5 배포 인프라 및 향후 파인튜닝 파이프라인 설계 방향에 반영 |
 | **XGEN_Working_dir** | [github.com/jinsoo96/XGEN_Working_dir](https://github.com/jinsoo96/XGEN_Working_dir) | Private 레포라 직접 접근 불가. infoedu.co.kr 블로그 기반으로 XGEN 플랫폼 구조 간접 파악. |
+| **CrewAI** | [github.com/crewAIInc/crewAI](https://github.com/crewAIInc/crewAI) | 멀티에이전트 오케스트레이션 프레임워크. FlowPersistence(SQLite 체크포인트), `@listen`/`@router` 태스크 체이닝, HumanFeedbackPending 일시정지/재개 패턴, Guardrail 검증+재시도 루프, ThreadPoolExecutor 비동기 메모리 쓰기 + drain barrier → v1.7.0 백그라운드 작업 강화에 반영 |
 
 ## 기술 공식 문서
 

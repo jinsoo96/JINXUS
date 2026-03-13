@@ -39,7 +39,7 @@ class GitHubGraphQL(JinxTool):
 - search_code: 코드 검색
 - raw_query: 직접 GraphQL 쿼리 실행
 """
-    allowed_agents = ["JX_OPS", "JX_CODER", "JX_RESEARCHER"]
+    allowed_agents = ["JX_OPS", "JX_CODER", "JX_RESEARCHER", "JX_REVIEWER"]
 
     GRAPHQL_URL = "https://api.github.com/graphql"
     CACHE_TTL = 300  # 5분 캐시

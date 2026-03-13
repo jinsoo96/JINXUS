@@ -114,13 +114,19 @@ class JXCoder:
 - "리뷰해줘", "코드 리뷰": JX_REVIEWER만 배치
 - "테스트", "검증", "타입 체크": JX_TESTER만 배치
 - 큰 기능 구현: 전문가 작업 → JX_REVIEWER + JX_TESTER 후속
+- 버그/에러/디버깅 작업: mode="debug" 사용 (가설 분기 디버깅)
+
+## 파일 소유권 원칙 (병렬 실행 시 필수)
+- 같은 파일을 두 전문가에게 절대 배정하지 마라
+- 각 task의 instruction에 담당 파일/디렉토리 범위를 명시하라
+- 전문가 간 경계는 인터페이스 계약(함수 시그니처, API 스펙)으로 정의하라
 
 JSON으로 답변:
 {{
-    "mode": "direct 또는 delegate",
+    "mode": "direct 또는 delegate 또는 debug",
     "specialists": ["필요한 전문가 이름"],
     "tasks": [
-        {{"agent": "전문가 이름", "instruction": "구체적이고 self-contained인 지시사항"}}
+        {{"agent": "전문가 이름", "instruction": "구체적이고 self-contained인 지시사항 (담당 파일 범위 포함)", "file_scope": ["담당 파일/디렉토리 패턴"]}}
     ],
     "needs_review": true/false,
     "needs_test": true/false,
@@ -347,6 +353,122 @@ JSON으로 답변:
             "specialists_used": [t["agent"] for t in tasks],
         }
 
+    async def _execute_debug(
+        self, instruction: str, context: list, memory_context: list
+    ) -> dict:
+        """ACH(Analysis of Competing Hypotheses) 디버깅
+
+        1. 가설 생성 (Claude로 3개 경쟁 가설)
+        2. 각 가설을 병렬로 조사 (전문가 또는 직접)
+        3. 증거 기반으로 가장 유력한 원인 선택
+        4. 수정 실행
+        """
+        self._init_specialists()
+        await self._report_progress("ACH 디버깅 모드 시작: 가설 생성 중...")
+
+        # 1단계: 가설 생성
+        hypothesis_prompt = f"""이 버그/에러를 분석해서 가능한 원인 가설 3개를 세워줘.
+
+문제: {instruction}
+
+JSON으로 답변:
+{{
+    "hypotheses": [
+        {{"id": 1, "theory": "원인 가설", "investigation": "확인 방법 (구체적인 파일, 로그, 코드 위치)", "agent": "조사할 전문가 (JX_BACKEND/JX_FRONTEND/JX_INFRA 중 택1)"}},
+        ...
+    ]
+}}"""
+
+        try:
+            response = self._client.messages.create(
+                model=self._fast_model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": hypothesis_prompt}],
+            )
+            match = re.search(r'\{[\s\S]*\}', response.content[0].text)
+            hypotheses = json.loads(match.group())["hypotheses"] if match else []
+        except Exception as e:
+            logger.warning(f"[JX_CODER] ACH 가설 생성 실패, 직접 처리 전환: {e}")
+            return await self._execute_with_retry(instruction, context, memory_context)
+
+        if not hypotheses:
+            return await self._execute_with_retry(instruction, context, memory_context)
+
+        # 2단계: 병렬 조사
+        await self._report_progress(
+            f"가설 {len(hypotheses)}개 병렬 조사 시작: "
+            + ", ".join(f"H{h['id']}: {h['theory'][:30]}" for h in hypotheses)
+        )
+
+        investigation_coros = []
+        for h in hypotheses:
+            agent = h.get("agent", "JX_BACKEND")
+            inv_instruction = (
+                f"가설 조사: '{h['theory']}'\n"
+                f"확인 방법: {h['investigation']}\n"
+                f"원본 문제: {instruction}\n\n"
+                f"이 가설이 맞는지 증거를 수집하라. "
+                f"결론을 confidence(0.0~1.0)와 함께 보고하라."
+            )
+            investigation_coros.append(self._run_specialist(agent, inv_instruction, context))
+
+        results = await asyncio.gather(*investigation_coros, return_exceptions=True)
+        results = [
+            r if isinstance(r, dict) else {"success": False, "output": str(r)}
+            for r in results
+        ]
+
+        # 3단계: 증거 기반 수렴
+        evidence_summary = "\n\n".join(
+            f"### 가설 {h['id']}: {h['theory']}\n조사 결과: {r.get('output', '없음')[:800]}"
+            for h, r in zip(hypotheses, results)
+        )
+
+        await self._report_progress("증거 수집 완료, 중재 판단 중...")
+
+        arbitrate_prompt = f"""디버깅 증거를 분석하여 최종 판단을 내려라.
+
+원본 문제: {instruction}
+
+{evidence_summary}
+
+가장 유력한 원인과 구체적인 수정 방안을 제시하라. 코드 수정이 필요하면 코드를 포함하라."""
+
+        try:
+            executor = self._get_executor()
+
+            tool_cb = None
+            if self._progress_callback:
+                cb = self._progress_callback
+                async def tool_cb(tool_name: str, status: str):
+                    if status == "calling":
+                        await cb(f"🔧 [{self.name}] 수정 중: {tool_name}")
+
+            fix_result = await executor.execute(
+                instruction=arbitrate_prompt,
+                system_prompt=self._get_system_prompt(),
+                tool_callback=tool_cb,
+            )
+
+            return {
+                "success": fix_result.success,
+                "score": 0.9 if fix_result.success else 0.4,
+                "output": fix_result.output,
+                "error": fix_result.error,
+                "code": None,
+                "specialists_used": [h.get("agent", "?") for h in hypotheses],
+            }
+        except Exception as e:
+            # 수정 실패 시 조사 결과만이라도 반환
+            return {
+                "success": True,
+                "score": 0.6,
+                "output": f"## 디버깅 분석 결과\n\n{evidence_summary}\n\n(자동 수정 실패: {e})",
+                "error": None,
+                "code": None,
+                "specialists_used": [h.get("agent", "?") for h in hypotheses],
+            }
+
     # ===== 기존 직접 실행 로직 (단순 작업용) =====
 
     async def _classify_task(self, instruction: str) -> dict:
@@ -375,8 +497,8 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "needs_mcp": result.get("mcp", "no").lower() == "yes",
                     "is_complex": result.get("complex", "no").lower() == "yes",
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[JXCoder] 작업 분류 JSON 파싱 실패, 기본값 사용: {e}")
         return {"needs_mcp": False, "is_complex": False}
 
     def _get_system_prompt(self) -> str:
@@ -426,7 +548,10 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
             # === [execute] 실행 ===
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
 
-            if plan["mode"] == "delegate" and plan.get("specialists"):
+            if plan["mode"] == "debug":
+                # ACH 디버깅: 가설 분기 → 병렬 조사 → 증거 기반 수렴
+                result = await self._execute_debug(instruction, context or [], memory_context)
+            elif plan["mode"] == "delegate" and plan.get("specialists"):
                 # 전문가 팀에게 위임
                 result = await self._execute_delegated(plan, instruction, context or [])
             else:

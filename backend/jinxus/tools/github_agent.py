@@ -55,7 +55,7 @@ class GitHubAgent(JinxTool):
 - get_contents: 파일/디렉토리 내용 조회 (repo, path 파라미터. 디렉토리면 파일 목록, 파일이면 내용 반환)
 - get_file: 특정 파일의 전체 내용 조회 (repo, path 파라미터)
 - rate_limit: 현재 rate limit 상태 확인"""
-    allowed_agents = ["JX_OPS", "JX_RESEARCHER"]
+    allowed_agents = ["JX_OPS", "JX_RESEARCHER", "JX_CODER", "JX_REVIEWER"]
 
     input_schema = {
         "type": "object",

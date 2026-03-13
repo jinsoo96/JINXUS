@@ -1,9 +1,20 @@
-"""JinxMemory - 통합 메모리 인터페이스"""
+"""JinxMemory - 통합 메모리 인터페이스
+
+v1.7.0: 비동기 메모리 쓰기 (ThreadPoolExecutor + drain barrier)
+- 장기기억(Qdrant) 쓰기를 백그라운드에서 처리
+- recall() 전 drain_writes()로 모든 pending write 완료 보장
+"""
+import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor, Future
+from threading import Lock
 from typing import Optional
 
 from .short_term import ShortTermMemory, get_short_term_memory
 from .long_term import LongTermMemory, get_long_term_memory
 from .meta_store import MetaStore, get_meta_store
+
+logger = logging.getLogger(__name__)
 
 
 class JinxMemory:
@@ -13,12 +24,18 @@ class JinxMemory:
     - 단기기억 (Redis): 세션 대화 히스토리
     - 장기기억 (Qdrant): 에이전트별 경험 벡터
     - 메타기억 (SQLite): 통계, 프롬프트 버전, 개선 이력
+
+    v1.7.0: 비동기 쓰기 풀 (Qdrant 저장 지연 방지)
     """
 
     def __init__(self):
         self._short_term: ShortTermMemory = get_short_term_memory()
         self._long_term: LongTermMemory = get_long_term_memory()
         self._meta: MetaStore = get_meta_store()
+        # 비동기 쓰기 풀 (단일 스레드 → 직렬화, race condition 방지)
+        self._write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jinx-mem-write")
+        self._pending_writes: list[Future] = []
+        self._pending_lock = Lock()
 
     # ===== 초기화 =====
 
@@ -79,27 +96,78 @@ class JinxMemory:
         importance_score: float,
         prompt_version: str,
     ) -> str:
-        """장기기억에 작업 결과 저장"""
-        return self._long_term.save(
-            agent_name=agent_name,
-            task_id=task_id,
-            instruction=instruction,
-            summary=summary,
-            outcome=outcome,
-            success_score=success_score,
-            key_learnings=key_learnings,
-            importance_score=importance_score,
-            prompt_version=prompt_version,
-        )
+        """장기기억에 작업 결과 저장 (비동기 — 백그라운드 스레드에서 처리)
+
+        즉시 task_id를 반환하고, 실제 Qdrant 쓰기는 백그라운드에서 수행.
+        search_long_term 호출 전 drain_writes()가 자동 호출되어 일관성 보장.
+        """
+        def _do_save():
+            try:
+                return self._long_term.save(
+                    agent_name=agent_name,
+                    task_id=task_id,
+                    instruction=instruction,
+                    summary=summary,
+                    outcome=outcome,
+                    success_score=success_score,
+                    key_learnings=key_learnings,
+                    importance_score=importance_score,
+                    prompt_version=prompt_version,
+                )
+            except Exception as e:
+                logger.warning(f"[JinxMemory] 장기기억 비동기 쓰기 실패: {e}")
+                return None
+
+        future = self._write_pool.submit(_do_save)
+        future.add_done_callback(self._on_write_done)
+
+        with self._pending_lock:
+            self._pending_writes.append(future)
+
+        return task_id
+
+    def _on_write_done(self, future: Future):
+        """쓰기 완료 콜백 — pending 리스트에서 제거"""
+        with self._pending_lock:
+            if future in self._pending_writes:
+                self._pending_writes.remove(future)
+
+    def drain_writes(self, timeout: float = 30.0) -> int:
+        """모든 pending 쓰기 완료 대기 (recall 전 자동 호출)
+
+        Returns:
+            완료된 쓰기 수
+        """
+        with self._pending_lock:
+            pending = list(self._pending_writes)
+
+        if not pending:
+            return 0
+
+        from concurrent.futures import wait
+        done, not_done = wait(pending, timeout=timeout)
+
+        if not_done:
+            logger.warning(f"[JinxMemory] drain_writes 타임아웃: {len(not_done)}개 미완료")
+
+        return len(done)
+
+    def close(self):
+        """메모리 시스템 종료 (서버 shutdown 시 호출)"""
+        self.drain_writes(timeout=10.0)
+        self._write_pool.shutdown(wait=True)
+        logger.info("[JinxMemory] 비동기 쓰기 풀 종료 완료")
 
     def search_long_term(
         self, agent_name: str, query: str, limit: int = 5
     ) -> list[dict]:
-        """장기기억에서 유사 경험 검색"""
+        """장기기억에서 유사 경험 검색 (검색 전 pending 쓰기 flush)"""
+        self.drain_writes()
         return self._long_term.search(agent_name, query, limit)
 
     def search_all_memories(self, query: str, limit: int = 5) -> list[dict]:
-        """모든 에이전트 메모리에서 검색"""
+        """모든 에이전트 메모리에서 검색 (검색 전 pending 쓰기 flush)"""
+        self.drain_writes()
         return self._long_term.search_all(query, limit)
 
     def delete_memory(self, agent_name: str, task_id: str) -> bool:

@@ -6,12 +6,15 @@ LangGraph 패턴 적용:
 - memory_write (장기기억 저장)
 """
 import asyncio
+import logging
 import tempfile
 import uuid
 import time
 import re
 from typing import Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from anthropic import Anthropic
 
@@ -86,8 +89,8 @@ class JXAnalyst:
                     query=instruction,
                     limit=3,
                 )
-            except Exception:
-                pass  # 메모리 실패해도 진행
+            except Exception as e:
+                logger.warning(f"[JXAnalyst] 장기 메모리 검색 실패, 컨텍스트 없이 진행: {e}")
 
             # === [plan] 분석 유형 판단 ===
             self._state_tracker.update_node(self.name, GraphNode.PLAN)
@@ -368,5 +371,5 @@ class JXAnalyst:
                     importance_score=importance,
                     prompt_version=self._prompt_version,
                 )
-        except Exception:
-            pass  # 메모리 저장 실패해도 계속 진행
+        except Exception as e:
+            logger.warning(f"[JXAnalyst] 장기 메모리 저장 실패 (결과 반환은 정상): {e}")

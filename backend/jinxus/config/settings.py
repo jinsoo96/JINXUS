@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """JINXUS 설정 - Pydantic BaseSettings로 환경변수 자동 로드"""
 
     # 버전
-    jinxus_version: str = Field(default="1.6.0")
+    jinxus_version: str = Field(default="1.9.6")
 
     # 서버
     jinxus_host: str = Field(default="0.0.0.0")
@@ -59,6 +59,9 @@ class Settings(BaseSettings):
 
     # MCP (Model Context Protocol)
     brave_api_key: str = Field(default="")  # Brave Search MCP용
+    slack_bot_token: str = Field(default="")   # Slack MCP용
+    slack_team_id: str = Field(default="")     # Slack MCP용
+    notion_api_key: str = Field(default="")    # Notion MCP용
     mcp_enabled: bool = Field(default=True)  # MCP 활성화 여부
     use_dynamic_tools: bool = Field(default=True)  # 에이전트 동적 도구 실행 (Claude tool_use)
 
@@ -85,6 +88,11 @@ class Settings(BaseSettings):
     # 작업 관리
     task_retention_hours: int = Field(default=1)
     max_tasks: int = Field(default=100)
+
+    # v1.7.0 백그라운드 작업 강화
+    step_timeout_seconds: int = Field(default=900)         # 개별 step 타임아웃 (기본 15분)
+    guardrail_max_retries: int = Field(default=2)         # step 실패 시 최대 재시도 횟수
+    checkpoint_ttl_hours: int = Field(default=24)         # 체크포인트 Redis TTL
 
     # 프로젝트 경로
     @property

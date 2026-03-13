@@ -16,6 +16,8 @@
     /bg       - 백그라운드 작업 (단일 작업)
     /tasks    - 백그라운드 작업 목록
     /cancel   - 작업 취소
+    /pause    - 자율 작업 일시정지
+    /resume   - 일시정지된 작업 재개
 """
 import asyncio
 import logging
@@ -59,7 +61,10 @@ class TelegramBot:
             return
 
         user_id = update.effective_user.id
+        logger.info(f"[TelegramBot] 메시지 수신: user_id={user_id}, text={update.message.text!r:.50}")
+
         if not self._is_authorized(user_id):
+            logger.warning(f"[TelegramBot] 미인증 사용자: {user_id}")
             await update.message.reply_text("인증되지 않은 사용자입니다.")
             return
 
@@ -68,10 +73,12 @@ class TelegramBot:
         bot = context.bot
 
         # 백그라운드에서 실행 (폴링 블록 방지)
-        asyncio.create_task(self._process_message(bot, chat_id, user_input))
+        task = asyncio.create_task(self._process_message(bot, chat_id, user_input))
+        task.add_done_callback(lambda t: logger.error(f"[TelegramBot] 처리 태스크 예외: {t.exception()}") if not t.cancelled() and t.exception() else None)
 
     async def _process_message(self, bot, chat_id: int, user_input: str):
         """메시지 처리 (백그라운드 태스크)"""
+        logger.info(f"[TelegramBot] 처리 시작: chat_id={chat_id}")
         # 타이핑 인디케이터
         typing_active = True
 
@@ -79,8 +86,8 @@ class TelegramBot:
             while typing_active:
                 try:
                     await bot.send_chat_action(chat_id, "typing")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[TelegramBot] 타이핑 인디케이터 전송 실패: {e}")
                 await asyncio.sleep(4)
 
         typing_task = asyncio.create_task(keep_typing())
@@ -129,7 +136,9 @@ class TelegramBot:
             "/auto <작업> - 자율 멀티스텝 실행\n"
             "/bg <작업> - 백그라운드 실행 (단일)\n"
             "/tasks - 백그라운드 작업 목록\n"
-            "/cancel <ID> - 작업 취소"
+            "/cancel <ID> - 작업 취소\n"
+            "/pause <ID> - 자율 작업 일시정지\n"
+            "/resume <ID> - 일시정지된 작업 재개"
         )
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -492,6 +501,7 @@ class TelegramBot:
                     "completed": "✅",
                     "failed": "❌",
                     "cancelled": "🚫",
+                    "paused": "⏸️",
                 }.get(task.status.value, "❓")
 
                 text += f"{status_emoji} [{task.task_id[:8]}] {task.status.value}\n"
@@ -546,6 +556,75 @@ class TelegramBot:
             logger.error(f"Task cancel error: {e}")
             await update.message.reply_text(f"작업 취소 오류: {str(e)[:200]}")
 
+    async def _cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/pause 명령 - 자율 작업 일시정지"""
+        if not update.message or not self._is_authorized(update.effective_user.id):
+            return
+
+        task_id_prefix = context.args[0] if context.args else ""
+        if not task_id_prefix:
+            await update.message.reply_text("일시정지할 작업 ID를 입력해주세요.\n예: /pause abc12345")
+            return
+
+        try:
+            from jinxus.core.background_worker import get_background_worker
+            worker = get_background_worker()
+
+            matched_task = None
+            for task in worker.get_all_tasks():
+                if task.task_id.startswith(task_id_prefix):
+                    matched_task = task
+                    break
+
+            if not matched_task:
+                await update.message.reply_text(f"작업 {task_id_prefix}를 찾을 수 없습니다.")
+                return
+
+            success = await worker.pause_task(matched_task.task_id)
+            if success:
+                await update.message.reply_text(
+                    f"[작업 일시정지] {task_id_prefix}\n"
+                    f"재개: /resume {task_id_prefix}"
+                )
+            else:
+                await update.message.reply_text(f"작업 {task_id_prefix}를 일시정지할 수 없습니다. (실행 중인 자율 작업만 가능)")
+
+        except Exception as e:
+            await update.message.reply_text(f"일시정지 오류: {str(e)[:200]}")
+
+    async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/resume 명령 - 일시정지된 작업 재개"""
+        if not update.message or not self._is_authorized(update.effective_user.id):
+            return
+
+        task_id_prefix = context.args[0] if context.args else ""
+        if not task_id_prefix:
+            await update.message.reply_text("재개할 작업 ID를 입력해주세요.\n예: /resume abc12345")
+            return
+
+        try:
+            from jinxus.core.background_worker import get_background_worker
+            worker = get_background_worker()
+
+            matched_task = None
+            for task in worker.get_all_tasks():
+                if task.task_id.startswith(task_id_prefix):
+                    matched_task = task
+                    break
+
+            if not matched_task:
+                await update.message.reply_text(f"작업 {task_id_prefix}를 찾을 수 없습니다.")
+                return
+
+            success = await worker.resume_task(matched_task.task_id)
+            if success:
+                await update.message.reply_text(f"[작업 재개] {task_id_prefix}")
+            else:
+                await update.message.reply_text(f"작업 {task_id_prefix}를 재개할 수 없습니다. (일시정지된 작업만 가능)")
+
+        except Exception as e:
+            await update.message.reply_text(f"재개 오류: {str(e)[:200]}")
+
     async def _scheduled_task_callback(self, task_description: str):
         """예약 작업 실행 콜백"""
         try:
@@ -585,6 +664,8 @@ class TelegramBot:
         self._app.add_handler(CommandHandler("bg", self._cmd_bg))
         self._app.add_handler(CommandHandler("tasks", self._cmd_tasks))
         self._app.add_handler(CommandHandler("cancel", self._cmd_cancel))
+        self._app.add_handler(CommandHandler("pause", self._cmd_pause))
+        self._app.add_handler(CommandHandler("resume", self._cmd_resume))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )

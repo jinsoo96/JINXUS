@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from jinxus.api.models import AgentStatus, AgentListResponse
+from jinxus.api.deps import get_ready_orchestrator
 from jinxus.core import get_orchestrator
 from jinxus.memory.meta_store import get_meta_store
 
@@ -14,10 +15,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 @router.get("", response_model=AgentListResponse)
 async def list_agents():
     """에이전트 목록 및 성능 조회"""
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     agents = []
     for agent_name in orchestrator.get_agents():
@@ -50,10 +48,7 @@ async def list_agents():
 @router.get("/{agent_name}/status", response_model=AgentStatus)
 async def get_agent_status(agent_name: str):
     """특정 에이전트 상태 조회"""
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     if agent_name not in orchestrator.get_agents():
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
@@ -152,6 +147,26 @@ async def get_all_runtime_status():
         "agents": result_agents,
         "working_count": len(tracker.get_working_agents()),
     }
+
+
+@router.get("/JX_CODER/team")
+async def get_jx_coder_team():
+    """JX_CODER 전문가 팀 조회"""
+    from jinxus.agents.coding import CODING_SPECIALISTS
+    from jinxus.agents.state_tracker import get_state_tracker
+
+    tracker = get_state_tracker()
+    team = []
+    for name, cls in CODING_SPECIALISTS.items():
+        state = tracker.get_state(name)
+        team.append({
+            "name": name,
+            "description": cls.description,
+            "status": state.status.value if state else "idle",
+            "current_task": state.current_task if state else None,
+            "current_node": state.current_node.value if (state and state.current_node) else None,
+        })
+    return {"parent": "JX_CODER", "team": team}
 
 
 @router.get("/{agent_name}/graph")

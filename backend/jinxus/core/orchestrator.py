@@ -59,6 +59,15 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"MCP 도구 등록 실패 (계속 진행): {e}")
 
+        # 3.5. DelegationLogger 초기화 (Redis 연결 활용)
+        try:
+            from jinxus.core.delegation_logger import get_delegation_logger
+            dl = get_delegation_logger()
+            await dl.initialize(self._memory._short_term._redis)
+            logger.info("DelegationLogger 초기화 완료")
+        except Exception as e:
+            logger.warning(f"DelegationLogger 초기화 실패 (계속 진행): {e}")
+
         # 4. 에이전트 등록 (lazy import로 순환 임포트 방지)
         from jinxus.agents import register_all_agents, create_jinxus_core
         # 반환값을 직접 사용 (모듈 바인딩 문제 방지)

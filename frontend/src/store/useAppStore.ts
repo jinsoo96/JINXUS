@@ -12,15 +12,20 @@ interface AppState {
   systemStatus: SystemStatus | null;
   agents: AgentInfo[];
   hrAgents: HRAgentRecord[];
+  _agentsLoading: boolean;
 
   // 현재 탭
-  activeTab: 'dashboard' | 'chat' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings';
+  activeTab: 'dashboard' | 'chat' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
+
+  // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
+  logsAgentFilter: string;
 
   // 액션
   addMessage: (message: ChatMessage) => void;
   setLoading: (loading: boolean) => void;
   setSessionId: (sessionId: string) => void;
   setActiveTab: (tab: AppState['activeTab']) => void;
+  setLogsAgentFilter: (filter: string) => void;
   clearMessages: () => void;
 
   // 데이터 로드
@@ -39,7 +44,9 @@ export const useAppStore = create<AppState>((set) => ({
   systemStatus: null,
   agents: [],
   hrAgents: [],
-  activeTab: 'chat',
+  _agentsLoading: false,
+  activeTab: 'dashboard',
+  logsAgentFilter: 'all',
 
   // 채팅 액션
   addMessage: (message) =>
@@ -58,6 +65,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveTab: (tab) => set({ activeTab: tab }),
 
+  setLogsAgentFilter: (filter) => set({ logsAgentFilter: filter }),
+
   clearMessages: () => set({ messages: [] }),
 
   // 데이터 로드
@@ -71,10 +80,11 @@ export const useAppStore = create<AppState>((set) => ({
   },
 
   loadAgents: async () => {
-    // 이미 로드된 경우 재요청 방지 (탭 전환 시 중복 호출 방지)
-    const { agents: existing } = useAppStore.getState();
-    if (existing.length > 0) return;
+    const { agents: existing, _agentsLoading } = useAppStore.getState();
+    // 이미 로드됐거나 로딩 중이면 skip (중복/동시 호출 방지)
+    if (existing.length > 0 || _agentsLoading) return;
 
+    set({ _agentsLoading: true });
     try {
       const [agentResponse, hrResponse] = await Promise.all([
         agentApi.getAll(),
@@ -86,6 +96,8 @@ export const useAppStore = create<AppState>((set) => ({
       });
     } catch (error) {
       console.error('Failed to load agents:', error);
+    } finally {
+      set({ _agentsLoading: false });
     }
   },
 

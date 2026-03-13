@@ -1,7 +1,10 @@
 """Status API - 시스템 상태 조회"""
 from fastapi import APIRouter, Query, HTTPException
+from pydantic import BaseModel
+from typing import Optional, List
 
 from jinxus.api.models import SystemStatusResponse
+from jinxus.api.deps import get_ready_orchestrator
 from jinxus.core import get_orchestrator
 from jinxus.memory import get_jinx_memory
 
@@ -11,10 +14,7 @@ router = APIRouter(prefix="/status", tags=["status"])
 @router.get("", response_model=SystemStatusResponse)
 async def get_system_status():
     """전체 시스템 상태"""
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     status = await orchestrator.get_system_status()
 
@@ -32,10 +32,7 @@ async def get_system_status():
 async def get_performance_report(days: int = Query(7, ge=1, le=30)):
     """에이전트별 성능 리포트"""
     memory = get_jinx_memory()
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     report = {}
     for agent_name in orchestrator.get_agents():
@@ -114,7 +111,15 @@ async def get_registered_tools():
         "mcp_count": len(mcp_tools),
         "native_count": len(native_tools),
         "mcp_tools": [{"name": t["name"], "description": t.get("description", "")[:100]} for t in mcp_tools],
-        "native_tools": [{"name": t["name"], "description": t.get("description", "")[:100]} for t in native_tools],
+        "native_tools": [
+            {
+                "name": t["name"],
+                "description": t.get("description", "")[:100],
+                "allowed_agents": t.get("allowed_agents", []),
+                "enabled": t.get("enabled", True),
+            }
+            for t in native_tools
+        ],
     }
 
 
@@ -285,10 +290,95 @@ async def get_agent_tool_policy(agent_name: str):
 
 @router.get("/tool-logs")
 async def get_tool_call_logs(limit: int = Query(50, ge=1, le=100)):
-    """실시간 도구 호출 로그 조회"""
+    """실시간 도구 호출 로그 조회 (Redis 영속 로그 우선)"""
     from jinxus.agents.state_tracker import get_state_tracker
 
     tracker = get_state_tracker()
-    logs = tracker.get_tool_call_logs(limit=limit)
+    logs = await tracker.get_tool_call_logs_persistent(limit=limit)
 
     return {"logs": logs, "total": len(logs)}
+
+
+@router.get("/tool-analytics")
+async def get_tool_analytics():
+    """도구 사용 분석 — 도구별 호출 횟수, 성공률, 평균 레이턴시"""
+    from jinxus.agents.state_tracker import get_state_tracker
+
+    tracker = get_state_tracker()
+    logs = tracker.get_tool_call_logs(limit=500)
+
+    analytics: dict = {}
+    for log in logs:
+        tool = log.get("tool", "unknown")
+        if tool not in analytics:
+            analytics[tool] = {"calls": 0, "successes": 0, "total_duration": 0.0, "agents": set()}
+        analytics[tool]["calls"] += 1
+        if log.get("status") == "success":
+            analytics[tool]["successes"] += 1
+        dur = log.get("duration_ms")
+        if dur is not None:
+            analytics[tool]["total_duration"] += float(dur)
+        analytics[tool]["agents"].add(log.get("agent", "unknown"))
+
+    result = []
+    for tool_name, stats in analytics.items():
+        calls = stats["calls"]
+        result.append({
+            "tool": tool_name,
+            "call_count": calls,
+            "success_rate": stats["successes"] / calls if calls > 0 else 0.0,
+            "avg_latency_ms": stats["total_duration"] / calls if calls > 0 else 0.0,
+            "agents": list(stats["agents"]),
+        })
+    result.sort(key=lambda x: x["call_count"], reverse=True)
+
+    return {
+        "analytics": result,
+        "total_calls": sum(a["call_count"] for a in result),
+        "total_tools": len(result),
+    }
+
+
+class PolicyUpdateRequest(BaseModel):
+    whitelist: Optional[List[str]] = None
+    blacklist: Optional[List[str]] = None
+    allow_all: bool = False  # True이면 whitelist=None (모두 허용)
+
+
+@router.put("/tool-policies/{agent_name}")
+async def update_agent_tool_policy(agent_name: str, request: PolicyUpdateRequest):
+    """특정 에이전트의 도구 정책 런타임 변경 (재시작 시 초기화)"""
+    from jinxus.core.tool_policy import AGENT_POLICIES
+
+    if agent_name not in AGENT_POLICIES:
+        AGENT_POLICIES[agent_name] = {"whitelist": None, "blacklist": [], "max_tool_rounds": None}
+
+    if request.allow_all:
+        AGENT_POLICIES[agent_name]["whitelist"] = None
+    elif request.whitelist is not None:
+        AGENT_POLICIES[agent_name]["whitelist"] = request.whitelist
+
+    if request.blacklist is not None:
+        AGENT_POLICIES[agent_name]["blacklist"] = request.blacklist
+
+    return {
+        "success": True,
+        "agent_name": agent_name,
+        "policy": {
+            "whitelist": AGENT_POLICIES[agent_name].get("whitelist"),
+            "blacklist": AGENT_POLICIES[agent_name].get("blacklist", []),
+            "max_rounds": AGENT_POLICIES[agent_name].get("max_tool_rounds"),
+        },
+        "note": "런타임 변경 — 서버 재시작 시 원래 설정으로 복원됩니다",
+    }
+
+
+@router.get("/delegation-events")
+async def get_delegation_events(limit: int = Query(30, ge=1, le=100)):
+    """위임 이벤트 타임라인 조회"""
+    from jinxus.core.delegation_logger import get_delegation_logger
+
+    dl = get_delegation_logger()
+    events = await dl.get_recent_events(limit=limit)
+
+    return {"events": events, "total": len(events)}

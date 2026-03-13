@@ -165,8 +165,8 @@ class JXResearcher:
                     query=instruction,
                     limit=3,
                 )
-            except Exception:
-                pass  # 메모리 실패해도 진행
+            except Exception as e:
+                logger.warning(f"[JXResearcher] 장기 메모리 검색 실패, 컨텍스트 없이 진행: {e}")
 
             # === [plan] 실행 계획 ===
             self._state_tracker.update_node(self.name, GraphNode.PLAN)
@@ -575,5 +575,5 @@ simple/browser/github/file 중 하나만 답해."""
                     importance_score=importance,
                     prompt_version=self._prompt_version,
                 )
-        except Exception:
-            pass  # 메모리 저장 실패해도 계속 진행
+        except Exception as e:
+            logger.warning(f"[JXResearcher] 장기 메모리 저장 실패 (결과 반환은 정상): {e}")

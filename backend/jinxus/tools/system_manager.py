@@ -63,8 +63,8 @@ class SystemManager(JinxTool):
                 if not include_core:
                     return [a for a in agents if a != "JINXUS_CORE"]
                 return agents
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[SystemManager] 오케스트레이터에서 에이전트 목록 조회 실패, 폴백 사용: {e}")
         if include_core:
             return self._FALLBACK_AGENTS[:]
         return [a for a in self._FALLBACK_AGENTS if a != "JINXUS_CORE"]
@@ -217,8 +217,8 @@ class SystemManager(JinxTool):
             try:
                 await self._memory.clear_session(session.get("session_id", ""))
                 cleared_count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[SystemManager] 세션 삭제 실패 ({session.get('session_id', '?')}): {e}")
 
         return ToolResult(
             success=True,

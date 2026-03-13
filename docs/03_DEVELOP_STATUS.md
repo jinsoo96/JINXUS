@@ -1,6 +1,230 @@
 # JINXUS 개발 현황
 
-## 버전 v1.6.0 (진행 중)
+## 버전 v2.0.1 (2026-03-13) — 프론트엔드 버그 수정 + SelfModifier 워크스페이스 확장
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| FE-1 | AgentsTab SSE 필드 불일치 수정 | `components/tabs/AgentsTab.tsx` | 직접 채팅 응답이 화면에 안 뜨던 버그. `event.data.message` → `event.data.content` (api.ts SSEEvent 타입과 일치). tool_call status `undefined` → `?? 'done'` fallback 추가 |
+| FE-2 | LogsTab 폴링 완화 | `components/tabs/LogsTab.tsx` | 활성 탭 폴링 500ms → 2000ms. 로그 갱신이 빈번하지 않은데 과도한 API 호출 발생하던 것 수정 |
+| FE-3 | GraphTab 편집 UX 개선 | `components/tabs/GraphTab.tsx` | 노드/엣지 편집 시 자동 새로고침 자동 정지 (편집 내용 덮어쓰기 방지). `저장됨` toast → `변경됨 — 자동 갱신 정지됨` (백엔드 미반영 명시). 힌트에 "편집은 시각화 전용" 안내 추가 |
+| SM-1 | SelfModifier WORKSPACE_ROOT 지원 | `tools/self_modifier.py` | `_safe_path()` 확장: `PROJECT_ROOT`(JINXUS 자기 수정) + `WORKSPACE_ROOT`(=/home/jinsookim, 신규 프로젝트 개발) 모두 허용. `list_source`에 `root_dir` 파라미터 추가 |
+| SM-2 | git_status/git_commit async화 | `tools/self_modifier.py` | sync `subprocess.run` → async `_run_cmd()`. 이벤트 루프 블로킹 제거 |
+| QA-1 | silent `except: pass` 전수 제거 | 50개 위치, 24개 파일 | `except Exception: pass` → `logger.warning()/logger.debug()`. teardown/cleanup은 debug, 실질 오류는 warning. `json.JSONDecodeError` 폴백 cascade는 의도된 패턴으로 유지 |
+| NOTE-1 | 개발 노트 시스템 추가 | `api/routers/dev_notes.py`, `components/tabs/NotesTab.tsx` | `docs/dev_notes/*.md` CRUD API + 프론트엔드 뷰어/편집기. Sidebar에 "개발 노트" 탭 추가. react-markdown + remark-gfm 렌더링. JINXUS가 작업 완료 후 자동으로 노트 작성하도록 self_modifier description 업데이트 |
+
+---
+
+## 버전 v2.0.0 (2026-03-13) — 자기 수정 능력 + 다중 언어 검증 + 병렬 쓰기
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| BUG-1 | `asyncio.get_event_loop()` 잔존 버그 수정 | `agents/state_tracker.py` | `get_event_loop()` → `get_running_loop()`. v1.9.6에서 background_worker.py는 수정됐는데 state_tracker.py 미수정분 완료 |
+| SELF-1 | `SelfModifier` 도구 신규 추가 | `tools/self_modifier.py` | JINXUS 자기 수정 도구. 다중 언어 검증: Python(ast.parse), TS/TSX/JS/JSX(esbuild — frontend/node_modules 우선), Rust(rustfmt exit code 2), JSON(json.loads). 툴 없으면 검증 스킵(graceful). `write_files` 배치 액션으로 여러 파일 병렬 검증+쓰기. `restart_backend`는 httpx Unix socket → Docker API |
+| SELF-2 | Docker 소켓 마운트 | `docker-compose.yml` | `/var/run/docker.sock:ro` 추가. `restart_backend` 구현 |
+| SELF-3 | `PROJECT_ROOT` 환경변수 추가 | `docker-compose.yml` | `PROJECT_ROOT=/home/jinsookim/jinxus`. SelfModifier 경로 기준점 |
+| SELF-4 | Tool Policy 업데이트 | `core/tool_policy.py` | JX_CODER, JX_BACKEND, JX_INFRA whitelist에 `self_modifier` 추가 |
+| SELF-5 | 도구 레지스트리 등록 | `tools/__init__.py` | SelfModifier import + 등록 |
+
+**자기 수정 워크플로우**:
+1. `read_file` / `list_source` → 현재 코드 파악
+2. `write_file` (단일) 또는 `write_files` (병렬) → 언어별 검증 후 쓰기
+3. `restart_backend` → 변경사항 반영 (30초 후 복구)
+
+**언어별 검증**:
+
+| 확장자 | 검증기 | 비고 |
+|--------|--------|------|
+| `.py` | `ast.parse()` | 항상 사용 가능 |
+| `.ts` `.tsx` `.js` `.jsx` | `esbuild` (syntax only, 타입 체크 제외) | frontend/node_modules 우선 |
+| `.rs` | `rustfmt --check` (exit 2 = syntax 오류) | 없으면 스킵 |
+| `.json` | `json.loads()` | 항상 사용 가능 |
+| 그 외 | 검증 없이 통과 | TOML, YAML, MD 등 |
+
+---
+
+## 버전 v1.9.6 (2026-03-12) — 백그라운드 로그 실시간 스트리밍 (근본 수정)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| LOG-1 | AutonomousRunner 이벤트 루프 블로킹 수정 | `core/autonomous_runner.py` | `Anthropic` → `AsyncAnthropic` 전환. `_create_plan`, `_evaluate_progress`의 `messages.create` → `await`. 기존 동기 호출이 이벤트 루프를 블로킹해서 SSE 연결 자체가 안 잡히던 것 수정 |
+| LOG-2 | SSELogHandler 루프 캡처 수정 | `core/background_worker.py` | `asyncio.get_event_loop()` → `asyncio.get_running_loop()` 핸들러 생성 시 캡처. `call_soon_threadsafe`로 안전 스케줄링 |
+| LOG-3 | 5분 타임아웃 background task 제외 | `ChatTab.tsx` | `isBackgroundTask` 플래그 추가. 백그라운드 작업 중에는 5분 클라이언트 타임아웃 비적용 |
+
+---
+
+## 버전 v1.9.5 (2026-03-12) — 버전 수정 + 백그라운드 로그 실시간 스트리밍
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| FIX-1 | 버전 1.8.4 → 1.9.5 | `config/settings.py` | `jinxus_version` 하드코딩 수정 |
+| LOG-1 | 백그라운드 로그 실시간 스트리밍 | `core/background_worker.py` | `_SSELogHandler` 추가. `_execute_single`/`_execute_autonomous` 실행 중 `jinxus.*` 로거 전체를 SSE progress 이벤트로 실시간 발행. 노이즈(keepalive, 체크포인트 등) 필터링 |
+
+---
+
+## 버전 v1.9.4 (2026-03-12) — 탭 전환 로딩 제거
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| UX-1 | DashboardTab 항상 마운트 유지 | `app/page.tsx` | ChatTab/AgentsTab과 동일하게 항상 마운트, CSS hidden 전환. 탭 이동 시 매번 로딩 스피너 보이던 문제 해결 |
+| UX-2 | renderTab() 제거 | `app/page.tsx` | 중간 함수 제거 → 각 탭 조건 직접 렌더링으로 단순화 |
+
+---
+
+## 버전 v1.9.3 (2026-03-12) — HMR 복구 + 프론트엔드 개발 구조 개선
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| HMR-1 | HMR 복구 | `next.config.js` | `assetPrefix: /_bust/${Date.now()}` 제거 — 이게 HMR WebSocket 경로를 망가뜨리는 범인이었음. Cache-Control 헤더만으로 브라우저 캐시 bust 충분 |
+| HMR-2 | dev.sh 구조 개선 | `frontend/dev.sh` | 기본: pm2 재시작 (`.next` 유지, HMR 빠름). `--clean`: 캐시 삭제 후 재시작. `--stop/--log` 명령 추가 |
+
+---
+
+## 버전 v1.9.2 (2026-03-12) — 프론트엔드 daemon화 + GraphTab 렌더링 수정
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| INF-1 | 프론트엔드 pm2 daemon화 | `frontend/dev.sh` | `exec npx next dev` (foreground) → pm2 daemon. SSH 세션 종료돼도 유지됨. `pm2 status/logs jinxus-frontend`로 확인 |
+| FIX-1 | GraphTab 폴링 toast 스팸 | `GraphTab.tsx` | `toast.error` 최초 로드 실패 시만 표시. `isFirstLoad` ref 추가. 폴링 중 API 실패는 무시 |
+| FIX-2 | GraphTab SVG viewBox | `GraphTab.tsx` | 고정 viewBox `"0 0 760 1000"` 추가 + `preserveAspectRatio="xMidYMid meet"`. 좁은 화면에서 노드 클리핑 방지 |
+| FIX-3 | ChatTab textarea 전환 | `ChatTab.tsx` | `input[type=text]` → `textarea`. Shift+Enter 줄바꿈 지원. 자동 높이 확장 (최대 160px). 버튼 title 수정 |
+
+---
+
+## 버전 v1.9.1 (2026-03-12) — ChatTab 전송 버튼 통합 (자동 라우팅)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| UX-1 | 전송/백그라운드 버튼 통합 | `ChatTab.tsx` | Cog(백그라운드) 버튼 제거. Send 버튼 하나로 통합. `shouldRunBackground()` 헬퍼로 메시지 내용 자동 판단: 구현·개발·리팩토링 등 복잡 키워드 포함 or 120자 초과 시 → 백그라운드 자율 모드, 아니면 → SSE 즉시 스트리밍 |
+| UX-2 | Enter 키 전송 | `ChatTab.tsx` | 기존 Ctrl+Enter → Enter로 변경 (Shift+Enter는 줄바꿈 허용) |
+
+---
+
+## 버전 v1.9.0 (2026-03-12) — 코드 품질 정리 + 에이전트 직접 채팅 + 그래프 500 수정
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| REF-1 | `AutonomousRunner` 생성자 파라미터 정리 | `autonomous_runner.py`, `background_worker.py` | `runner._progress_update = ...` 직접 대입 제거 → 생성자 `progress_update=` 파라미터로 전달 |
+| REF-2 | 완료 작업 주기적 정리 | `background_worker.py` | `_worker_loop`에 1시간 주기 `clear_completed_tasks()` 추가 (worker-0 전담). 완료 작업 인메모리 무한 누적 방지 |
+| REF-3 | 오케스트레이터 초기화 패턴 통합 | `api/deps.py` (신규), `agents.py`, `status.py`, `task.py`, `chat.py` | 6개 파일 8군데 중복된 3줄 패턴 → `get_ready_orchestrator()` 한 함수로 통일 |
+| REF-4 | `loadAgents` 동시 호출 보호 | `useAppStore.ts` | `_agentsLoading` 플래그 추가. 탭 전환 시 동시 다중 호출로 인한 중복 요청 방지 |
+| BUG-1 | `get_orchestrator` import 누락 → 500 | `agents.py`, `status.py`, `task.py` | REF-3 작업 중 `get_ready_orchestrator`로 교체하면서 직접 호출하는 함수들의 import가 사라짐 → `NameError` → `/agents/runtime/all` 500 → 그래프 탭 매번 에러 토스트 |
+| FEAT-1 | 에이전트 직접 채팅 | `AgentsTab.tsx`, `chat.py`, `api.ts` | AgentsTab 좌우 분할 레이아웃. 왼쪽: 컴팩트 에이전트 목록. 오른쪽: 선택 에이전트와 직접 대화 패널 (JINXUS_CORE 우회). 도구 호출 배지 실시간 표시 |
+| FEAT-2 | `/chat/agent/{agent_name}` 엔드포인트 | `chat.py` | 특정 에이전트 직접 SSE 스트리밍. `prompts/{agent}/system.md` 자동 로드. tool_call 이벤트 방출 |
+| FEAT-3 | SSE `tool_call` 이벤트 타입 추가 | `api.ts` | `SSEEvent.event`에 `'tool_call'` 추가, `data.tool` 필드 추가 |
+
+---
+
+## 버전 v1.8.4 (2026-03-12) — ToolsTab 완전 연결 (analytics + plugins 탭)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| UI-1 | 도구 통계 탭 추가 | `ToolsTab.tsx`, `api.ts` | `/status/tool-analytics` 연결. 도구별 호출 횟수·성공률·평균 응답시간·사용 에이전트. 요약 카드 3개 + 상세 테이블 |
+| UI-2 | 플러그인 탭 추가 | `ToolsTab.tsx` | `pluginsApi` 연결. 도구 활성화/비활성화 토글, 전체 재로드. 네이티브/MCP 타입 구분 |
+| UI-3 | PluginInfo 타입 보강 | `api.ts` | `is_mcp?: boolean` 필드 추가 |
+
+---
+
+## 버전 v1.8.3 (2026-03-12) — 도구 추가 (RSS/주식코인/커뮤니티 모니터링)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| TOOL-3 | RSS 피드 구독 도구 | `tools/rss_reader.py` | feedparser 기반. 여러 피드 동시 집계 + 키워드 필터. HN/TechCrunch/Reddit 등 단축키 지원 |
+| TOOL-4 | 주식/코인 시세 도구 | `tools/stock_price.py` | CoinGecko(코인) + Yahoo Finance(주식) 무료 API. 국내주식(삼성전자 등) + 미국주식 + BTC/ETH 등 |
+| TOOL-5 | 커뮤니티 모니터링 도구 | `tools/community_monitor.py` | Reddit(Hot/Search) + HackerNews(Top/Search) 게시물·댓글 수집. API 키 불필요 |
+
+---
+
+## 버전 v1.8.2 (2026-03-12) — GraphTab 안정화 + 도구 확장 (PDF/이미지/Slack/Notion)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| GFX-1 | GraphTab 드래그 crash 수정 | `GraphTab.tsx` | `getScreenCTM()` null 체크 추가 — Firefox/미마운트 SVG에서 `!.inverse()` crash 방지 |
+| GFX-2 | GraphTab stale closure 수정 | `GraphTab.tsx` | `onSVGMouseUp`에서 `graph` 대신 `graphRef.current` 사용. `useEffect`로 ref 동기화 |
+| TOOL-1 | PDF 읽기 도구 추가 | `tools/pdf_reader.py` | pdfplumber 기반. 페이지 범위 지정 가능. 최대 글자 수 제한. JX_RESEARCHER/WRITER/ANALYST 허용 |
+| TOOL-2 | 이미지 분석 도구 추가 | `tools/image_analyzer.py` | Claude Vision API (haiku) 래핑. 파일 경로/URL 모두 지원. 최대 5MB. 모든 에이전트 허용 |
+| MCP-1 | Slack MCP 추가 | `config/mcp_servers.py` | `@modelcontextprotocol/server-slack`. SLACK_BOT_TOKEN 있을 때만 활성화. JX_OPS/JX_WRITER 허용 |
+| MCP-2 | Notion MCP 추가 | `config/mcp_servers.py` | `@notionhq/notion-mcp-server`. NOTION_API_KEY 있을 때만 활성화. JX_WRITER/JX_ANALYST/JX_OPS 허용 |
+| CFG-1 | Settings에 Slack/Notion 키 추가 | `config/settings.py` | `slack_bot_token`, `slack_team_id`, `notion_api_key` 필드 추가 |
+
+---
+
+## 버전 v1.8.1 (2026-03-12) — 껍데기 UI 수정: 도구탭 실데이터 + 그래프 시각화
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| FIX-1 | 네이티브 도구 탭 빈화면 버그 | `status.py` | `/status/tools` 응답에 `allowed_agents`, `enabled` 누락 → 프론트 `.length` 런타임 에러 발생. 필드 추가 |
+| FIX-2 | 도구 호출 로그 재시작 시 소실 | `status.py` | `/status/tool-logs`가 인메모리 `get_tool_call_logs()`만 사용 → Redis 영속 버전 `get_tool_call_logs_persistent()`으로 교체 |
+| FIX-3 | ToolGraph SVG 시각화 | `ToolsTab.tsx` | 노드 카드 그리드 → SVG 원형 레이아웃 그래프. 노드 클릭 연결 하이라이트. 카테고리/엣지타입 색상 구분. 엣지 테이블 행 클릭 연동 |
+| NOTE-1 | 텔레그램 백그라운드 작업 | — | 텔레그램 `/bg` → BackgroundWorker.submit() → `/task/active/list`의 `get_all_tasks()` 포함. 코드상 정상 연동. 작업 완료 후 대시보드에서 미표시는 정상 (active 상태만 표시) |
+
+---
+
+## 버전 v1.8.0 (2026-03-12) — Geny 3차 분석 반영: 안정성 + UX 강화
+
+> 참고: [Geny](https://github.com/CocoRoF/Geny) 3차 분석 — 미적용 패턴 4개 도입
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| JSON-1 | 다단계 JSON 파싱 폴백 | `autonomous_runner.py` | `_parse_json_safe()` — 4단계 폴백(직접→코드블록→정규식→fallback). `_create_plan`, `_evaluate_progress`에 적용. 크래시 방지 |
+| ISO-1 | 실패 격리 | `autonomous_runner.py` | `_build_result()`에서 step 실패 격리 — 일부 실패해도 전체 중단 없이 partial success. 실패 step 목록 로깅 |
+| SIG-1 | 완료 시그널 감지 | `dynamic_executor.py` | `[TASK_COMPLETE]` → 즉시 성공 반환, `[BLOCKED: reason]`/`[ERROR: reason]` → 즉시 실패 반환. 불필요한 라운드 소비 방지 |
+| CTX-1 | 컨텍스트 자동 압축 | `dynamic_executor.py` | 메시지 누적 240k 글자 초과 시 `REMOVE_TOOL_DETAILS` 전략 자동 적용. 도구 결과 축소로 컨텍스트 절약 |
+| UI-1 | 에이전트 탭 컴팩트 뷰 | `AgentsTab.tsx` | 큰 카드 → 테이블 리스트. 클릭 시 인라인 로그 펼침. working만 glow |
+| UI-2 | 위임 타임라인 수정 | `meta_store.py` | `ORDER BY ASC` → `DESC` — 최근 활동이 가장 오래된 것 보여주던 버그 수정 |
+| UI-3 | Sidebar 에이전트 통계 | `Sidebar.tsx` | Geny 패턴 — Total/Running/Errors 3열 요약. 에이전트 클릭 시 로그탭 이동 + 해당 에이전트 필터 자동 적용. working만 glow dot |
+| UI-4 | LogsTab 도구 필터 | `LogsTab.tsx` | 도구 사용 여부 필터 (전체/도구 사용/직접 응답). store logsAgentFilter 구독 — Sidebar 클릭 시 자동 필터 적용 |
+
+---
+
+## 버전 v1.7.2 (2026-03-12) — JX_CODER 전문가 팀 UI 표시
+
+### 2026-03-12 AgentsTab 전문가 팀 섹션 추가
+
+| # | 항목 | 상태 | 설명 | 구현 상세 |
+|---|------|------|------|------|
+| TEAM-UI-1 | `/agents/JX_CODER/team` 엔드포인트 | 완료 | JX_CODER 하위 5개 전문가 상태 조회 | `agents.py`에 `GET /agents/JX_CODER/team` 추가. `CODING_SPECIALISTS` + `state_tracker`로 실시간 status 반환 |
+| TEAM-UI-2 | AgentsTab 전문가 팀 섹션 | 완료 | JX_CODER 전문가 5명 카드 표시 | 메인 에이전트 그리드 아래에 "JX_CODER 전문가 팀" 섹션. 이름·설명·상태 도트·작업 중 task 표시. 폴링 포함 |
+| TEAM-UI-3 | `api.ts` `agentApi.getCoderTeam()` 추가 | 완료 | 프론트엔드 API 연결 | `CodingSpecialist` 타입 추가 |
+
+---
+
+## 버전 v1.7.1 (2026-03-12) — HR Soft-Delete + 대시보드 강화 + 위임 로깅
+
+> 참고: [Geny](https://github.com/ysymyth/Geny) — ManagerDashboard 위임 이벤트, Soft-Delete + Restore, 난이도 기반 실행
+
+### 2026-03-12 HR/대시보드/위임 로깅 개선
+
+| # | 항목 | 상태 | 설명 | 구현 상세 |
+|---|------|------|------|------|
+| HR-1 | Soft-Delete + Rehire | 완료 | 해고 시 레코드 보존, 재고용 가능 | `fire()` → `is_active=False` + `fired_at` + `fire_reason`. `rehire()` → 재활성화 + 부모 재등록. API: `POST /hr/rehire/{id}`, `GET /hr/fired` |
+| HR-2 | AgentsTab 해고 에이전트 표시 | 완료 | 해고된 에이전트 목록 + 재고용 버튼 | 접기/펼치기 UI, 해고일/사유 표시, 재고용 시 toast 알림 |
+| DASH-1 | 에이전트 성능 비교 바 | 완료 | 성공률 막대 + 작업 수 + 평균 소요시간 | `logsApi.getSummary()` → `agent_stats` 활용 |
+| DASH-2 | 위임 이벤트 타임라인 | 완료 | CORE → 서브에이전트 위임/완료 실시간 표시 | Redis `jinxus:delegation_log` (list, max 100). `DelegationLogger` 싱글톤 |
+| DASH-3 | 백그라운드 작업 진행 표시 | 완료 | 활성 작업 목록 + 진행률 바 + 스텝 표시 | `taskApi.getActiveTasks()` → paused 상태 포함 |
+| DL-1 | DelegationLogger | 완료 | CORE→서브에이전트 위임/완료 이벤트 Redis 기록 | `jinxus_core._run_agent()`에서 delegate/complete 이벤트 자동 기록. API: `GET /status/delegation-events` |
+| API-1 | 작업 일시정지/재개 프론트엔드 | 완료 | taskApi에 pauseTask/resumeTask 추가 | ActiveTask 타입에 paused 상태 + steps 필드 추가 |
+
+---
+
+## 버전 v1.7.0 (2026-03-12) — 백그라운드 작업 강화
+
+> 참고: [CrewAI](https://github.com/crewAIInc/crewAI) — FlowPersistence, @listen/@router 체이닝, HumanFeedbackPending, Guardrail, ThreadPoolExecutor 비동기 메모리
+
+### 2026-03-12 AutonomousRunner 전면 개편 + 인프라 강화
+
+| # | 항목 | 상태 | 설명 | 구현 상세 |
+|---|------|------|------|------|
+| BG-1 | 작업 상태 체크포인트 + 복구 | 완료 | AutonomousRunner 각 step 완료마다 Redis 체크포인트 저장 | Redis `jinxus:checkpoint:{task_id}` 키. `_save_checkpoint()`/`_load_checkpoint()`/`_delete_checkpoint()`. 서버 재시작 시 `_resume_from_checkpoint()`. TTL = `checkpoint_ttl_hours` (기본 24h) |
+| BG-2 | 실제 진행률 | 완료 | `completed_steps / total_steps` 기반 진행률 | task.py 50% 하드코딩 제거. BackgroundTask에 `steps_completed`/`steps_total` 필드. `_progress_update` 콜백으로 step마다 SSE `step_progress` 이벤트 발행 |
+| BG-3 | 스텝별 타임아웃 | 완료 | 개별 step에 `asyncio.wait_for(timeout)` 적용 | `settings.step_timeout_seconds` (기본 600초). 타임아웃 시 가드레일 재시도 또는 실패 처리 |
+| BG-4 | 가드레일 | 완료 | step 결과 LLM 검증 + 피드백 포함 재시도 | `GUARDRAIL_SYSTEM_PROMPT`로 결과 평가. `_validate_step()` → `{valid, reason, feedback}`. 빈 응답 즉시 실패. 실패 시 피드백 컨텍스트 주입 재실행. `settings.guardrail_max_retries` (기본 2) |
+| BG-5 | 일시정지/재개 | 완료 | 텔레그램 `/pause` `/resume` + Web API + SSE | `asyncio.Event` 기반. `AutonomousRunner.pause()/resume()`. `BackgroundWorker.pause_task()/resume_task()`. `TaskStatus.PAUSED` 상태. API: `POST /task/active/{id}/pause`, `/resume`. SSE: `paused`/`resumed` 이벤트 |
+| BG-6 | 작업 체이닝 | 완료 | 선행 작업 완료 시 후속 작업 자동 트리거 | `BackgroundTask.depends_on` 필드. `submit(depends_on=task_id)`. `_waiting_tasks` 대기열. `_trigger_dependent_tasks()`: 선행 완료 시 결과 주입 + 큐 투입. 실패해도 후속 트리거 |
+| BG-7 | 메모리 비동기 write | 완료 | `ThreadPoolExecutor(1)` + drain barrier | `JinxMemory._write_pool`. `save_long_term()` → Future 반환. `_pending_writes` + `_pending_lock`. `drain_writes()`: search 전 자동 flush. `close()`: shutdown 시 drain + executor 종료 |
+
+---
+
+## 버전 v1.6.0 (완료)
 
 ### 2026-03-11 JX_CODER 전문가 팀 체계 구축
 
@@ -15,6 +239,27 @@
 | TEAM-7 | Tool Policy 확장 | 완료 | 5개 전문가별 도구 접근 정책 추가. REVIEWER는 읽기 전용, TESTER/FRONTEND/INFRA는 git/github 제한 |
 | TEAM-8 | 전문가 격리 | 완료 | `agents/coding/` 하위 디렉토리 배치. CORE 자동 스캔 대상에서 제외 — JX_CODER만 내부적으로 관리 |
 
+### 2026-03-11 Continuation + 디버깅 + Progressive Disclosure
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| CONT-1 | DynamicToolExecutor Continuation | 완료 | max_rounds 도달 시 자동 이어하기. 결과 요약 → 새 세션으로 continuation (에이전트별 max_continuations 설정). JX_CODER 최대 60회, JX_REVIEWER 최대 80회 도구 호출 가능 |
+| CONT-2 | Continuation 최종 요약 | 완료 | 모든 continuation 소진 시 Claude에게 지금까지 결과 기반 최종 요약 생성 요청. "최대 횟수 도달" 대신 의미있는 응답 반환 |
+| CONT-3 | Tool Policy max_continuations | 완료 | AGENT_POLICIES에 에이전트별 continuation 횟수 추가 (JX_CODER/JX_REVIEWER: 3, 나머지: 1~2) |
+| DBG-1 | ACH 디버깅 모드 | 완료 | _decompose_task에 mode="debug" 추가. 가설 3개 생성 → 전문가 병렬 조사 → 증거 기반 수렴 → 자동 수정 시도 |
+| PD-1 | Progressive Disclosure | 완료 | TOOL_SELECTION_GUIDE를 에이전트 보유 도구 기반 동적 생성. 불필요한 가이드 제거로 토큰 절약 + LLM 혼동 감소 |
+| OWN-1 | Exclusive File Ownership | 완료 | _decompose_task에 파일 소유권 분리 원칙 추가. 병렬 실행 시 같은 파일을 두 전문가에게 배정하지 않도록 강제 |
+
+### 2026-03-11 GitHub 도구 접근 정책 수정
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| FIX-1 | JX_CODER GitHub 도구 접근 | 완료 | tool_policy에 `github_agent`, `github_graphql` 추가. deprecated `mcp:github:*` 제거 → blacklist |
+| FIX-2 | JX_REVIEWER GitHub 읽기 허용 | 완료 | `github_agent`, `github_graphql` whitelist 추가. 레포 코드 리뷰 시 GitHub 접근 가능 |
+| FIX-3 | JX_REVIEWER 도구 한도 상향 | 완료 | max_tool_rounds 8→20. 레포 전체 리뷰 시 파일 다수 읽기 가능 |
+| FIX-4 | allowed_agents 확장 | 완료 | `github_agent`에 JX_CODER/JX_REVIEWER 추가, `github_graphql`에 JX_REVIEWER 추가 |
+| FIX-5 | TOOL_SELECTION_GUIDE 모순 수정 | 완료 | deprecated `mcp__github__*` 참조를 `github_agent`/`github_graphql`로 통일 |
+
 ### 2026-03-11 v1.6.0 품질 강화 + 영속화 + UX
 
 | # | 항목 | 상태 | 설명 |
@@ -27,6 +272,13 @@
 | QA-6 | 메트릭 Redis 스냅샷 | 완료 | `metrics.py`에 `save_snapshot`/`restore_snapshot` 추가. 서버 시작 시 이전 스냅샷 복원, 5분 간격 자동 저장, 종료 시 최종 저장 |
 | QA-7 | 프론트엔드 팀 진행 표시 | 완료 | SSEEvent에 `team_progress` 타입 추가. ThinkingPanel에 전문가 팀 아이콘(👥)/라벨 추가. ChatTab에 이벤트 핸들러 추가 |
 | QA-8 | progress callback 에러 로깅 | 완료 | `_report_progress` silent `except: pass` → `logger.debug()` 추가 |
+
+### 2026-03-12 프론트엔드 UI 반영 이슈 수정
+
+| # | 항목 | 상태 | 설명 |
+|---|------|------|------|
+| FIX-6 | 프론트엔드 프로덕션 모드 빌드 갱신 | 완료 | `next start`(프로덕션)로 실행 중인데 빌드가 3/10에 멈춰있어 소스 변경 미반영. 재빌드+재시작 |
+| FIX-7 | Sidebar 버전 하드코딩 제거 | 완료 | `v1.6.0` 리터럴 → `systemApi.getInfo()` 동적 로딩. SettingsTab과 동일 패턴 |
 
 ---
 

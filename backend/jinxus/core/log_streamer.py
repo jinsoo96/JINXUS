@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 
 class TaskLogHandler(logging.Handler):
     """asyncio.Queue에 로그 레코드를 전달하는 핸들러
@@ -85,5 +87,5 @@ class TaskLogHandler(logging.Handler):
                 self._loop.call_soon_threadsafe(
                     self._queue.put_nowait, item
                 )
-        except Exception:
-            pass  # 로그 핸들러에서 예외 발생 방지
+        except Exception as e:
+            logger.debug(f"[TaskLogHandler] SSE 큐 전달 실패 (무시): {e}")

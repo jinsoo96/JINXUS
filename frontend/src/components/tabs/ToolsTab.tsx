@@ -1,20 +1,40 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
-  systemApi, MCPStatus, ToolGraphData, ToolsListResponse, NativeTool,
-  pluginsApi, PluginInfo,
-  ToolCallLog, ToolPoliciesResponse,
+  systemApi, pluginsApi, PluginInfo, MCPStatus, ToolGraphData, ToolsListResponse, NativeTool,
+  ToolCallLog, ToolPoliciesResponse, ToolAnalyticsResponse,
 } from '@/lib/api';
 import toast from 'react-hot-toast';
 import {
   Plug, Wrench, RefreshCw, CheckCircle, AlertCircle,
   XCircle, Key, Loader2, ChevronDown, ChevronUp,
-  Network, Box, Search, ToggleLeft, ToggleRight,
-  ScrollText, Shield,
+  Network, Search, ScrollText, Shield,
+  BarChart2, Package, ToggleLeft, ToggleRight,
 } from 'lucide-react';
 
-type TabId = 'mcp' | 'native' | 'graph' | 'plugins' | 'tool-logs' | 'policies';
+type TabId = 'mcp' | 'native' | 'graph' | 'tool-logs' | 'policies' | 'analytics' | 'plugins';
+
+// ── ToolGraph 시각화 상수 ──
+const GRAPH_W = 800, GRAPH_H = 600, GRAPH_CX = 400, GRAPH_CY = 295, GRAPH_R = 215, GRAPH_NR = 24;
+const GRAPH_CAT_COLORS: Record<string, { fill: string; stroke: string }> = {
+  development: { fill: 'rgba(59,130,246,0.15)',  stroke: '#3b82f6' },
+  research:    { fill: 'rgba(139,92,246,0.15)',   stroke: '#8b5cf6' },
+  github:      { fill: 'rgba(113,113,122,0.15)',  stroke: '#71717a' },
+  filesystem:  { fill: 'rgba(34,197,94,0.15)',    stroke: '#22c55e' },
+  automation:  { fill: 'rgba(245,158,11,0.15)',   stroke: '#f59e0b' },
+  system:      { fill: 'rgba(239,68,68,0.15)',    stroke: '#ef4444' },
+  management:  { fill: 'rgba(6,182,212,0.15)',    stroke: '#06b6d4' },
+};
+const GRAPH_EDGE_COLORS: Record<string, string> = {
+  precedes:       '#3b82f6',
+  requires:       '#ef4444',
+  similar_to:     '#22c55e',
+  complementary:  '#a78bfa',
+  conflicts_with: '#f59e0b',
+  conflicts:      '#f59e0b',
+  belongs_to:     '#71717a',
+};
 
 export default function ToolsTab() {
   const [activeTab, setActiveTab] = useState<TabId>('mcp');
@@ -36,11 +56,6 @@ export default function ToolsTab() {
   const [searchResult, setSearchResult] = useState<{ query: string; tools: { name: string; description: string; category: string }[] } | null>(null);
   const [searching, setSearching] = useState(false);
 
-  // 플러그인
-  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
-  const [pluginsLoading, setPluginsLoading] = useState(false);
-  const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
-
   // 도구 호출 로그
   const [toolLogs, setToolLogs] = useState<ToolCallLog[]>([]);
   const [toolLogsLoading, setToolLogsLoading] = useState(false);
@@ -48,6 +63,39 @@ export default function ToolsTab() {
   // 도구 정책
   const [toolPolicies, setToolPolicies] = useState<ToolPoliciesResponse | null>(null);
   const [policiesLoading, setPoliciesLoading] = useState(false);
+  const [graphSelectedNode, setGraphSelectedNode] = useState<string | null>(null);
+
+  // 도구 통계 (analytics)
+  const [analytics, setAnalytics] = useState<ToolAnalyticsResponse | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // 플러그인
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
+
+  // 엣지가 있는 노드만 (MCP 포함 전체 노드 중 연결된 것만 표시)
+  const visibleNodes = useMemo(() => {
+    if (!toolGraph) return [];
+    const connected = new Set<string>();
+    toolGraph.edges.forEach(e => { connected.add(e.source); connected.add(e.target); });
+    if (connected.size === 0) return toolGraph.nodes.filter(n => !n.name.startsWith('mcp:'));
+    return toolGraph.nodes.filter(n => connected.has(n.name));
+  }, [toolGraph]);
+
+  // 노드 위치 (원형 레이아웃 — visibleNodes 기준)
+  const nodePositions = useMemo<Record<string, { x: number; y: number }>>(() => {
+    const pos: Record<string, { x: number; y: number }> = {};
+    visibleNodes.forEach((node, i) => {
+      const angle = (2 * Math.PI * i / visibleNodes.length) - Math.PI / 2;
+      pos[node.name] = {
+        x: GRAPH_CX + GRAPH_R * Math.cos(angle),
+        y: GRAPH_CY + GRAPH_R * Math.sin(angle),
+      };
+    });
+    return pos;
+  }, [visibleNodes]);
 
   // ── MCP ──
   const loadMCPStatus = async () => {
@@ -129,62 +177,6 @@ export default function ToolsTab() {
     }
   };
 
-  // ── 플러그인 (네이티브 도구 기반) ──
-  const loadPlugins = async () => {
-    setPluginsLoading(true);
-    try {
-      // plugin_loader 시도, 빈 목록이면 status/tools에서 가져옴
-      const data = await pluginsApi.getAll();
-      if (data.plugins && data.plugins.length > 0) {
-        setPlugins(data.plugins);
-      } else {
-        // TOOL_REGISTRY 기반 native tools를 플러그인으로 표시
-        const tools = await systemApi.getTools();
-        setPlugins(tools.native_tools.map((t: NativeTool) => ({
-          name: t.name,
-          description: t.description,
-          allowed_agents: t.allowed_agents,
-          enabled: t.enabled,
-        })));
-      }
-    } catch (error) {
-      console.error('플러그인 조회 실패:', error);
-      toast.error('플러그인 조회 실패');
-    } finally {
-      setPluginsLoading(false);
-    }
-  };
-
-  const handleTogglePlugin = async (name: string, currentEnabled: boolean) => {
-    setTogglingPlugin(name);
-    try {
-      if (currentEnabled) {
-        await pluginsApi.disable(name);
-      } else {
-        await pluginsApi.enable(name);
-      }
-      await loadPlugins();
-    } catch (error) {
-      console.error('플러그인 토글 실패:', error);
-      toast.error('플러그인 토글 실패');
-    } finally {
-      setTogglingPlugin(null);
-    }
-  };
-
-  const handleReloadPlugins = async () => {
-    setPluginsLoading(true);
-    try {
-      await pluginsApi.reload();
-      await loadPlugins();
-    } catch (error) {
-      console.error('플러그인 재로드 실패:', error);
-      toast.error('플러그인 재로드 실패');
-    } finally {
-      setPluginsLoading(false);
-    }
-  };
-
   // ── 도구 호출 로그 ──
   const loadToolLogs = async () => {
     setToolLogsLoading(true);
@@ -196,6 +188,67 @@ export default function ToolsTab() {
       toast.error('도구 호출 로그 조회 실패');
     } finally {
       setToolLogsLoading(false);
+    }
+  };
+
+  // ── 도구 통계 ──
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const data = await systemApi.getToolAnalytics();
+      setAnalytics(data);
+    } catch (error) {
+      console.error('도구 통계 조회 실패:', error);
+      toast.error('도구 통계 조회 실패');
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  // ── 플러그인 ──
+  const loadPlugins = async () => {
+    setPluginsLoading(true);
+    try {
+      const data = await pluginsApi.getAll();
+      setPlugins(data.plugins);
+    } catch (error) {
+      console.error('플러그인 목록 조회 실패:', error);
+      toast.error('플러그인 목록 조회 실패');
+    } finally {
+      setPluginsLoading(false);
+    }
+  };
+
+  const handleTogglePlugin = async (name: string, currentEnabled: boolean) => {
+    setTogglingPlugin(name);
+    try {
+      if (currentEnabled) {
+        await pluginsApi.disable(name);
+        toast.success(`${name} 비활성화됨`);
+      } else {
+        await pluginsApi.enable(name);
+        toast.success(`${name} 활성화됨`);
+      }
+      await loadPlugins();
+    } catch (error) {
+      console.error('플러그인 토글 실패:', error);
+      toast.error('플러그인 토글 실패');
+    } finally {
+      setTogglingPlugin(null);
+    }
+  };
+
+  const handleReloadPlugins = async () => {
+    setReloading(true);
+    try {
+      const result = await pluginsApi.reload();
+      toast.success(`플러그인 ${result.loaded_count}개 재로드됨`);
+      await loadPlugins();
+    } catch (error) {
+      console.error('플러그인 재로드 실패:', error);
+      toast.error('플러그인 재로드 실패');
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -221,9 +274,10 @@ export default function ToolsTab() {
   useEffect(() => {
     if (activeTab === 'native' && !toolsList) loadTools();
     if (activeTab === 'graph' && !toolGraph) loadToolGraph();
-    if (activeTab === 'plugins' && plugins.length === 0) loadPlugins();
     if (activeTab === 'tool-logs') loadToolLogs();
     if (activeTab === 'policies' && !toolPolicies) loadToolPolicies();
+    if (activeTab === 'analytics') loadAnalytics();
+    if (activeTab === 'plugins') loadPlugins();
   }, [activeTab]);
 
   // 도구 호출 로그 자동 갱신 (5초)
@@ -286,8 +340,9 @@ export default function ToolsTab() {
     { id: 'mcp', label: 'MCP 서버', icon: Plug, count: mcpStatus?.connected_count },
     { id: 'native', label: '네이티브 도구', icon: Wrench, count: toolsList?.native_count },
     { id: 'graph', label: 'ToolGraph', icon: Network, count: toolGraph?.nodes.length },
-    { id: 'plugins', label: '플러그인', icon: Box, count: plugins.length || undefined },
-    { id: 'tool-logs', label: '도구 호출 로그', icon: ScrollText, count: toolLogs.length || undefined },
+    { id: 'tool-logs', label: '도구 로그', icon: ScrollText, count: toolLogs.length || undefined },
+    { id: 'analytics', label: '통계', icon: BarChart2, count: analytics?.total_tools },
+    { id: 'plugins', label: '플러그인', icon: Package, count: plugins.length || undefined },
     { id: 'policies', label: '정책', icon: Shield },
   ];
 
@@ -565,41 +620,110 @@ export default function ToolsTab() {
             )}
           </div>
 
-          {/* 그래프 노드 */}
+          {/* 그래프 시각화 */}
           {toolGraph ? (
             <div>
-              <h4 className="text-sm font-semibold text-zinc-400 mb-3">
-                노드 ({toolGraph.nodes.length}개)
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
-                {toolGraph.nodes.map((node) => (
-                  <div key={node.name} className="bg-dark-card border border-dark-border rounded-xl p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-mono font-semibold text-sm">{node.name}</span>
-                      <span className={`px-2 py-0.5 text-xs rounded-full ${getCategoryColor(node.category)}`}>
-                        {node.category}
-                      </span>
-                    </div>
-                    <p className="text-zinc-500 text-xs mb-2">{node.description}</p>
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="flex gap-1 flex-wrap">
-                        {node.keywords.slice(0, 4).map((kw: string) => (
-                          <span key={kw} className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500">
-                            {kw}
-                          </span>
-                        ))}
-                        {node.keywords.length > 4 && (
-                          <span className="text-zinc-600">+{node.keywords.length - 4}</span>
-                        )}
+              {/* SVG 그래프 */}
+              <div className="bg-zinc-900/50 border border-dark-border rounded-xl overflow-hidden mb-4">
+                <div className="px-4 py-2 border-b border-dark-border flex items-center justify-between">
+                  <span className="text-xs text-zinc-500">
+                    {visibleNodes.length}개 노드 · {toolGraph.edges.length}개 엣지
+                    {graphSelectedNode ? ` — ${graphSelectedNode} 선택됨` : ' — 노드 클릭으로 연결 하이라이트'}
+                  </span>
+                  {graphSelectedNode && (
+                    <button onClick={() => setGraphSelectedNode(null)} className="text-xs text-zinc-500 hover:text-white underline">
+                      선택 해제
+                    </button>
+                  )}
+                </div>
+                <div className="overflow-x-auto">
+                  <svg
+                    width={GRAPH_W} height={GRAPH_H}
+                    viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`}
+                    style={{ minWidth: 600, display: 'block' }}
+                  >
+                    <defs>
+                      {Object.entries(GRAPH_EDGE_COLORS).map(([t, c]) => (
+                        <marker key={t} id={`garr-${t}`} viewBox="0 0 10 10" refX="9" refY="5"
+                          markerWidth="5" markerHeight="5" orient="auto">
+                          <path d="M 0 0 L 10 5 L 0 10 z" fill={c} />
+                        </marker>
+                      ))}
+                    </defs>
+
+                    {/* Edges */}
+                    {toolGraph.edges.map((edge, i) => {
+                      const s = nodePositions[edge.source];
+                      const tgt = nodePositions[edge.target];
+                      if (!s || !tgt) return null;
+                      const dx = tgt.x - s.x, dy = tgt.y - s.y;
+                      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                      const nx = dx / len, ny = dy / len;
+                      const dim = !!(graphSelectedNode &&
+                        edge.source !== graphSelectedNode &&
+                        edge.target !== graphSelectedNode);
+                      const color = GRAPH_EDGE_COLORS[edge.type] ?? '#71717a';
+                      return (
+                        <line key={i}
+                          x1={s.x + nx * GRAPH_NR} y1={s.y + ny * GRAPH_NR}
+                          x2={tgt.x - nx * (GRAPH_NR + 6)} y2={tgt.y - ny * (GRAPH_NR + 6)}
+                          stroke={color}
+                          strokeWidth={dim ? 0.5 : 1.5}
+                          opacity={dim ? 0.1 : 0.65}
+                          markerEnd={`url(#garr-${edge.type})`}
+                        />
+                      );
+                    })}
+
+                    {/* Nodes */}
+                    {visibleNodes.map((node) => {
+                      const pos = nodePositions[node.name];
+                      if (!pos) return null;
+                      const c = GRAPH_CAT_COLORS[node.category] ?? { fill: 'rgba(113,113,122,0.15)', stroke: '#71717a' };
+                      const sel = graphSelectedNode === node.name;
+                      const conn = graphSelectedNode
+                        ? toolGraph.edges.some(e =>
+                            (e.source === graphSelectedNode && e.target === node.name) ||
+                            (e.target === graphSelectedNode && e.source === node.name))
+                        : false;
+                      const dim = !!(graphSelectedNode && !sel && !conn);
+                      // 2줄 레이블
+                      const words = node.name.split('_');
+                      const line1 = words[0];
+                      const line2 = words.length > 1 ? words.slice(1).join(' ').slice(0, 10) : null;
+                      return (
+                        <g key={node.name}
+                          onClick={() => setGraphSelectedNode(sel ? null : node.name)}
+                          style={{ cursor: 'pointer' }}
+                          opacity={dim ? 0.2 : 1}
+                        >
+                          {sel && <circle cx={pos.x} cy={pos.y} r={GRAPH_NR + 9} fill="none" stroke="#ffffff" strokeWidth={1.5} opacity={0.2} />}
+                          {conn && <circle cx={pos.x} cy={pos.y} r={GRAPH_NR + 5} fill="none" stroke={c.stroke} strokeWidth={1} opacity={0.4} />}
+                          <circle cx={pos.x} cy={pos.y} r={GRAPH_NR} fill={c.fill} stroke={c.stroke} strokeWidth={sel ? 2.5 : 1.5} />
+                          <title>{node.name}: {node.description}</title>
+                          <text textAnchor="middle" fontSize={8.5} fill="#a1a1aa">
+                            <tspan x={pos.x} y={pos.y + GRAPH_NR + 12}>{line1}</tspan>
+                            {line2 && <tspan x={pos.x} dy={11}>{line2}</tspan>}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+                {/* 엣지 범례 (중복 제거) */}
+                <div className="px-4 py-2 border-t border-dark-border flex flex-wrap gap-4">
+                  {Object.entries(GRAPH_EDGE_COLORS)
+                    .filter(([t]) => t !== 'conflicts')
+                    .map(([type, color]) => (
+                      <div key={type} className="flex items-center gap-1.5 text-xs text-zinc-500">
+                        <div className="h-px w-5" style={{ backgroundColor: color }} />
+                        {type.replace('_', ' ')}
                       </div>
-                      <span className={`font-mono ${node.weight !== 1.0 ? 'text-amber-400' : 'text-zinc-600'}`}>
-                        w:{node.weight.toFixed(1)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                    ))}
+                </div>
               </div>
 
+              {/* 엣지 상세 */}
               <h4 className="text-sm font-semibold text-zinc-400 mb-3">
                 엣지 ({toolGraph.edges.length}개)
               </h4>
@@ -615,22 +739,25 @@ export default function ToolsTab() {
                   </thead>
                   <tbody>
                     {toolGraph.edges.map((edge, i) => (
-                      <tr key={i} className="border-b border-dark-border/50 hover:bg-zinc-800/30">
-                        <td className="p-3 font-mono">{edge.source}</td>
-                        <td className="p-3 font-mono">{edge.target}</td>
+                      <tr key={i} className="border-b border-dark-border/50 hover:bg-zinc-800/30"
+                        onClick={() => setGraphSelectedNode(
+                          graphSelectedNode === edge.source || graphSelectedNode === edge.target
+                            ? null : edge.source
+                        )}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <td className="p-3 font-mono text-xs">{edge.source}</td>
+                        <td className="p-3 font-mono text-xs">{edge.target}</td>
                         <td className="p-3">
-                          <span className={`px-2 py-0.5 text-xs rounded-full ${
-                            edge.type === 'precedes' ? 'bg-blue-500/20 text-blue-400' :
-                            edge.type === 'requires' ? 'bg-red-500/20 text-red-400' :
-                            edge.type === 'similar_to' ? 'bg-green-500/20 text-green-400' :
-                            edge.type === 'complementary' ? 'bg-purple-500/20 text-purple-400' :
-                            edge.type === 'conflicts' ? 'bg-amber-500/20 text-amber-400' :
-                            'bg-zinc-500/20 text-zinc-400'
-                          }`}>
+                          <span className="px-2 py-0.5 text-xs rounded-full"
+                            style={{
+                              backgroundColor: `${GRAPH_EDGE_COLORS[edge.type] ?? '#71717a'}25`,
+                              color: GRAPH_EDGE_COLORS[edge.type] ?? '#a1a1aa',
+                            }}>
                             {edge.type}
                           </span>
                         </td>
-                        <td className={`p-3 text-right font-mono ${edge.weight !== 1.0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                        <td className={`p-3 text-right font-mono text-xs ${edge.weight !== 1.0 ? 'text-amber-400' : 'text-zinc-500'}`}>
                           {edge.weight.toFixed(1)}
                         </td>
                       </tr>
@@ -644,77 +771,6 @@ export default function ToolsTab() {
               <Loader2 size={24} className="mx-auto animate-spin text-zinc-500" />
             </div>
           ) : null}
-        </div>
-      )}
-
-      {/* ═══ 플러그인 탭 ═══ */}
-      {activeTab === 'plugins' && (
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-sm text-zinc-500">
-              도구 플러그인 활성화/비활성화
-            </p>
-            <button
-              onClick={handleReloadPlugins}
-              disabled={pluginsLoading}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sm transition-colors disabled:opacity-50"
-            >
-              {pluginsLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              전체 재스캔
-            </button>
-          </div>
-
-          {plugins.length > 0 ? (
-            <div className="space-y-3">
-              {plugins.map((plugin) => (
-                <div key={plugin.name} className="bg-dark-card border border-dark-border rounded-xl p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                        plugin.enabled ? 'bg-green-500/20' : 'bg-zinc-500/20'
-                      }`}>
-                        <Box size={20} className={plugin.enabled ? 'text-green-400' : 'text-zinc-500'} />
-                      </div>
-                      <div>
-                        <div className="font-semibold font-mono">{plugin.name}</div>
-                        <div className="text-zinc-500 text-sm">{plugin.description}</div>
-                        {plugin.allowed_agents.length > 0 && (
-                          <div className="flex gap-1 mt-1">
-                            {plugin.allowed_agents.map((a: string) => (
-                              <span key={a} className="px-1.5 py-0.5 text-xs rounded bg-zinc-700 text-zinc-400">{a}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleTogglePlugin(plugin.name, plugin.enabled)}
-                      disabled={togglingPlugin === plugin.name}
-                      className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50"
-                      title={plugin.enabled ? '비활성화' : '활성화'}
-                    >
-                      {togglingPlugin === plugin.name ? (
-                        <Loader2 size={24} className="animate-spin text-zinc-500" />
-                      ) : plugin.enabled ? (
-                        <ToggleRight size={24} className="text-green-400" />
-                      ) : (
-                        <ToggleLeft size={24} className="text-zinc-500" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : pluginsLoading ? (
-            <div className="bg-dark-card border border-dark-border rounded-xl p-6 text-center">
-              <Loader2 size={24} className="mx-auto animate-spin text-zinc-500" />
-            </div>
-          ) : (
-            <div className="bg-dark-card border border-dark-border rounded-xl p-6 text-center text-zinc-500">
-              <Box size={32} className="mx-auto mb-2 opacity-50" />
-              <div>등록된 플러그인이 없습니다</div>
-            </div>
-          )}
         </div>
       )}
 
@@ -783,6 +839,185 @@ export default function ToolsTab() {
             <div className="bg-dark-card border border-dark-border rounded-xl p-6 text-center text-zinc-500">
               <ScrollText size={32} className="mx-auto mb-2 opacity-50" />
               <div>도구 호출 로그가 없습니다</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ 통계 탭 ═══ */}
+      {activeTab === 'analytics' && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm text-zinc-500">
+              도구별 호출 횟수 · 성공률 · 평균 응답 시간
+            </p>
+            <button onClick={loadAnalytics} disabled={analyticsLoading}
+              className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50">
+              {analyticsLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+            </button>
+          </div>
+
+          {analytics ? (
+            analytics.analytics.length === 0 ? (
+              <div className="bg-dark-card border border-dark-border rounded-xl p-8 text-center text-zinc-500">
+                <BarChart2 size={32} className="mx-auto mb-2 opacity-40" />
+                <div>아직 도구 호출 기록이 없습니다</div>
+                <div className="text-xs mt-1">에이전트가 도구를 사용하면 여기에 통계가 쌓입니다</div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* 요약 카드 */}
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="bg-dark-card border border-dark-border rounded-xl p-4 text-center">
+                    <div className="text-2xl font-bold text-primary">{analytics.total_calls.toLocaleString()}</div>
+                    <div className="text-xs text-zinc-500 mt-1">총 호출 횟수</div>
+                  </div>
+                  <div className="bg-dark-card border border-dark-border rounded-xl p-4 text-center">
+                    <div className="text-2xl font-bold text-green-400">{analytics.total_tools}</div>
+                    <div className="text-xs text-zinc-500 mt-1">사용된 도구 수</div>
+                  </div>
+                  <div className="bg-dark-card border border-dark-border rounded-xl p-4 text-center">
+                    <div className="text-2xl font-bold text-amber-400">
+                      {analytics.analytics.length > 0
+                        ? Math.round(analytics.analytics.reduce((s, a) => s + a.success_rate, 0) / analytics.analytics.length)
+                        : 0}%
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-1">평균 성공률</div>
+                  </div>
+                </div>
+
+                {/* 도구별 상세 테이블 */}
+                <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-dark-border text-zinc-500">
+                        <th className="text-left p-3">도구</th>
+                        <th className="text-right p-3">호출</th>
+                        <th className="text-right p-3">성공률</th>
+                        <th className="text-right p-3">평균 응답</th>
+                        <th className="text-left p-3">사용 에이전트</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...analytics.analytics]
+                        .sort((a, b) => b.calls - a.calls)
+                        .map((item) => (
+                          <tr key={item.tool} className="border-b border-dark-border/50 hover:bg-zinc-800/30">
+                            <td className="p-3 font-mono text-xs font-medium">{item.tool}</td>
+                            <td className="p-3 text-right font-mono text-xs">{item.calls}</td>
+                            <td className="p-3 text-right">
+                              <span className={`px-2 py-0.5 text-xs rounded-full font-mono ${
+                                item.success_rate >= 80 ? 'bg-green-500/20 text-green-400' :
+                                item.success_rate >= 50 ? 'bg-amber-500/20 text-amber-400' :
+                                'bg-red-500/20 text-red-400'
+                              }`}>
+                                {item.success_rate.toFixed(0)}%
+                              </span>
+                            </td>
+                            <td className="p-3 text-right font-mono text-xs text-zinc-400">
+                              {item.avg_duration_ms > 0 ? `${item.avg_duration_ms.toFixed(0)}ms` : '-'}
+                            </td>
+                            <td className="p-3">
+                              <div className="flex flex-wrap gap-1">
+                                {item.agents.map(a => (
+                                  <span key={a} className="px-1.5 py-0.5 text-xs rounded bg-blue-500/10 text-blue-400">{a}</span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : analyticsLoading ? (
+            <div className="bg-dark-card border border-dark-border rounded-xl p-6 text-center">
+              <Loader2 size={24} className="mx-auto animate-spin text-zinc-500" />
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ═══ 플러그인 탭 ═══ */}
+      {activeTab === 'plugins' && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm text-zinc-500">
+              도구 활성화/비활성화 런타임 제어 (재시작 시 초기화)
+            </p>
+            <div className="flex gap-2">
+              <button onClick={handleReloadPlugins} disabled={reloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-50">
+                {reloading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                전체 재로드
+              </button>
+              <button onClick={loadPlugins} disabled={pluginsLoading}
+                className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50">
+                {pluginsLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+              </button>
+            </div>
+          </div>
+
+          {plugins.length > 0 ? (
+            <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-dark-border text-zinc-500">
+                    <th className="text-left p-3">도구명</th>
+                    <th className="text-left p-3">설명</th>
+                    <th className="text-center p-3">타입</th>
+                    <th className="text-center p-3">상태</th>
+                    <th className="text-center p-3">제어</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plugins.map((plugin) => (
+                    <tr key={plugin.name} className="border-b border-dark-border/50 hover:bg-zinc-800/20">
+                      <td className="p-3 font-mono text-xs font-medium">{plugin.name}</td>
+                      <td className="p-3 text-xs text-zinc-400 max-w-xs truncate">{plugin.description}</td>
+                      <td className="p-3 text-center">
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${
+                          plugin.is_mcp ? 'bg-violet-500/20 text-violet-400' : 'bg-blue-500/20 text-blue-400'
+                        }`}>
+                          {plugin.is_mcp ? 'MCP' : '네이티브'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-center">
+                        <span className={`px-2 py-0.5 text-xs rounded-full ${
+                          plugin.enabled ? 'bg-green-500/20 text-green-400' : 'bg-zinc-500/20 text-zinc-500'
+                        }`}>
+                          {plugin.enabled ? '활성' : '비활성'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-center">
+                        <button
+                          onClick={() => handleTogglePlugin(plugin.name, plugin.enabled)}
+                          disabled={togglingPlugin === plugin.name}
+                          className="p-1.5 rounded hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                          title={plugin.enabled ? '비활성화' : '활성화'}
+                        >
+                          {togglingPlugin === plugin.name
+                            ? <Loader2 size={16} className="animate-spin text-zinc-400" />
+                            : plugin.enabled
+                              ? <ToggleRight size={18} className="text-green-400" />
+                              : <ToggleLeft size={18} className="text-zinc-500" />
+                          }
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : pluginsLoading ? (
+            <div className="bg-dark-card border border-dark-border rounded-xl p-6 text-center">
+              <Loader2 size={24} className="mx-auto animate-spin text-zinc-500" />
+            </div>
+          ) : (
+            <div className="bg-dark-card border border-dark-border rounded-xl p-8 text-center text-zinc-500">
+              <Package size={32} className="mx-auto mb-2 opacity-40" />
+              <div>등록된 플러그인이 없습니다</div>
             </div>
           )}
         </div>

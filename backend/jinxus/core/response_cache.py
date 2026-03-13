@@ -110,8 +110,8 @@ class ResponseCache:
             await self._ensure_connection()
             key = self._make_key(query, agent_name)
             await self._redis.delete(key)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[ResponseCache] 캐시 무효화 실패: {e}")
 
 
 # 싱글톤

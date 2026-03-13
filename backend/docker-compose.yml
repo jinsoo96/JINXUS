@@ -15,6 +15,8 @@ services:
       - QDRANT_PORT=6333
       - JINXUS_PORT=19000
       - JINXUS_DEBUG=false
+      - WORKSPACE_ROOT=/home/jinsookim
+      - PROJECT_ROOT=/home/jinsookim/jinxus
     depends_on:
       redis:
         condition: service_healthy
@@ -28,8 +30,11 @@ services:
       retries: 3
       start_period: 30s
     volumes:
+      - ./jinxus:/app/jinxus    # 소스코드 마운트 (코드 변경 시 restart만 하면 됨)
       - ./data:/app/data
       - ./prompts:/app/prompts
+      - /home/jinsookim:/home/jinsookim:rw  # filesystem MCP용 — 에이전트가 프로젝트 파일 직접 수정
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # self_modifier: 자기 재시작용
 
   redis:
     image: redis:7-alpine

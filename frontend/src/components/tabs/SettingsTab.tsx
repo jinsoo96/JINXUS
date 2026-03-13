@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { improveApi, ImproveHistoryItem, PromptVersion } from '@/lib/api';
+import { improveApi, systemApi, ImproveHistoryItem, PromptVersion } from '@/lib/api';
 import toast from 'react-hot-toast';
 import {
   Settings, Server, Database, Zap, RefreshCw,
@@ -24,6 +24,13 @@ export default function SettingsTab() {
   const [activePromptVersion, setActivePromptVersion] = useState('');
   const [rollingBack, setRollingBack] = useState(false);
   const [showImprove, setShowImprove] = useState(false);
+  const [jinxusVersion, setJinxusVersion] = useState('');
+
+  useEffect(() => {
+    systemApi.getInfo()
+      .then(info => setJinxusVersion(info.version))
+      .catch(() => setJinxusVersion('unknown'));
+  }, []);
 
   const handleRefresh = () => loadSystemStatus();
 
@@ -369,7 +376,7 @@ export default function SettingsTab() {
 
       {/* 버전 정보 */}
       <div className="text-center text-zinc-600 text-sm">
-        JINXUS v1.5.0 | Graph-based Autonomous Agent System | made by JINSOOKIM
+        JINXUS {jinxusVersion ? `v${jinxusVersion}` : ''} | Graph-based Autonomous Agent System | made by JINSOOKIM
       </div>
     </div>
   );

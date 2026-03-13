@@ -22,6 +22,7 @@ from jinxus.hr import get_communicator, Message, MessageType, DelegatedTask
 from jinxus.agents.state_tracker import get_state_tracker, GraphNode, AgentStatus
 from jinxus.core.tool_graph import get_tool_graph
 from jinxus.core.workflow_executor import WorkflowExecutor
+from jinxus.core.delegation_logger import get_delegation_logger
 
 
 class SubTask(TypedDict):
@@ -658,11 +659,23 @@ class JinxusCore:
         progress_callback=None, memory_context: list = None,
     ) -> AgentResult:
         """단일 에이전트 실행"""
+        dl = get_delegation_logger()
+        # 위임 이벤트 기록
+        try:
+            await dl.log_delegation(
+                from_agent="JINXUS_CORE",
+                to_agent=agent.name,
+                instruction=instruction,
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.warning(f"[JINXUS_CORE] 위임 이벤트 기록 실패: {e}")
+
         try:
             # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
             agent._progress_callback = progress_callback
             result = await agent.run(instruction, context or [], memory_context=memory_context)
-            return {
+            agent_result = {
                 "task_id": task_id,
                 "agent_name": agent.name,
                 "success": result["success"],
@@ -672,7 +685,26 @@ class JinxusCore:
                 "duration_ms": result["duration_ms"],
                 "tool_calls": result.get("tool_calls", []),
             }
+            # 완료 이벤트 기록
+            try:
+                await dl.log_completion(
+                    agent_name=agent.name,
+                    task_id=task_id,
+                    success=result["success"],
+                    duration_ms=result["duration_ms"],
+                    score=result["success_score"],
+                )
+            except Exception as e:
+                logger.warning(f"[JINXUS_CORE] 완료 이벤트 기록 실패: {e}")
+            return agent_result
         except Exception as e:
+            try:
+                await dl.log_completion(
+                    agent_name=agent.name, task_id=task_id,
+                    success=False, duration_ms=0, score=0.0,
+                )
+            except Exception as dl_e:
+                logger.warning(f"[JINXUS_CORE] 실패 완료 이벤트 기록 실패: {dl_e}")
             return {
                 "task_id": task_id,
                 "agent_name": agent.name,
@@ -1462,8 +1494,8 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
                     "step": "tool_graph",
                     "detail": f"관련 도구 워크플로우 발견: {' → '.join(workflow.tool_names)}",
                 }}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[JINXUS_CORE] ToolGraph 워크플로우 조회 실패: {e}")
 
         yield {"event": "decompose_done", "data": {"subtasks_count": len(subtasks), "mode": execution_mode, "tool_workflow": tool_workflow}}
 

@@ -11,10 +11,13 @@ LangGraph 패턴 적용:
 - file_manager: 파일 CRUD
 """
 import asyncio
+import logging
 import uuid
 import time
 import json
 import re
+
+logger = logging.getLogger(__name__)
 
 from anthropic import Anthropic
 
@@ -100,8 +103,8 @@ class JXOps:
                     query=instruction,
                     limit=3,
                 )
-            except Exception:
-                pass  # 메모리 실패해도 진행
+            except Exception as e:
+                logger.warning(f"[JXOps] 장기 메모리 검색 실패, 컨텍스트 없이 진행: {e}")
 
             # === [plan] 작업 유형 판단 ===
             self._state_tracker.update_node(self.name, GraphNode.PLAN)
@@ -666,5 +669,5 @@ JSON 형식으로만 응답해:
                     importance_score=importance,
                     prompt_version=self._prompt_version,
                 )
-        except Exception:
-            pass  # 메모리 저장 실패해도 계속 진행
+        except Exception as e:
+            logger.warning(f"[JXOps] 장기 메모리 저장 실패 (결과 반환은 정상): {e}")

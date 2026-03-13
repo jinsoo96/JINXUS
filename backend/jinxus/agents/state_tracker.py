@@ -194,9 +194,9 @@ class AgentStateTracker:
         if self._redis_ready and self._redis:
             try:
                 import asyncio
-                asyncio.get_event_loop().create_task(self._persist_log(entry))
-            except Exception:
-                pass
+                asyncio.get_running_loop().create_task(self._persist_log(entry))
+            except Exception as e:
+                logger.debug(f"[StateTracker] Redis 도구 호출 로그 영속화 실패 (인메모리에는 보존): {e}")
 
     def get_tool_call_logs(self, limit: int = 50) -> List[dict]:
         """최근 도구 호출 로그 반환 (최신순)

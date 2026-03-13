@@ -41,7 +41,8 @@ MCP_SERVERS: list[MCPServerConfig] = [
 
     # ----------------------------------------------------------
     # Filesystem - 파일 시스템 접근
-    # 허용된 디렉토리만 접근 가능
+    # WORKSPACE_ROOT env로 경로 지정. 미설정 시 /home/jinsookim 사용
+    # Docker 볼륨: /home/jinsookim:/home/jinsookim:rw 마운트됨
     # ----------------------------------------------------------
     MCPServerConfig(
         name="filesystem",
@@ -49,11 +50,14 @@ MCP_SERVERS: list[MCPServerConfig] = [
         args=[
             "-y",
             "@modelcontextprotocol/server-filesystem",
-            os.path.expanduser("~"),  # 홈 디렉토리
+            os.getenv("WORKSPACE_ROOT", "/home/jinsookim"),
         ],
-        allowed_agents=["JX_OPS", "JX_CODER", "JX_WRITER", "JX_ANALYST"],
+        allowed_agents=[
+            "JX_OPS", "JX_CODER", "JX_WRITER", "JX_ANALYST",
+            "JX_FRONTEND", "JX_BACKEND", "JX_INFRA", "JX_REVIEWER", "JX_TESTER",
+        ],
         enabled=True,
-        description="파일 시스템 읽기/쓰기",
+        description="파일 시스템 읽기/쓰기 (/home/jinsookim 전체 접근)",
     ),
 
     # ----------------------------------------------------------
@@ -165,6 +169,43 @@ MCP_SERVERS: list[MCPServerConfig] = [
         allowed_agents=["JX_ANALYST", "JX_OPS"],
         enabled=True,
         description="SQLite 데이터베이스 접근",
+    ),
+
+    # ----------------------------------------------------------
+    # Slack - 슬랙 메시지 읽기/쓰기
+    # SLACK_BOT_TOKEN, SLACK_TEAM_ID 환경변수 필요
+    # 채널 메시지 조회, 전송, 사용자 목록 등
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="slack",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-slack"],
+        env={
+            "SLACK_BOT_TOKEN": os.getenv("SLACK_BOT_TOKEN", ""),
+            "SLACK_TEAM_ID": os.getenv("SLACK_TEAM_ID", ""),
+        },
+        allowed_agents=["JX_OPS", "JX_WRITER"],  # 운영/문서 에이전트만
+        enabled=bool(os.getenv("SLACK_BOT_TOKEN")),  # 토큰 있을 때만 활성화
+        description="Slack 채널 메시지 읽기/쓰기",
+        requires_api_key="SLACK_BOT_TOKEN",
+    ),
+
+    # ----------------------------------------------------------
+    # Notion - 노션 페이지/데이터베이스 읽기/쓰기
+    # NOTION_API_KEY 환경변수 필요 (내부 통합 토큰)
+    # 페이지 조회, 생성, 업데이트, 데이터베이스 쿼리 등
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="notion",
+        command="npx",
+        args=["-y", "@notionhq/notion-mcp-server"],
+        env={
+            "OPENAPI_MCP_HEADERS": '{"Authorization": "Bearer ' + os.getenv("NOTION_API_KEY", "") + '", "Notion-Version": "2022-06-28"}',
+        },
+        allowed_agents=["JX_WRITER", "JX_ANALYST", "JX_OPS"],
+        enabled=bool(os.getenv("NOTION_API_KEY")),  # 키 있을 때만 활성화
+        description="Notion 페이지/데이터베이스 읽기/쓰기",
+        requires_api_key="NOTION_API_KEY",
     ),
 ]
 

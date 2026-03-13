@@ -1,46 +1,80 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { CheckCircle, XCircle, Clock, RefreshCw, Filter, Trash2, CheckSquare, Square, AlertTriangle, ChevronDown, ChevronUp, Wrench } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { logsApi, type TaskLog } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
-import { formatDateTime } from '@/lib/utils';
+import { formatTimeWithSeconds, formatDateTime } from '@/lib/utils';
 
 export default function LogsTab() {
-  const { agents, loadAgents } = useAppStore();
+  const { agents, loadAgents, logsAgentFilter, setLogsAgentFilter } = useAppStore();
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<string>('all');
+  const [filter, setFilter] = useState<string>(logsAgentFilter || 'all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failure'>('all');
+  const [toolFilter, setToolFilter] = useState<'all' | 'with_tools' | 'no_tools'>('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showCleanupModal, setShowCleanupModal] = useState(false);
   const [cleanupDays, setCleanupDays] = useState(7);
   const [keepFailures, setKeepFailures] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastActivityRef = useRef<number>(Date.now());
 
   useEffect(() => {
     if (agents.length === 0) loadAgents();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchLogs = async () => {
-    setLoading(true);
+  // store logsAgentFilter 변경 시 동기화 (Sidebar 클릭 등)
+  useEffect(() => {
+    if (logsAgentFilter && logsAgentFilter !== filter) {
+      setFilter(logsAgentFilter);
+    }
+  }, [logsAgentFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    // 활성(최근 30초 내 로그 갱신): 500ms, 유휴: 5s
+    const tick = async () => {
+      if (document.visibilityState !== 'visible') return;
+      const idle = Date.now() - lastActivityRef.current > 30_000;
+      await fetchLogs(false);
+      pollRef.current = setTimeout(tick, idle ? 5000 : 2000);
+    };
+    pollRef.current = setTimeout(tick, 2000);
+  };
+
+  useEffect(() => {
+    startPolling();
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchLogs = async (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
     try {
       const agentName = filter !== 'all' ? filter : undefined;
       const data = await logsApi.getLogs(agentName, 50);
-      setLogs(data.logs);
+      setLogs(prev => {
+        // 새 로그 감지 시 활성 타이머 리셋
+        if (prev.length === 0 || prev[0]?.id !== data.logs[0]?.id) {
+          lastActivityRef.current = Date.now();
+        }
+        return data.logs;
+      });
       setTotal(data.total);
-      setSelectedIds(new Set());
+      if (showSpinner) setSelectedIds(new Set());
     } catch (error) {
       console.error('Failed to fetch logs:', error);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchLogs();
-  }, [filter]);
+  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatDuration = (ms: number) => {
     if (ms < 1000) return `${ms}ms`;
@@ -86,10 +120,10 @@ export default function LogsTab() {
 
   // 전체 선택/해제
   const handleSelectAll = () => {
-    if (selectedIds.size === logs.length) {
+    if (selectedIds.size === displayedLogs.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(logs.map((log) => log.id)));
+      setSelectedIds(new Set(displayedLogs.map((log) => log.id)));
     }
   };
 
@@ -104,7 +138,25 @@ export default function LogsTab() {
     setSelectedIds(newSet);
   };
 
+  const toggleExpand = (id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const agentNames = ['all', ...agents.map(a => a.name)];
+
+  const handleFilterChange = (val: string) => {
+    setFilter(val);
+    setLogsAgentFilter(val);
+  };
+
+  const displayedLogs = logs
+    .filter(l => statusFilter === 'all' ? true : statusFilter === 'success' ? l.success : !l.success)
+    .filter(l => toolFilter === 'all' ? true : toolFilter === 'with_tools' ? (l.tool_calls && l.tool_calls.length > 0) : !(l.tool_calls && l.tool_calls.length > 0));
 
   return (
     <div className="h-full flex flex-col">
@@ -114,18 +166,60 @@ export default function LogsTab() {
           <h2 className="text-xl font-semibold">작업 로그</h2>
           <p className="text-sm text-zinc-500">총 {total}개의 작업 기록</p>
         </div>
-        <div className="flex items-center gap-3">
-          {/* 필터 */}
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          {/* 상태 필터 토글 */}
+          <div className="flex bg-zinc-900 rounded-lg p-0.5 text-xs">
+            {([
+              { id: 'all', label: '전체' },
+              { id: 'success', label: '✓ 성공' },
+              { id: 'failure', label: '✗ 실패' },
+            ] as const).map(s => (
+              <button
+                key={s.id}
+                onClick={() => setStatusFilter(s.id)}
+                className={`px-3 py-1.5 rounded-md transition-colors ${
+                  statusFilter === s.id
+                    ? s.id === 'success' ? 'bg-green-600/30 text-green-400'
+                      : s.id === 'failure' ? 'bg-red-600/30 text-red-400'
+                      : 'bg-zinc-700 text-white'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          {/* 도구 필터 */}
+          <div className="flex bg-zinc-900 rounded-lg p-0.5 text-xs">
+            {([
+              { id: 'all', label: '전체' },
+              { id: 'with_tools', label: '🔧 도구 사용' },
+              { id: 'no_tools', label: '💬 직접 응답' },
+            ] as const).map(t => (
+              <button
+                key={t.id}
+                onClick={() => setToolFilter(t.id)}
+                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                  toolFilter === t.id ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* 에이전트 필터 */}
           <div className="flex items-center gap-2">
             <Filter size={16} className="text-zinc-500" />
             <select
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              onChange={(e) => handleFilterChange(e.target.value)}
               className="bg-dark-card border border-dark-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary"
             >
               {agentNames.map((agent) => (
                 <option key={agent} value={agent}>
-                  {agent === 'all' ? '전체' : agent}
+                  {agent === 'all' ? '전체 에이전트' : agent}
                 </option>
               ))}
             </select>
@@ -154,7 +248,7 @@ export default function LogsTab() {
 
           {/* 새로고침 */}
           <button
-            onClick={fetchLogs}
+            onClick={() => fetchLogs()}
             disabled={loading}
             className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50"
             title="새로고침"
@@ -165,13 +259,13 @@ export default function LogsTab() {
       </div>
 
       {/* 전체 선택 */}
-      {logs.length > 0 && (
+      {displayedLogs.length > 0 && (
         <div className="flex items-center gap-2 mb-3 text-sm text-zinc-400">
           <button
             onClick={handleSelectAll}
             className="flex items-center gap-1.5 hover:text-zinc-200 transition-colors"
           >
-            {selectedIds.size === logs.length ? (
+            {selectedIds.size === displayedLogs.length ? (
               <CheckSquare size={16} className="text-primary" />
             ) : (
               <Square size={16} />
@@ -190,13 +284,13 @@ export default function LogsTab() {
           <div className="flex items-center justify-center h-40">
             <RefreshCw size={24} className="animate-spin text-zinc-500" />
           </div>
-        ) : logs.length === 0 ? (
+        ) : displayedLogs.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-zinc-500">
-            작업 기록이 없습니다
+            {logs.length > 0 ? '해당 조건의 로그가 없습니다' : '작업 기록이 없습니다'}
           </div>
         ) : (
-          logs.map((log) => {
-            const isExpanded = expandedId === log.id;
+          displayedLogs.map((log) => {
+            const isExpanded = expandedIds.has(log.id);
             const hasDetails = (log.tool_calls && log.tool_calls.length > 0) || log.output;
 
             return (
@@ -236,8 +330,11 @@ export default function LogsTab() {
                       <span className="text-xs font-medium px-2 py-0.5 rounded bg-violet-600/20 text-violet-400">
                         {log.agent_name}
                       </span>
-                      <span className="text-xs text-zinc-500">
-                        {formatDateTime(log.created_at)}
+                      <span
+                        className="text-xs text-zinc-500 font-mono"
+                        title={formatDateTime(log.created_at)}
+                      >
+                        {formatTimeWithSeconds(log.created_at)}
                       </span>
                       {log.tool_calls && log.tool_calls.length > 0 && (
                         <span className="flex items-center gap-1 text-xs text-blue-400">
@@ -258,17 +355,25 @@ export default function LogsTab() {
 
                   {/* 메타 정보 + 삭제 */}
                   <div className="flex-shrink-0 text-right">
-                    <div className="flex items-center gap-1 text-xs text-zinc-500">
-                      <Clock size={12} />
-                      <span>{formatDuration(log.duration_ms)}</span>
+                    <div className="flex items-center justify-end gap-1.5 flex-wrap mb-1">
+                      <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                        <Clock size={11} />
+                        {formatDuration(log.duration_ms)}
+                      </span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        log.success_score >= 0.8
+                          ? 'bg-green-600/15 text-green-400'
+                          : log.success_score >= 0.5
+                          ? 'bg-yellow-600/15 text-yellow-400'
+                          : 'bg-red-600/15 text-red-400'
+                      }`}>
+                        {(log.success_score * 100).toFixed(0)}%
+                      </span>
                     </div>
-                    <div className="text-xs text-zinc-500 mt-1">
-                      {(log.success_score * 100).toFixed(0)}%
-                    </div>
-                    <div className="flex items-center gap-1 mt-2">
+                    <div className="flex items-center justify-end gap-1 mt-1">
                       {hasDetails && (
                         <button
-                          onClick={() => setExpandedId(isExpanded ? null : log.id)}
+                          onClick={() => toggleExpand(log.id)}
                           className="p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
                           title="상세 보기"
                         >

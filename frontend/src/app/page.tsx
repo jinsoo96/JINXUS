@@ -6,15 +6,17 @@ import { useAppStore } from '@/store/useAppStore';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import ChatTab from '@/components/tabs/ChatTab';
+import DashboardTab from '@/components/tabs/DashboardTab';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
-// 탭 lazy load — 첫 로드 시 ChatTab만 즉시 로드, 나머지는 필요할 때
-const DashboardTab = dynamic(() => import('@/components/tabs/DashboardTab'), { ssr: false });
+// 자주 쓰는 탭(Dashboard, Chat, Agents)은 항상 마운트 유지 — 탭 전환 시 로딩 없음
+// 나머지 탭은 lazy load (ssr: false — 클라이언트 전용)
 const GraphTab = dynamic(() => import('@/components/tabs/GraphTab'), { ssr: false });
 const AgentsTab = dynamic(() => import('@/components/tabs/AgentsTab'), { ssr: false });
 const MemoryTab = dynamic(() => import('@/components/tabs/MemoryTab'), { ssr: false });
 const LogsTab = dynamic(() => import('@/components/tabs/LogsTab'), { ssr: false });
 const ToolsTab = dynamic(() => import('@/components/tabs/ToolsTab'), { ssr: false });
+const NotesTab = dynamic(() => import('@/components/tabs/NotesTab'), { ssr: false });
 const SettingsTab = dynamic(() => import('@/components/tabs/SettingsTab'), { ssr: false });
 
 export default function Home() {
@@ -23,7 +25,7 @@ export default function Home() {
   useEffect(() => {
     // URL 해시로 초기 탭 설정 (예: #dashboard, #agents)
     const hash = window.location.hash.slice(1);
-    const validTabs = ['dashboard', 'chat', 'graph', 'agents', 'memory', 'logs', 'tools', 'settings'] as const;
+    const validTabs = ['dashboard', 'chat', 'graph', 'agents', 'memory', 'logs', 'tools', 'notes', 'settings'] as const;
     if (hash && validTabs.includes(hash as typeof validTabs[number])) {
       setActiveTab(hash as typeof validTabs[number]);
     }
@@ -33,44 +35,29 @@ export default function Home() {
     loadAgents();
   }, [setActiveTab, loadSystemStatus, loadAgents]);
 
-  const renderTab = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return <DashboardTab />;
-      case 'graph':
-        return <GraphTab />;
-      case 'agents':
-        return <AgentsTab />;
-      case 'memory':
-        return <MemoryTab />;
-      case 'logs':
-        return <LogsTab />;
-      case 'tools':
-        return <ToolsTab />;
-      case 'settings':
-        return <SettingsTab />;
-      default:
-        return <DashboardTab />;
-    }
-  };
-
   return (
     <div className="flex h-screen">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Header />
         <main className="flex-1 overflow-auto p-4 md:p-6 pt-14 md:pt-6">
-          {/* ChatTab은 항상 마운트 — 탭 전환해도 SSE 스트리밍 유지 */}
-          <div className={activeTab === 'chat' ? 'h-full' : 'hidden'}>
-            <ErrorBoundary>
-              <ChatTab />
-            </ErrorBoundary>
+          {/* 항상 마운트 유지 — 탭 전환 시 즉시 표시, 로딩 없음 */}
+          <div className={activeTab === 'dashboard' ? 'h-full' : 'hidden'}>
+            <ErrorBoundary><DashboardTab /></ErrorBoundary>
           </div>
-          {activeTab !== 'chat' && (
-            <ErrorBoundary key={activeTab}>
-              {renderTab()}
-            </ErrorBoundary>
-          )}
+          <div className={activeTab === 'chat' ? 'h-full' : 'hidden'}>
+            <ErrorBoundary><ChatTab /></ErrorBoundary>
+          </div>
+          <div className={activeTab === 'agents' ? 'h-full' : 'hidden'}>
+            <ErrorBoundary><AgentsTab /></ErrorBoundary>
+          </div>
+          {/* 나머지 탭은 필요할 때만 마운트 */}
+          {activeTab === 'graph' && <ErrorBoundary key="graph"><GraphTab /></ErrorBoundary>}
+          {activeTab === 'memory' && <ErrorBoundary key="memory"><MemoryTab /></ErrorBoundary>}
+          {activeTab === 'logs' && <ErrorBoundary key="logs"><LogsTab /></ErrorBoundary>}
+          {activeTab === 'tools' && <ErrorBoundary key="tools"><ToolsTab /></ErrorBoundary>}
+          {activeTab === 'notes' && <ErrorBoundary key="notes"><NotesTab /></ErrorBoundary>}
+          {activeTab === 'settings' && <ErrorBoundary key="settings"><SettingsTab /></ErrorBoundary>}
         </main>
       </div>
     </div>

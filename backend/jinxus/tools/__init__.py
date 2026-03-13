@@ -16,6 +16,12 @@ from .github_graphql import GitHubGraphQL
 from .scheduler import Scheduler
 from .hr_tool import HRTool
 from .system_manager import SystemManager
+from .pdf_reader import PDFReader
+from .image_analyzer import ImageAnalyzer
+from .rss_reader import RSSReader
+from .stock_price import StockPrice
+from .community_monitor import CommunityMonitor
+from .self_modifier import SelfModifier
 from .prompt_version_manager import (
     PromptVersionManager,
     get_prompt_version_manager,
@@ -50,6 +56,12 @@ __all__ = [
     "Scheduler",
     "HRTool",
     "SystemManager",
+    "PDFReader",
+    "ImageAnalyzer",
+    "RSSReader",
+    "StockPrice",
+    "CommunityMonitor",
+    "SelfModifier",
     "PromptVersionManager",
     "get_prompt_version_manager",
     "sync_all_prompts",
@@ -74,6 +86,9 @@ __all__ = [
 TOOL_REGISTRY: dict[str, JinxTool] = {}
 MCP_TOOLS_REGISTERED: bool = False
 
+# 런타임 비활성화 목록 (재시작 시 초기화)
+_RUNTIME_DISABLED: set[str] = set()
+
 
 def register_tools() -> dict[str, JinxTool]:
     """기존 도구 등록 및 반환"""
@@ -91,6 +106,12 @@ def register_tools() -> dict[str, JinxTool]:
             "scheduler": Scheduler(),
             "hr_tool": HRTool(),
             "system_manager": SystemManager(),
+            "pdf_reader": PDFReader(),
+            "image_analyzer": ImageAnalyzer(),
+            "rss_reader": RSSReader(),
+            "stock_price": StockPrice(),
+            "community_monitor": CommunityMonitor(),
+            "self_modifier": SelfModifier(),
             "prompt_version_manager": PromptVersionManager(),
         }
         logger.info(f"기존 도구 {len(TOOL_REGISTRY)}개 등록됨")
@@ -218,6 +239,17 @@ def get_all_tools_info() -> list[dict]:
             "description": tool.description,
             "allowed_agents": tool.allowed_agents,
             "is_mcp": tool.name.startswith("mcp:"),
+            "enabled": tool.name not in _RUNTIME_DISABLED,
         }
         for tool in TOOL_REGISTRY.values()
     ]
+
+
+def set_tool_enabled(name: str, enabled: bool) -> bool:
+    """런타임에 도구 활성화/비활성화 (재시작 시 초기화)"""
+    if enabled:
+        _RUNTIME_DISABLED.discard(name)
+    else:
+        _RUNTIME_DISABLED.add(name)
+    logger.info(f"도구 '{name}' {'활성화' if enabled else '비활성화'}")
+    return True

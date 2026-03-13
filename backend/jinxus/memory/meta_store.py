@@ -1,11 +1,14 @@
 """SQLite 기반 메타 저장소 - 통계, 프롬프트 버전, 개선 이력"""
 import aiosqlite
+import logging
 import uuid
 from typing import Optional
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from jinxus.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class MetaStore:
@@ -40,8 +43,8 @@ class MetaStore:
             for col in ("output TEXT", "tool_calls TEXT"):
                 try:
                     await db.execute(f"ALTER TABLE agent_task_logs ADD COLUMN {col}")
-                except Exception:
-                    pass  # 이미 존재하면 무시
+                except Exception as e:
+                    logger.debug(f"[MetaStore] 컬럼 추가 건너뜀 (이미 존재): {e}")
 
             # 에이전트별 프롬프트 버전
             await db.execute("""
@@ -311,7 +314,7 @@ class MetaStore:
                 f"""
                 SELECT * FROM agent_task_logs
                 {where}
-                ORDER BY created_at ASC
+                ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
                 """,
                 params,

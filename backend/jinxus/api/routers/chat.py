@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from sse_starlette.sse import EventSourceResponse
 
 from jinxus.api.models import ChatRequest
-from jinxus.core import get_orchestrator
+from jinxus.api.deps import get_ready_orchestrator
 from jinxus.memory import get_jinx_memory
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -45,10 +45,7 @@ async def chat(request: ChatRequest):
     - done: 작업 완료
     - cancelled: 사용자 취소
     """
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     async def event_generator():
         task_id = None
@@ -137,6 +134,112 @@ async def cancel_stream(task_id: str):
         }
 
 
+@router.post("/agent/{agent_name}")
+async def chat_with_agent(agent_name: str, request: ChatRequest):
+    """특정 에이전트와 직접 대화 (JINXUS_CORE 우회)
+
+    SSE 이벤트:
+    - start: 시작
+    - tool_call: 도구 호출 중
+    - message: 최종 응답
+    - done: 완료
+    - error: 에러
+    """
+    from pathlib import Path
+    from jinxus.config import get_settings
+    from jinxus.tools import get_dynamic_executor
+
+    settings = get_settings()
+
+    # 에이전트명 정규화 (대문자, JX_ 접두사 보장)
+    normalized = agent_name.upper()
+    if not normalized.startswith(("JX_", "JS_", "JINXUS_")):
+        normalized = f"JX_{normalized}"
+
+    # 시스템 프롬프트 로드 (없으면 기본값)
+    prompt_key = normalized.lower()  # JX_RESEARCHER → jx_researcher
+    prompt_file = settings.prompts_dir / prompt_key / "system.md"
+    if prompt_file.exists():
+        system_prompt = prompt_file.read_text(encoding="utf-8")
+    else:
+        system_prompt = f"너는 {normalized}다. 주어진 지시를 성실히 수행한다."
+
+    async def event_generator():
+        import time
+        import uuid
+        got_done = False
+        start_ts = time.time()
+        try:
+            yield {
+                "event": "start",
+                "data": json.dumps({"agent": normalized}, ensure_ascii=False),
+            }
+
+            executor = get_dynamic_executor(normalized)
+
+            tool_events = []
+            used_tools: list[str] = []
+
+            async def tool_cb(tool_name: str, status: str):
+                tool_events.append(json.dumps({"tool": tool_name, "status": status}, ensure_ascii=False))
+                if status == "calling":
+                    used_tools.append(tool_name)
+
+            # 에이전트 직접 실행
+            result = await executor.execute(
+                instruction=request.message,
+                system_prompt=system_prompt,
+                tool_callback=tool_cb,
+            )
+
+            duration_ms = int((time.time() - start_ts) * 1000)
+
+            # 태스크 로그 기록 (LogsTab / Dashboard에 표시)
+            try:
+                from jinxus.memory.meta_store import get_meta_store
+                await get_meta_store().log_task(
+                    main_task_id=str(uuid.uuid4()),
+                    agent_name=normalized,
+                    instruction=request.message,
+                    success=result.success,
+                    success_score=0.8 if result.success else 0.0,
+                    duration_ms=duration_ms,
+                    output=result.output,
+                    tool_calls=used_tools or None,
+                )
+            except Exception as log_err:
+                logger.warning(f"직접 채팅 로그 저장 실패: {log_err}")
+
+            # 도구 호출 이벤트 방출
+            for ev in tool_events:
+                yield {"event": "tool_call", "data": ev}
+
+            yield {
+                "event": "message",
+                "data": json.dumps({"message": result.output}, ensure_ascii=False),
+            }
+            got_done = True
+            yield {
+                "event": "done",
+                "data": json.dumps({"agent": normalized, "success": result.success}, ensure_ascii=False),
+            }
+
+        except Exception as e:
+            logger.error(f"직접 에이전트 채팅 오류 [{normalized}]: {e}", exc_info=True)
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
+            }
+        finally:
+            if not got_done:
+                yield {
+                    "event": "done",
+                    "data": json.dumps({"agent": normalized, "success": False}, ensure_ascii=False),
+                }
+
+    return EventSourceResponse(event_generator())
+
+
 @router.get("/active")
 async def list_active_streams():
     """현재 활성 SSE 스트림 목록
@@ -157,10 +260,7 @@ async def chat_sync(request: ChatRequest):
     Returns:
         전체 응답
     """
-    orchestrator = get_orchestrator()
-
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
+    orchestrator = await get_ready_orchestrator()
 
     try:
         result = await orchestrator.run_task(request.message, request.session_id)
@@ -238,10 +338,7 @@ async def websocket_chat(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket 연결 수락")
 
-    orchestrator = get_orchestrator()
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
-
+    orchestrator = await get_ready_orchestrator()
     current_task: asyncio.Task | None = None
     cancel_event = asyncio.Event()
 
@@ -285,7 +382,7 @@ async def websocket_chat(websocket: WebSocket):
                             ensure_ascii=False,
                         ))
                 except asyncio.CancelledError:
-                    pass
+                    logger.debug("[chat] WebSocket 스트림 태스크 취소됨")
                 except Exception as e:
                     logger.error(f"WebSocket 스트림 오류: {e}")
                     await websocket.send_text(json.dumps(

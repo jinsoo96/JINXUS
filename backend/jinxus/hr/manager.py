@@ -123,11 +123,12 @@ class HRManager:
 
         return record
 
-    async def fire(self, agent_id: str) -> bool:
-        """에이전트 해고
+    async def fire(self, agent_id: str, reason: str = "") -> bool:
+        """에이전트 해고 (Soft-Delete: 레코드 보존, 비활성화)
 
         Args:
             agent_id: 에이전트 ID
+            reason: 해고 사유
 
         Returns:
             성공 여부
@@ -141,9 +142,14 @@ class HRManager:
             logger.warning("[HR] CEO는 해고할 수 없음")
             return False
 
-        # 비활성화
+        if not record.is_active:
+            logger.warning(f"[HR] 이미 해고된 에이전트: {agent_id}")
+            return False
+
+        # Soft-Delete: 비활성화만 (레코드 보존)
         record.is_active = False
         record.fired_at = datetime.now()
+        record.fire_reason = reason or "수동 해고"
 
         # 부모에서 제거
         if record.parent_id and record.parent_id in self._records:
@@ -152,15 +158,48 @@ class HRManager:
                 parent.children_ids.remove(agent_id)
 
         # 자식들도 해고 (cascade)
-        for child_id in record.children_ids:
-            await self.fire(child_id)
+        for child_id in list(record.children_ids):
+            await self.fire(child_id, reason=f"부모({record.name}) 해고로 인한 연쇄 해고")
 
-        # 에이전트 인스턴스 제거
+        # 에이전트 인스턴스 제거 (레코드는 보존)
         self._agents.pop(agent_id, None)
 
-        logger.info(f"[HR] 에이전트 해고: {record.name}")
+        logger.info(f"[HR] 에이전트 해고 (soft-delete): {record.name} — 사유: {record.fire_reason}")
 
         return True
+
+    async def rehire(self, agent_id: str) -> Optional[AgentRecord]:
+        """해고된 에이전트 재고용
+
+        Args:
+            agent_id: 재고용할 에이전트 ID
+
+        Returns:
+            재고용된 AgentRecord 또는 None
+        """
+        record = self._records.get(agent_id)
+        if not record:
+            logger.warning(f"[HR] 에이전트 없음: {agent_id}")
+            return None
+
+        if record.is_active:
+            logger.warning(f"[HR] 이미 활성 상태: {agent_id}")
+            return None
+
+        # 재활성화
+        record.is_active = True
+        record.fired_at = None
+        record.fire_reason = None
+
+        # 부모에 자식 재등록
+        if record.parent_id and record.parent_id in self._records:
+            parent = self._records[record.parent_id]
+            if agent_id not in parent.children_ids:
+                parent.children_ids.append(agent_id)
+
+        logger.info(f"[HR] 에이전트 재고용: {record.name}")
+
+        return record
 
     async def spawn_child(self, spec: SpawnSpec) -> AgentRecord:
         """새끼 에이전트 스폰
@@ -221,6 +260,10 @@ class HRManager:
     def get_active_records(self) -> List[AgentRecord]:
         """활성 에이전트 레코드만 조회"""
         return [r for r in self._records.values() if r.is_active]
+
+    def get_fired_records(self) -> List[AgentRecord]:
+        """해고된 에이전트 레코드 조회"""
+        return [r for r in self._records.values() if not r.is_active and r.fired_at]
 
     def get_org_chart(self) -> OrgChart:
         """조직도 생성"""

@@ -70,3 +70,40 @@ frontend/src/
 - 세션 간 유지되는 메모리. 프로젝트 구조, 포트, 작업 현황, 유저 선호 등 저장.
 - git에 안 올라감 (프로젝트 코드와 무관).
 - 내용 확인/수정하고 싶으면 해당 파일 직접 열면 됨.
+
+## 레퍼런스
+
+> 코드 작성 전 해당 기술 공식 문서를 먼저 확인한다. 특히 API 시그니처, 버전별 breaking change, 권장 패턴을 체크.
+
+### AI 에이전트 사례 모음
+- https://github.com/ashishpatel26/500-AI-Agents-Projects
+  - **언제 참고**: 새 에이전트 설계, 워크플로우 패턴 고민할 때
+
+### 기술별 공식 문서
+
+**LangGraph** — https://langchain-ai.github.io/langgraph/
+- JINXUS 에이전트 그래프 구조의 기반. 노드/엣지/상태 패턴 여기서 확인.
+- 메모리 패턴: https://langchain-ai.github.io/langgraph/concepts/memory/
+  → JinxMemory 구현 시 checkpointer, store 패턴 참고
+
+**Anthropic Claude API** — https://docs.anthropic.com
+- tool_use, streaming, model ID 등 직접 API 호출 시 필수 참고.
+- Claude Code CLI/SDK: https://docs.anthropic.com/en/docs/claude-code
+  → code_executor 툴 개선 시 CLI 대신 SDK 전환 검토
+
+**Qdrant** — https://qdrant.tech/documentation/
+- JinxMemory 장기 메모리 벡터 DB. 컬렉션/포인트/페이로드 API 여기서 확인.
+- 필터링: https://qdrant.tech/documentation/concepts/filtering/
+  → importance_score 기반 pruning 쿼리 작성 시
+
+**FastAPI** — https://fastapi.tiangolo.com
+- 라우터/미들웨어/의존성 주입 패턴. 새 엔드포인트 추가 시 참고.
+
+**APScheduler** — https://apscheduler.readthedocs.io
+- scheduler 도구 (tools/scheduler.py) 구현 기반.
+
+**Tavily API** — https://docs.tavily.com
+- web_searcher 도구에서 사용. 검색 파라미터/응답 포맷 확인 시.
+
+**MCP 프로토콜** — https://modelcontextprotocol.io
+- MCP 서버 추가/수정 시. tools/mcp_client.py 확장할 때.

@@ -8,6 +8,7 @@ from .improve import router as improve_router
 from .logs import router as logs_router
 from .hr import router as hr_router
 from .plugins import router as plugins_router
+from .dev_notes import router as dev_notes_router
 
 __all__ = [
     "chat_router",
@@ -20,4 +21,5 @@ __all__ = [
     "logs_router",
     "hr_router",
     "plugins_router",
+    "dev_notes_router",
 ]

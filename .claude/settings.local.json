@@ -1,12 +1,15 @@
 {
+  "permission-mode": "bypassPermissions",
   "permissions": {
     "allow": [
-      "Bash(*)",
+      "Bash",
       "Read",
       "Edit",
       "Write",
-      "WebFetch(*)",
-      "WebSearch"
+      "WebFetch",
+      "Grep",
+      "Glob",
+      "LS"
     ]
   }
 }

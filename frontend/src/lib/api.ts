@@ -76,7 +76,7 @@ export interface StoredMessage {
 
 // SSE 이벤트 타입
 export interface SSEEvent {
-  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log' | 'team_progress';
+  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log' | 'team_progress' | 'tool_call';
   data: {
     task_id?: string;
     session_id?: string;
@@ -93,10 +93,11 @@ export interface SSEEvent {
     response?: string;       // done - full response
     success?: boolean;
     error?: string;
-    message?: string;        // cancelled, error 메시지
+    message?: string;        // cancelled, error 메시지, 또는 직접 에이전트 응답
     line?: string;           // log - raw Python logger output
     specialist?: string;     // team_progress - 전문가 이름
     status?: string;         // team_progress - 'running' | 'done' | 'error'
+    tool?: string;           // tool_call - 도구 이름
   };
 }
 
@@ -221,6 +222,67 @@ export const chatApi = {
   getActiveStreams: async (): Promise<{ active_streams: string[]; count: number }> => {
     return apiCall<{ active_streams: string[]; count: number }>('/chat/active');
   },
+
+  // 특정 에이전트와 직접 채팅 (SSE)
+  streamAgentDirect: async (
+    agentName: string,
+    message: string,
+    sessionId: string | undefined,
+    onEvent: (event: SSEEvent) => void,
+    onError: (error: Error) => void,
+    abortController?: AbortController,
+  ): Promise<void> => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/agent/${encodeURIComponent(agentName)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, session_id: sessionId }),
+        signal: abortController?.signal,
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('No response body');
+
+      let buffer = '';
+      let currentEvent: SSEEvent['event'] = 'message';
+      let currentData = '';
+
+      const flushEvent = () => {
+        if (currentData) {
+          try {
+            const data = JSON.parse(currentData);
+            onEvent({ event: currentEvent, data });
+          } catch { /* ignore */ }
+        }
+        currentEvent = 'message';
+        currentData = '';
+      };
+
+      try {
+        while (true) {
+          if (abortController?.signal.aborted) { reader.cancel(); break; }
+          const { done, value } = await reader.read();
+          if (done) { flushEvent(); break; }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.trim() === '') { flushEvent(); }
+            else if (line.startsWith('event:')) { currentEvent = line.slice(6).trim() as SSEEvent['event']; }
+            else if (line.startsWith('data:')) { currentData += line.slice(5).trim(); }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      onError(error instanceof Error ? error : new Error('Stream error'));
+    }
+  },
 };
 
 // MCP 상태 타입
@@ -320,10 +382,35 @@ export interface ToolLogsResponse {
   total: number;
 }
 
+// 위임 이벤트 타입
+export interface DelegationEvent {
+  timestamp: string;
+  type: 'delegate' | 'complete';
+  from?: string;
+  to?: string;
+  agent?: string;
+  instruction?: string;
+  task_id?: string;
+  execution_mode?: string;
+  success?: boolean;
+  duration_ms?: number;
+  score?: number;
+}
+
+export interface DelegationEventsResponse {
+  events: DelegationEvent[];
+  total: number;
+}
+
 // 시스템 API
 export const systemApi = {
   getStatus: async (): Promise<SystemStatus> => {
     return apiCall<SystemStatus>('/status');
+  },
+
+  // 시스템 정보 (버전 포함)
+  getInfo: async (): Promise<{ name: string; version: string; status: string }> => {
+    return apiCall('/');
   },
 
   // MCP 상태 조회
@@ -380,7 +467,32 @@ export const systemApi = {
   getToolLogs: async (limit: number = 50): Promise<ToolLogsResponse> => {
     return apiCall<ToolLogsResponse>(`/status/tool-logs?limit=${limit}`);
   },
+
+  // 위임 이벤트 타임라인 조회
+  getDelegationEvents: async (limit: number = 30): Promise<DelegationEventsResponse> => {
+    return apiCall<DelegationEventsResponse>(`/status/delegation-events?limit=${limit}`);
+  },
+
+  // 도구별 호출 통계 (analytics)
+  getToolAnalytics: async (): Promise<ToolAnalyticsResponse> => {
+    return apiCall<ToolAnalyticsResponse>('/status/tool-analytics');
+  },
 };
+
+export interface ToolAnalyticsItem {
+  tool: string;
+  calls: number;
+  successes: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  agents: string[];
+}
+
+export interface ToolAnalyticsResponse {
+  analytics: ToolAnalyticsItem[];
+  total_calls: number;
+  total_tools: number;
+}
 
 // 에이전트 API
 export interface AgentRuntimeStatus {
@@ -412,6 +524,14 @@ export interface AgentGraph {
   current_node: string | null;
 }
 
+export interface CodingSpecialist {
+  name: string;
+  description: string;
+  status: 'idle' | 'working' | 'error';
+  current_task: string | null;
+  current_node: string | null;
+}
+
 export const agentApi = {
   getAll: async (): Promise<{ agents: AgentInfo[] }> => {
     return apiCall<{ agents: AgentInfo[] }>('/agents');
@@ -430,6 +550,11 @@ export const agentApi = {
   // 에이전트 그래프 구조 조회
   getGraph: async (agentName: string): Promise<AgentGraph> => {
     return apiCall<AgentGraph>(`/agents/${agentName}/graph`);
+  },
+
+  // JX_CODER 전문가 팀 조회
+  getCoderTeam: async (): Promise<{ parent: string; team: CodingSpecialist[] }> => {
+    return apiCall<{ parent: string; team: CodingSpecialist[] }>('/agents/JX_CODER/team');
   },
 };
 
@@ -465,6 +590,7 @@ export interface HRAgentRecord {
   is_active: boolean;
   hired_at: string;
   fired_at: string | null;
+  fire_reason: string | null;
 }
 
 export const hrApi = {
@@ -489,7 +615,9 @@ export const hrApi = {
     name?: string;
     description?: string;
     capabilities?: string[];
+    tools?: string[];
     role?: string;
+    system_prompt?: string;
   }): Promise<{ success: boolean; agent: HRAgentRecord; message: string }> => {
     return apiCall<{ success: boolean; agent: HRAgentRecord; message: string }>('/hr/hire', {
       method: 'POST',
@@ -497,11 +625,24 @@ export const hrApi = {
     });
   },
 
-  // 에이전트 해고
-  fireAgent: async (agentId: string): Promise<{ success: boolean; message: string }> => {
+  // 에이전트 해고 (soft-delete)
+  fireAgent: async (agentId: string, reason?: string): Promise<{ success: boolean; message: string }> => {
     return apiCall<{ success: boolean; message: string }>(`/hr/fire/${agentId}`, {
       method: 'POST',
+      body: JSON.stringify({ reason: reason || '' }),
     });
+  },
+
+  // 해고된 에이전트 재고용
+  rehireAgent: async (agentId: string): Promise<{ success: boolean; agent: HRAgentRecord; message: string }> => {
+    return apiCall<{ success: boolean; agent: HRAgentRecord; message: string }>(`/hr/rehire/${agentId}`, {
+      method: 'POST',
+    });
+  },
+
+  // 해고된 에이전트 목록
+  getFiredAgents: async (): Promise<{ agents: HRAgentRecord[]; total: number }> => {
+    return apiCall<{ agents: HRAgentRecord[]; total: number }>('/hr/fired');
   },
 
   // 새끼 에이전트 스폰
@@ -615,11 +756,13 @@ export const logsApi = {
 export interface ActiveTask {
   id: string;
   description: string;
-  status: 'pending' | 'running' | 'in_progress';
+  status: 'pending' | 'running' | 'in_progress' | 'paused';
   progress: number;
   started_at: string | null;
   created_at: string;
   source: 'background' | 'api';
+  steps_completed?: number;
+  steps_total?: number;
 }
 
 export interface TaskCreateRequest {
@@ -730,6 +873,20 @@ export const taskApi = {
       method: 'DELETE',
     });
   },
+
+  // 작업 일시정지
+  pauseTask: async (taskId: string): Promise<{ task_id: string; status: string }> => {
+    return apiCall<{ task_id: string; status: string }>(`/task/active/${taskId}/pause`, {
+      method: 'POST',
+    });
+  },
+
+  // 작업 재개
+  resumeTask: async (taskId: string): Promise<{ task_id: string; status: string }> => {
+    return apiCall<{ task_id: string; status: string }>(`/task/active/${taskId}/resume`, {
+      method: 'POST',
+    });
+  },
 };
 
 // 자가 강화 API
@@ -784,6 +941,7 @@ export interface PluginInfo {
   name: string;
   description: string;
   allowed_agents: string[];
+  is_mcp?: boolean;
   enabled: boolean;
 }
 
@@ -819,3 +977,45 @@ export const pluginsApi = {
     return apiCall('/plugins/reload', { method: 'POST' });
   },
 };
+
+// ── 개발 노트 ─────────────────────────────────────────────────────────────────
+
+export interface DevNote {
+  id: string;
+  filename: string;
+  title: string;
+  date: string;
+  summary: string;
+  size: number;
+  modified_at: string;
+  content?: string;
+}
+
+export const devNotesApi = {
+  list: async (): Promise<{ notes: DevNote[]; count: number }> => {
+    return apiCall('/dev-notes');
+  },
+
+  get: async (id: string): Promise<DevNote> => {
+    return apiCall(`/dev-notes/${id}`);
+  },
+
+  create: async (title: string, content: string, filename?: string): Promise<DevNote> => {
+    return apiCall('/dev-notes', {
+      method: 'POST',
+      body: JSON.stringify({ title, content, filename }),
+    });
+  },
+
+  update: async (id: string, content: string): Promise<DevNote> => {
+    return apiCall(`/dev-notes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  delete: async (id: string): Promise<{ deleted: string }> => {
+    return apiCall(`/dev-notes/${id}`, { method: 'DELETE' });
+  },
+};
+

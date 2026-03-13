@@ -423,8 +423,8 @@ JSON으로 응답해:
             parsed = json.loads(json_text.strip())
             reflection = parsed.get("reflection", reflection_text)
             improvement_hint = parsed.get("improvement_hint", "")
-        except (json.JSONDecodeError, IndexError, KeyError):
-            pass
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            logger.warning(f"[BaseAgent] 반성 결과 JSON 파싱 실패, 원문 텍스트 사용: {e}")
 
         return {
             **state,
@@ -476,8 +476,8 @@ JSON으로 응답해:
         if hasattr(self, '_progress_callback') and self._progress_callback:
             try:
                 await self._progress_callback(f"[{self.name}] {detail}")
-            except Exception:
-                pass  # 콜백 실패는 무시
+            except Exception as e:
+                logger.debug(f"[BaseAgent] SSE progress_callback 호출 실패 (무시): {e}")
 
     # ===== 헬퍼 메서드 =====
 

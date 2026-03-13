@@ -55,3 +55,4 @@ nohup.out
 
 # 내부 문서
 docs/
+!docs/dev_notes/

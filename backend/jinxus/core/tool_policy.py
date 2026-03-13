@@ -20,6 +20,8 @@ AGENT_POLICIES: dict[str, dict] = {
         "whitelist": [
             "web_searcher", "naver_searcher", "weather",
             "github_agent",
+            "pdf_reader", "image_analyzer",
+            "rss_reader", "community_monitor",
             "mcp:brave_search:*", "mcp:fetch:*",
         ],
         "blacklist": [
@@ -27,40 +29,54 @@ AGENT_POLICIES: dict[str, dict] = {
             "mcp:github:*",  # deprecated MCP GitHub 서버 차단 → github_agent 사용
         ],
         "max_tool_rounds": 10,
+        "max_continuations": 2,
     },
     "JX_CODER": {
         "whitelist": [
             "code_executor", "web_searcher",
-            "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
+            "github_agent", "github_graphql",
+            "self_modifier",
+            "mcp:filesystem:*", "mcp:git:*",
             "mcp:fetch:*",
         ],
-        "blacklist": [],
+        "blacklist": [
+            "mcp:github:*",  # deprecated MCP GitHub 서버 차단 → github_agent 사용
+        ],
         "max_tool_rounds": 15,
+        "max_continuations": 3,
     },
     "JX_WRITER": {
         "whitelist": [
             "web_searcher", "naver_searcher",
+            "pdf_reader", "image_analyzer",
             "mcp:brave_search:*", "mcp:fetch:*",
+            "mcp:slack:*", "mcp:notion:*",
         ],
         "blacklist": [
             "code_executor", "mcp:filesystem:*", "mcp:git:*",
         ],
         "max_tool_rounds": 8,
+        "max_continuations": 1,
     },
     "JX_ANALYST": {
         "whitelist": [
             "web_searcher", "naver_searcher", "weather",
+            "pdf_reader", "image_analyzer",
+            "rss_reader", "stock_price", "community_monitor",
             "mcp:brave_search:*", "mcp:fetch:*", "mcp:github:*",
+            "mcp:notion:*",
         ],
         "blacklist": [
             "code_executor", "mcp:filesystem:*",
         ],
         "max_tool_rounds": 10,
+        "max_continuations": 2,
     },
     "JX_OPS": {
         "whitelist": None,  # 모든 도구 허용 (운영 에이전트)
         "blacklist": [],
         "max_tool_rounds": 15,
+        "max_continuations": 2,
     },
     # === JX_CODER 하위 전문가 팀 ===
     "JX_FRONTEND": {
@@ -72,34 +88,41 @@ AGENT_POLICIES: dict[str, dict] = {
             "mcp:git:*", "mcp:github:*",  # git/github는 JX_CODER가 직접 처리
         ],
         "max_tool_rounds": 12,
+        "max_continuations": 2,
     },
     "JX_BACKEND": {
         "whitelist": [
             "code_executor", "web_searcher", "github_agent",
+            "self_modifier",
             "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
         ],
         "blacklist": [],
         "max_tool_rounds": 15,
+        "max_continuations": 2,
     },
     "JX_INFRA": {
         "whitelist": [
             "code_executor",
+            "self_modifier",
             "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
         ],
         "blacklist": [
             "mcp:github:*",  # GitHub 조작은 JX_CODER 경유
         ],
         "max_tool_rounds": 12,
+        "max_continuations": 2,
     },
     "JX_REVIEWER": {
         "whitelist": [
-            "mcp:filesystem:*", "mcp:fetch:*",  # 코드 읽기만
+            "github_agent", "github_graphql",  # GitHub 레포 읽기
+            "mcp:filesystem:*", "mcp:fetch:*",  # 로컬/원격 코드 읽기
         ],
         "blacklist": [
             "code_executor",  # 리뷰어는 코드 실행 불가
-            "mcp:git:*", "mcp:github:*",
+            "mcp:git:*", "mcp:github:*",  # deprecated MCP GitHub 차단
         ],
-        "max_tool_rounds": 8,
+        "max_tool_rounds": 20,
+        "max_continuations": 3,
     },
     "JX_TESTER": {
         "whitelist": [
@@ -110,6 +133,7 @@ AGENT_POLICIES: dict[str, dict] = {
             "mcp:git:*", "mcp:github:*",
         ],
         "max_tool_rounds": 15,
+        "max_continuations": 2,
     },
 }
 
@@ -176,4 +200,16 @@ def get_max_tool_rounds(agent_name: str, default: int = 15) -> int:
     policy = AGENT_POLICIES.get(agent_name)
     if policy and policy.get("max_tool_rounds") is not None:
         return policy["max_tool_rounds"]
+    return default
+
+
+def get_max_continuations(agent_name: str, default: int = 2) -> int:
+    """에이전트별 최대 continuation 횟수 반환
+
+    max_rounds 도달 후 작업이 미완료일 때, 컨텍스트를 요약하여
+    새 세션으로 이어서 작업할 수 있는 최대 횟수.
+    """
+    policy = AGENT_POLICIES.get(agent_name)
+    if policy and policy.get("max_continuations") is not None:
+        return policy["max_continuations"]
     return default

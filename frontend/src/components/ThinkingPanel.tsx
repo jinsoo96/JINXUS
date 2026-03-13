@@ -131,7 +131,7 @@ export default function ThinkingPanel({
 
   if (!hasContent) {
     return (
-      <div className="w-72 border-l border-dark-border bg-dark-card flex flex-col h-full">
+      <div className="w-96 border-l border-dark-border bg-dark-card flex flex-col h-full">
         <div className="flex items-center justify-between p-3 border-b border-dark-border">
           <div className="flex items-center gap-2">
             <Brain size={18} className="text-zinc-400" />
@@ -152,7 +152,7 @@ export default function ThinkingPanel({
   }
 
   return (
-    <div className="w-72 border-l border-dark-border bg-dark-card flex flex-col h-full">
+    <div className="w-96 border-l border-dark-border bg-dark-card flex flex-col h-full">
       {/* 헤더 */}
       <div className="flex items-center justify-between p-3 border-b border-dark-border">
         <div className="flex items-center gap-2">

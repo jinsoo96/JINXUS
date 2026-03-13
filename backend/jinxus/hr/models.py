@@ -25,6 +25,7 @@ class AgentRecord:
     children_ids: List[str] = field(default_factory=list)
     hired_at: datetime = field(default_factory=datetime.utcnow)
     fired_at: Optional[datetime] = None
+    fire_reason: Optional[str] = None
     is_active: bool = True
     total_tasks: int = 0
     success_rate: float = 0.0
@@ -41,6 +42,7 @@ class AgentRecord:
             "children_ids": self.children_ids,
             "hired_at": self.hired_at.isoformat(),
             "fired_at": self.fired_at.isoformat() if self.fired_at else None,
+            "fire_reason": self.fire_reason,
             "is_active": self.is_active,
             "total_tasks": self.total_tasks,
             "success_rate": self.success_rate,

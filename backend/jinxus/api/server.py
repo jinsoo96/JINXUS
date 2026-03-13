@@ -18,6 +18,7 @@ from jinxus.api.routers import (
     logs_router,
     hr_router,
     plugins_router,
+    dev_notes_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,8 +78,8 @@ async def lifespan(app: FastAPI):
             if telegram_send_func:
                 try:
                     await telegram_send_func(msg)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[server] 텔레그램 중단 작업 알림 전송 실패: {e}")
             print(f"Interrupted tasks reported: {len(interrupted)}")
         # 오래된 작업 정리
         await meta.cleanup_old_background_tasks(days=7)
@@ -134,8 +135,8 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(300)  # 5분
                 try:
                     await metrics.save_snapshot(metrics_redis)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[server] 메트릭 주기적 스냅샷 저장 실패: {e}")
 
         metrics_task = asyncio.create_task(_periodic_metrics_save())
         print("Metrics snapshot: restore done, auto-save every 5m")
@@ -187,8 +188,8 @@ async def lifespan(app: FastAPI):
         try:
             await metrics.save_snapshot(metrics_redis)
             await metrics_redis.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[server] 메트릭 종료 정리 중 오류: {e}")
 
     if memory_cleanup_task:
         memory_cleanup_task.cancel()
@@ -229,6 +230,7 @@ def create_app() -> FastAPI:
     app.include_router(logs_router)
     app.include_router(hr_router)
     app.include_router(plugins_router)
+    app.include_router(dev_notes_router)
 
     @app.get("/")
     async def root():

@@ -1,8 +1,6 @@
-"""플러그인 관리 API"""
+"""플러그인 관리 API — TOOL_REGISTRY 기반 런타임 도구 활성화/비활성화"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-
-from jinxus.core.plugin_loader import get_plugin_loader
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 
@@ -13,42 +11,43 @@ class PluginToggleRequest(BaseModel):
 
 @router.get("")
 async def list_plugins():
-    """로드된 플러그인 목록"""
-    loader = get_plugin_loader()
-    return {"plugins": loader.list_tools()}
+    """등록된 네이티브 도구 목록 (MCP 제외)"""
+    from jinxus.tools import get_all_tools_info
+    tools = get_all_tools_info()
+    native = [t for t in tools if not t.get("is_mcp")]
+    return {"plugins": native, "total": len(native)}
 
 
 @router.get("/{name}")
 async def get_plugin(name: str):
     """플러그인 상세 정보"""
-    loader = get_plugin_loader()
-    info = loader.get_tool_info(name)
-    if not info:
+    from jinxus.tools import get_all_tools_info
+    tools = {t["name"]: t for t in get_all_tools_info()}
+    if name not in tools:
         raise HTTPException(status_code=404, detail=f"Plugin not found: {name}")
-    return info
+    return tools[name]
 
 
 @router.post("/enable")
 async def enable_plugin(req: PluginToggleRequest):
-    """플러그인 활성화"""
-    loader = get_plugin_loader()
-    loader.enable_tool(req.name)
-    # 재스캔하여 비활성화됐던 도구를 다시 로드
-    loader.reload()
+    """플러그인 활성화 (런타임, 재시작 시 초기화)"""
+    from jinxus.tools import set_tool_enabled
+    set_tool_enabled(req.name, True)
     return {"success": True, "name": req.name, "enabled": True}
 
 
 @router.post("/disable")
 async def disable_plugin(req: PluginToggleRequest):
-    """플러그인 비활성화"""
-    loader = get_plugin_loader()
-    loader.disable_tool(req.name)
+    """플러그인 비활성화 (런타임, 재시작 시 초기화)"""
+    from jinxus.tools import set_tool_enabled
+    set_tool_enabled(req.name, False)
     return {"success": True, "name": req.name, "enabled": False}
 
 
 @router.post("/reload")
 async def reload_plugins():
-    """플러그인 전체 재스캔"""
-    loader = get_plugin_loader()
-    tools = loader.reload()
-    return {"success": True, "loaded_count": len(tools)}
+    """도구 목록 새로고침 (현재 등록된 도구 수 반환)"""
+    from jinxus.tools import get_all_tools_info
+    tools = get_all_tools_info()
+    native = [t for t in tools if not t.get("is_mcp")]
+    return {"success": True, "loaded_count": len(native)}

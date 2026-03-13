@@ -5,7 +5,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { chatApi, feedbackApi, taskApi, type ChatSession, type SSEEvent } from '@/lib/api';
 import {
   Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2,
-  MessageSquare, Clock, Globe, RefreshCw, ChevronDown, Brain, Cog
+  MessageSquare, RefreshCw, ChevronDown, Brain
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import ThinkingPanel, { type ThinkingLog } from '@/components/ThinkingPanel';
@@ -29,6 +29,7 @@ export default function ChatTab() {
   const [thinkingLogs, setThinkingLogs] = useState<ThinkingLog[]>([]);
   const [showThinking, setShowThinking] = useState(true);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [isBackgroundTask, setIsBackgroundTask] = useState(false);
 
 
   // Thinking 로그 추가 헬퍼
@@ -202,28 +203,52 @@ export default function ChatTab() {
     };
   }, []);
 
-  // 로딩 타임아웃: 5분 넘게 응답 없으면 자동 중지
+  // 로딩 타임아웃: SSE 채팅만 적용 (background task는 자체 타임아웃 있으므로 제외)
   useEffect(() => {
-    if (!isLoading) return;
+    if (!isLoading || isBackgroundTask) return;
     const timeout = setTimeout(() => {
-      if (isLoading) {
+      if (isLoading && !isBackgroundTask) {
         addThinkingLog('timeout', '5분 타임아웃 - 작업 자동 중지', undefined, 'error');
         handleStopTask();
         toast.error('응답 타임아웃 (5분)');
       }
     }, 5 * 60 * 1000);
     return () => clearTimeout(timeout);
-  }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLoading, isBackgroundTask]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // SSE 스트리밍 전송
+  // 메시지가 장기/복잡 작업인지 자동 판단
+  const shouldRunBackground = (msg: string): boolean => {
+    const BG_KEYWORDS = [
+      '구현', '개발', '코딩', '코드 작성', '만들어', '만들어줘', '만들어라', '만들어봐',
+      '리팩토링', '리팩터', '테스트 코드', '테스트 작성', '배포', '자동화',
+      '스크립트', '파일 생성', '프로젝트', '시스템 구축',
+      '조사해', '분석해', '리서치', '연구해', '검색해서',
+      '정리해', '요약해줘', '문서 작성', '보고서',
+      '자율', '백그라운드', '장기',
+    ];
+    const lower = msg.toLowerCase();
+    const hasKeyword = BG_KEYWORDS.some(k => lower.includes(k));
+    const isLong = msg.length > 120;
+    return hasKeyword || isLong;
+  };
+
+  // 통합 전송 핸들러 — 장기 작업 자동 감지 후 라우팅
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
+    const command = input.trim();
+
+    // 백그라운드 자동 라우팅
+    if (shouldRunBackground(command)) {
+      await handleBackgroundSubmitInner(command);
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: input.trim(),
+      content: command,
       timestamp: new Date(),
     };
 
@@ -388,12 +413,8 @@ export default function ChatTab() {
     }
   };
 
-  // 백그라운드 작업 실행 (자율 모드)
-  const handleBackgroundSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
-
-    const command = input.trim();
+  // 백그라운드 작업 실행 (자율 모드) — 자동 라우팅 시 호출
+  const handleBackgroundSubmitInner = async (command: string) => {
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
@@ -404,6 +425,7 @@ export default function ChatTab() {
     addMessage(userMessage);
     setInput('');
     setLoading(true);
+    setIsBackgroundTask(true);
 
     // Thinking 초기화
     setThinkingLogs([]);
@@ -460,6 +482,7 @@ export default function ChatTab() {
               });
 
               setLoading(false);
+              setIsBackgroundTask(false);
               setCurrentTaskId(null);
               break;
             }
@@ -473,17 +496,16 @@ export default function ChatTab() {
                 success: false,
               });
               setLoading(false);
+              setIsBackgroundTask(false);
               setCurrentTaskId(null);
               break;
             case 'done': {
-              // SSE 스트림 종료 이벤트
               const status = String(event.data.status || 'unknown');
-              if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-                // 이미 위에서 처리됨
-              } else {
+              if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') {
                 addThinkingLog('done', '스트림 종료', undefined, 'done');
               }
               setLoading(false);
+              setIsBackgroundTask(false);
               setCurrentTaskId(null);
               break;
             }
@@ -534,6 +556,7 @@ export default function ChatTab() {
         success: false,
       });
       setLoading(false);
+      setIsBackgroundTask(false);
       toast.error('백그라운드 작업 생성 실패');
     }
   };
@@ -592,7 +615,7 @@ export default function ChatTab() {
 
         {/* 메시지 내용 */}
         <div
-          className={`flex-1 max-w-[80%] ${isUser ? 'text-right' : ''}`}
+          className={`flex-1 ${isUser ? 'max-w-[75%] text-right' : 'max-w-[92%]'}`}
         >
           <div
             className={`inline-block p-4 rounded-2xl ${
@@ -876,40 +899,35 @@ export default function ChatTab() {
       {/* 입력 폼 */}
       <form onSubmit={handleSubmit} className="mt-4">
         <div className="flex gap-3">
-          <input
-            type="text"
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="메시지를 입력하세요..."
+            placeholder="메시지를 입력하세요... (Enter 전송 / Shift+Enter 줄바꿈)"
             disabled={isLoading}
-            className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50"
+            rows={1}
+            className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50 resize-none overflow-hidden"
+            style={{ minHeight: '48px', maxHeight: '160px' }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              el.style.height = 'auto';
+              el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.ctrlKey) {
-                handleSubmit(e);
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit(e as unknown as React.FormEvent);
               }
             }}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="실시간 전송 (Ctrl+Enter)"
+            className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
+            title="전송 (Enter)"
           >
             <Send size={20} />
           </button>
-          <button
-            type="button"
-            onClick={handleBackgroundSubmit}
-            disabled={!input.trim() || isLoading}
-            className="px-4 py-3 bg-amber-600 hover:bg-amber-500 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="백그라운드 실행 (긴 작업용, 자율 모드)"
-          >
-            <Cog size={20} />
-          </button>
         </div>
-        <p className="mt-2 text-xs text-zinc-500 text-center">
-          Ctrl+Enter 실시간 전송 | <Cog size={10} className="inline" /> 백그라운드 (긴 작업)
-        </p>
       </form>
         </div>
 

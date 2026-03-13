@@ -337,8 +337,8 @@ class MCPToolAdapter(JinxTool):
                         output={**cached, "from_cache": True},
                         duration_ms=self._get_duration_ms(),
                     )
-            except Exception:
-                pass  # 캐시 실패해도 계속 진행
+            except Exception as e:
+                logger.warning(f"[MCPCachedTool] 캐시 조회 실패, 실제 호출로 진행 ({self._tool_name}): {e}")
 
         # 실제 MCP 호출
         result = await self._mcp_client.call_tool(
@@ -354,8 +354,8 @@ class MCPToolAdapter(JinxTool):
 
                 cache_id = self._make_cache_id(input_data)
                 await cache_set("mcp", cache_id, result.output)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[MCPCachedTool] 결과 캐싱 실패 ({self._tool_name}): {e}")
 
         return result
 

@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from jinxus.api.models import TaskRequest, TaskResponse, TaskStatusResponse
-from jinxus.config import get_settings
+from jinxus.api.deps import get_ready_orchestrator
 from jinxus.core import get_orchestrator
+from jinxus.config import get_settings
 
 router = APIRouter(prefix="/task", tags=["task"])
 logger = logging.getLogger(__name__)
@@ -268,10 +269,7 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
     import uuid
     from datetime import datetime
 
-    orchestrator = get_orchestrator()
-    if not orchestrator.is_initialized:
-        await orchestrator.initialize()
-
+    orchestrator = await get_ready_orchestrator()
     store = get_task_store()
     task_id = str(uuid.uuid4())
     session_id = request.session_id or str(uuid.uuid4())
@@ -386,7 +384,7 @@ async def cancel_task(task_id: str):
         try:
             await asyncio.wait_for(asyncio.shield(running_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+            logger.debug(f"[task] 작업 취소 대기 완료 (task_id={task_id})")
 
     await store.update(task_id, {
         "status": "cancelled",
@@ -428,15 +426,19 @@ async def list_active_tasks():
             "description": t.description[:100],
             "status": t.status.value,
             "progress": t.progress,
+            "steps_completed": t.steps_completed,
+            "steps_total": t.steps_total,
             "started_at": t.started_at.isoformat() if t.started_at else None,
             "created_at": t.created_at.isoformat(),
             "source": "background",
         }
         for t in bg_tasks
-        if t.status.value in ["pending", "running"]
+        if t.status.value in ["pending", "running", "paused"]
     ]
 
     # 일반 Task API의 작업들 (Redis에서 조회)
+    # bg_task_id가 있는 작업은 이미 active_bg에 포함되므로 제외 (중복 방지)
+    bg_task_ids = {t["id"] for t in active_bg}
     store = get_task_store()
     all_tasks = await store.list_tasks(limit=100)
     active_api = [
@@ -444,13 +446,15 @@ async def list_active_tasks():
             "id": t["task_id"],
             "description": t["message"][:100],
             "status": t["status"],
-            "progress": 50 if t["status"] == "in_progress" else 0,
+            "progress": t.get("progress", 50 if t["status"] == "in_progress" else 0),
             "started_at": None,
             "created_at": t["created_at"],
             "source": "api",
         }
         for t in all_tasks
         if t["status"] in ["pending", "in_progress"]
+        and not t.get("bg_task_id")  # BackgroundWorker 작업은 이미 active_bg에 있음
+        and t["task_id"] not in bg_task_ids
     ]
 
     all_active = active_bg + active_api
@@ -524,6 +528,30 @@ async def stream_task_progress(task_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/active/{task_id}/pause")
+async def pause_active_task(task_id: str):
+    """작업 일시정지 (자율 모드만 지원)"""
+    from jinxus.core.background_worker import get_background_worker
+
+    worker = get_background_worker()
+    success = await worker.pause_task(task_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="작업을 일시정지할 수 없습니다. (실행 중인 자율 작업만 가능)")
+    return {"task_id": task_id, "status": "paused"}
+
+
+@router.post("/active/{task_id}/resume")
+async def resume_active_task(task_id: str):
+    """작업 재개"""
+    from jinxus.core.background_worker import get_background_worker
+
+    worker = get_background_worker()
+    success = await worker.resume_task(task_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="작업을 재개할 수 없습니다. (일시정지된 작업만 가능)")
+    return {"task_id": task_id, "status": "running"}
 
 
 @router.delete("/active/{task_id}")
