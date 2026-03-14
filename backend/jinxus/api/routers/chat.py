@@ -4,11 +4,23 @@ import json
 import logging
 from typing import Dict
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+
 from sse_starlette.sse import EventSourceResponse
 
 from jinxus.api.models import ChatRequest
 from jinxus.api.deps import get_ready_orchestrator
 from jinxus.memory import get_jinx_memory
+
+# [FIX #3] 동시 요청 제한 — 과부하 방지
+MAX_CONCURRENT_STREAMS = 20  # SSE 동시 스트림 최대
+_stream_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_stream_semaphore() -> asyncio.Semaphore:
+    global _stream_semaphore
+    if _stream_semaphore is None:
+        _stream_semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+    return _stream_semaphore
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -45,64 +57,74 @@ async def chat(request: ChatRequest):
     - done: 작업 완료
     - cancelled: 사용자 취소
     """
+    # [FIX #3] 동시 스트림 수 제한 — MAX_CONCURRENT_STREAMS 초과 시 503 반환
+    sem = _get_stream_semaphore()
+    if not sem._value:  # Semaphore 잔여 슬롯 0 = 만원
+        raise HTTPException(
+            status_code=503,
+            detail=f"현재 서버가 최대 동시 요청 수({MAX_CONCURRENT_STREAMS})에 도달했습니다. 잠시 후 다시 시도해주세요.",
+        )
+
     orchestrator = await get_ready_orchestrator()
 
     async def event_generator():
-        task_id = None
-        cancel_event = None
-        got_done = False
+        # [FIX #3] 세마포어로 동시 스트림 슬롯 점유 — 종료/오류 시에도 자동 해제
+        async with _get_stream_semaphore():
+            task_id = None
+            cancel_event = None
+            got_done = False
 
-        try:
-            async for event in orchestrator.run_task_stream(
-                request.message, request.session_id
-            ):
-                # task_id 추출하여 취소 이벤트 연결
-                if event["event"] == "start" and "task_id" in event["data"]:
-                    task_id = event["data"]["task_id"]
-                    cancel_event = get_cancel_event(task_id)
-                    logger.info(f"SSE 스트림 시작: {task_id}")
+            try:
+                async for event in orchestrator.run_task_stream(
+                    request.message, request.session_id
+                ):
+                    # task_id 추출하여 취소 이벤트 연결
+                    if event["event"] == "start" and "task_id" in event["data"]:
+                        task_id = event["data"]["task_id"]
+                        cancel_event = get_cancel_event(task_id)
+                        logger.info(f"SSE 스트림 시작: {task_id}")
 
-                # 취소 확인
-                if cancel_event and cancel_event.is_set():
-                    logger.info(f"SSE 스트림 취소됨: {task_id}")
+                    # 취소 확인
+                    if cancel_event and cancel_event.is_set():
+                        logger.info(f"SSE 스트림 취소됨: {task_id}")
+                        yield {
+                            "event": "cancelled",
+                            "data": json.dumps({"task_id": task_id, "message": "사용자가 작업을 취소했습니다"}, ensure_ascii=False),
+                        }
+                        got_done = True
+                        break
+
+                    if event["event"] == "done":
+                        got_done = True
+
                     yield {
-                        "event": "cancelled",
-                        "data": json.dumps({"task_id": task_id, "message": "사용자가 작업을 취소했습니다"}, ensure_ascii=False),
+                        "event": event["event"],
+                        "data": json.dumps(event["data"], ensure_ascii=False),
                     }
-                    got_done = True
-                    break
 
-                if event["event"] == "done":
-                    got_done = True
-
+            except asyncio.CancelledError:
+                logger.info(f"SSE 스트림 CancelledError: {task_id}")
                 yield {
-                    "event": event["event"],
-                    "data": json.dumps(event["data"], ensure_ascii=False),
+                    "event": "cancelled",
+                    "data": json.dumps({"task_id": task_id, "message": "작업이 취소되었습니다"}, ensure_ascii=False),
                 }
-
-        except asyncio.CancelledError:
-            logger.info(f"SSE 스트림 CancelledError: {task_id}")
-            yield {
-                "event": "cancelled",
-                "data": json.dumps({"task_id": task_id, "message": "작업이 취소되었습니다"}, ensure_ascii=False),
-            }
-            got_done = True
-        except Exception as e:
-            logger.error(f"SSE 스트림 에러: {e}", exc_info=True)
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
-            }
-        finally:
-            # done 이벤트를 못 보냈으면 강제로 보내서 프론트 로딩 해제
-            if not got_done:
-                logger.warning(f"SSE 스트림이 done 없이 종료됨, 강제 done 전송: {task_id}")
+                got_done = True
+            except Exception as e:
+                logger.error(f"SSE 스트림 에러: {e}", exc_info=True)
                 yield {
-                    "event": "done",
-                    "data": json.dumps({"task_id": task_id, "agents_used": ["JINXUS_CORE"], "success": False}, ensure_ascii=False),
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
                 }
-            if task_id:
-                cleanup_cancel_event(task_id)
+            finally:
+                # done 이벤트를 못 보냈으면 강제로 보내서 프론트 로딩 해제
+                if not got_done:
+                    logger.warning(f"SSE 스트림이 done 없이 종료됨, 강제 done 전송: {task_id}")
+                    yield {
+                        "event": "done",
+                        "data": json.dumps({"task_id": task_id, "agents_used": ["JINXUS_CORE"], "success": False}, ensure_ascii=False),
+                    }
+                if task_id:
+                    cleanup_cancel_event(task_id)
 
     return EventSourceResponse(event_generator())
 
@@ -118,13 +140,18 @@ async def cancel_stream(task_id: str):
         취소 결과
     """
     if task_id in _cancel_events:
-        _cancel_events[task_id].set()
-        logger.info(f"SSE 스트림 취소 요청: {task_id}")
-        return {
-            "success": True,
-            "task_id": task_id,
-            "message": "취소 신호 전송됨",
-        }
+        try:
+            _cancel_events[task_id].set()
+            logger.info(f"SSE 스트림 취소 요청: {task_id}")
+            return {
+                "success": True,
+                "task_id": task_id,
+                "message": "취소 신호 전송됨",
+            }
+        finally:
+            # [FIX #1] 취소 처리 완료 후 반드시 cleanup — 예외 발생 시에도 누수 방지
+            # 단, SSE generator finally에서도 cleanup 호출되므로 이미 삭제된 경우 무시
+            cleanup_cancel_event(task_id)
     else:
         # 이벤트가 없으면 이미 완료되었거나 존재하지 않음
         return {
@@ -236,6 +263,9 @@ async def chat_with_agent(agent_name: str, request: ChatRequest):
                     "event": "done",
                     "data": json.dumps({"agent": normalized, "success": False}, ensure_ascii=False),
                 }
+            # [FIX #2] 스트리밍 완료/오류 시 tool_events 버퍼 명시적 해제 — 응답 축적 누수 방지
+            tool_events.clear()
+            used_tools.clear()
 
     return EventSourceResponse(event_generator())
 
