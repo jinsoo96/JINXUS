@@ -22,7 +22,9 @@ AGENT_POLICIES: dict[str, dict] = {
             "github_agent",
             "pdf_reader", "image_analyzer",
             "rss_reader", "community_monitor",
+            "data_processor",
             "mcp:brave_search:*", "mcp:fetch:*",
+            "mcp:firecrawl:*", "mcp:playwright:*",
         ],
         "blacklist": [
             "code_executor", "mcp:filesystem:*", "mcp:git:*",
@@ -49,8 +51,10 @@ AGENT_POLICIES: dict[str, dict] = {
         "whitelist": [
             "web_searcher", "naver_searcher",
             "pdf_reader", "image_analyzer",
+            "doc_generator", "data_processor",
             "mcp:brave_search:*", "mcp:fetch:*",
             "mcp:slack:*", "mcp:notion:*",
+            "mcp:firecrawl:*",
         ],
         "blacklist": [
             "code_executor", "mcp:filesystem:*", "mcp:git:*",
@@ -63,8 +67,10 @@ AGENT_POLICIES: dict[str, dict] = {
             "web_searcher", "naver_searcher", "weather",
             "pdf_reader", "image_analyzer",
             "rss_reader", "stock_price", "community_monitor",
-            "mcp:brave_search:*", "mcp:fetch:*", "mcp:github:*",
-            "mcp:notion:*",
+            "data_processor", "doc_generator",
+            "mcp:brave_search:*", "mcp:fetch:*",
+            "mcp:notion:*", "mcp:sqlite:*",
+            "mcp:postgres:*",
         ],
         "blacklist": [
             "code_executor", "mcp:filesystem:*",
@@ -133,6 +139,43 @@ AGENT_POLICIES: dict[str, dict] = {
             "mcp:git:*", "mcp:github:*",
         ],
         "max_tool_rounds": 15,
+        "max_continuations": 2,
+    },
+    # === JX_RESEARCHER 하위 전문가 팀 ===
+    "JX_WEB_SEARCHER": {
+        "whitelist": [
+            "web_searcher", "naver_searcher", "weather",
+            "rss_reader", "community_monitor", "stock_price",
+            "mcp:brave_search:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
+        ],
+        "max_tool_rounds": 12,
+        "max_continuations": 2,
+    },
+    "JX_DEEP_READER": {
+        "whitelist": [
+            "pdf_reader", "image_analyzer",
+            "github_agent",
+            "mcp:fetch:*",  # 웹페이지 내용 읽기
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
+        ],
+        "max_tool_rounds": 10,
+        "max_continuations": 2,
+    },
+    "JX_FACT_CHECKER": {
+        "whitelist": [
+            "web_searcher", "naver_searcher",
+            "github_agent",
+            "mcp:brave_search:*", "mcp:fetch:*",
+        ],
+        "blacklist": [
+            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
+        ],
+        "max_tool_rounds": 10,
         "max_continuations": 2,
     },
 }

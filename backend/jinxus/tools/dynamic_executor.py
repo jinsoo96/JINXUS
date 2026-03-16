@@ -8,9 +8,12 @@
 
 MCP 도구 포함 모든 도구를 자동으로 활용 가능.
 """
+import asyncio
 import json
 import logging
 import re
+import threading
+import time as _time
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 
@@ -95,6 +98,42 @@ class DynamicToolExecutor:
 
         "mcp:git": """### Git 작업
 - git commit, push, branch: `mcp__git__*` 도구 사용""",
+
+        "mcp:firecrawl": """### 웹 크롤링/스크래핑
+- 웹사이트 전체 크롤링: `mcp__firecrawl__*` 도구 사용
+- 자소서/채용공고/블로그 등 JS 렌더링 필요한 사이트 크롤링에 적합
+- 단일 페이지 추출은 `mcp__fetch__*`, 사이트 전체는 `mcp__firecrawl__*`""",
+
+        "data_processor": """### 데이터 분석
+- CSV/Excel/JSON 파일 분석: `data_processor` 도구 사용
+  - read: 파일 내용 조회
+  - describe: 통계 요약 (평균, 중앙값, 분포)
+  - filter: 조건 필터링 (예: 'age > 30')
+  - convert: 포맷 변환 (CSV↔Excel↔JSON)""",
+
+        "doc_generator": """### 문서 생성
+- Word 문서(.docx) 생성: `doc_generator` 도구 사용 (format="docx")
+- PowerPoint(.pptx) 생성: `doc_generator` 도구 사용 (format="pptx")
+- 마크다운 형식으로 content 전달 → 자동 변환""",
+
+        "mcp:notion": """### Notion 연동
+- Notion 페이지/데이터베이스 조회·생성·수정: `mcp__notion__*` 도구 사용""",
+
+        "mcp:sqlite": """### SQLite 쿼리
+- SQLite DB 쿼리 실행: `mcp__sqlite__*` 도구 사용""",
+
+        "stock_price": """### 주식/암호화폐 시세
+- 주가, 코인 가격 조회: `stock_price` 도구 사용 (Yahoo Finance + CoinGecko)""",
+
+        "rss_reader": """### RSS/뉴스 피드
+- RSS 피드 구독: `rss_reader` 도구 사용
+- 내장 피드: hn(HackerNews), techcrunch, naver_it, ednet 등""",
+
+        "image_analyzer": """### 이미지 분석
+- 이미지 분석/OCR/차트 해석: `image_analyzer` 도구 사용 (Claude Vision)""",
+
+        "pdf_reader": """### PDF 분석
+- PDF 텍스트 추출: `pdf_reader` 도구 사용 (페이지 범위 지정 가능)""",
     }
 
     _GUIDE_COMMON = """
@@ -131,7 +170,9 @@ class DynamicToolExecutor:
         self._max_continuations = get_max_continuations(agent_name, default=2)
         self._tools_cache: Optional[dict[str, JinxTool]] = None
         self._schemas_cache: Optional[list[dict]] = None
+        # 시스템 프롬프트 캐시 (최대 8개, LRU 방식)
         self._enhanced_system_prompt_cache: dict[str, str] = {}
+        self._PROMPT_CACHE_MAX = 8
 
     def _get_available_tools(self) -> dict[str, JinxTool]:
         """에이전트가 사용 가능한 도구 로드 (Tool Policy Engine 적용, 캐시)"""
@@ -231,14 +272,18 @@ class DynamicToolExecutor:
             self._schemas_cache = self._build_tool_schemas()
         tool_schemas = self._schemas_cache
 
-        # 시스템 프롬프트 + 도구 가이드 캐시 (보유 도구 기반 동적 생성)
+        # 시스템 프롬프트 + 도구 가이드 캐시 (보유 도구 기반 동적 생성, 최대 _PROMPT_CACHE_MAX개)
         if system_prompt not in self._enhanced_system_prompt_cache:
+            if len(self._enhanced_system_prompt_cache) >= self._PROMPT_CACHE_MAX:
+                # 가장 오래된 항목 제거 (dict는 삽입 순서 유지)
+                oldest_key = next(iter(self._enhanced_system_prompt_cache))
+                del self._enhanced_system_prompt_cache[oldest_key]
             self._enhanced_system_prompt_cache[system_prompt] = system_prompt + self._build_tool_guide()
         enhanced_system_prompt = self._enhanced_system_prompt_cache[system_prompt]
 
         # 도구가 없으면 일반 대화
         if not tool_schemas:
-            response = self._client.messages.create(
+            response = await asyncio.to_thread(self._client.messages.create,
                 model=self._model,
                 max_tokens=4096,
                 system=system_prompt,
@@ -320,7 +365,7 @@ class DynamicToolExecutor:
             )},
         ]
         try:
-            response = self._client.messages.create(
+            response = await asyncio.to_thread(self._client.messages.create,
                 model=self._model,
                 max_tokens=4096,
                 system=enhanced_system_prompt,
@@ -376,19 +421,18 @@ class DynamicToolExecutor:
     ) -> Optional[ExecutionResult]:
         """도구 호출 라운드 실행. 정상 완료 시 ExecutionResult 반환, max_rounds 도달 시 None 반환."""
         for round_num in range(self._max_rounds):
-            import time as _round_time
-            _round_start = _round_time.time()
+            _round_start = _time.time()
             msg_count = len(messages)
             logger.debug(f"[{self._agent_name}] round={round_num} messages={msg_count} model={self._model} tools={len(tool_schemas)}")
 
-            response = self._client.messages.create(
+            response = await asyncio.to_thread(self._client.messages.create,
                 model=self._model,
                 max_tokens=4096,
                 system=enhanced_system_prompt,
                 messages=messages,
                 tools=tool_schemas,
             )
-            _api_ms = (_round_time.time() - _round_start) * 1000
+            _api_ms = (_time.time() - _round_start) * 1000
             logger.debug(f"[{self._agent_name}] Claude API 응답 {_api_ms:.0f}ms usage=({response.usage.input_tokens}in/{response.usage.output_tokens}out) stop={response.stop_reason}")
 
             # 응답 처리
@@ -475,7 +519,6 @@ class DynamicToolExecutor:
                         logger.warning(f"[DynamicToolExecutor] 도구 시작 콜백 실패 ({original_tool_name}): {e}")
 
                 # 실제 도구 실행 (메트릭 포함)
-                import time as _time
                 _tool_start = _time.time()
                 result = await self._execute_tool(tool_name, tool_input)
                 _tool_duration = (_time.time() - _tool_start) * 1000
@@ -523,11 +566,9 @@ class DynamicToolExecutor:
             # tool_result 메시지 추가 (이전 도구 결과가 자동으로 다음 라운드의 컨텍스트가 됨)
             messages.append({"role": "user", "content": tool_results})
 
-            # REMOVE_TOOL_DETAILS 자동 압축: 메시지 누적이 임계값 초과 시 도구 결과 축소
-            total_chars = sum(
-                len(str(m.get("content", ""))) for m in messages
-            )
-            if total_chars > _CTX_COMPRESS_THRESHOLD_CHARS:
+            # REMOVE_TOOL_DETAILS 자동 압축: 메시지 수 기반 빠른 체크 (O(1))
+            # 평균 메시지 2000자 기준, 120개 이상이면 임계값 초과 가능성 높음
+            if len(messages) > 120 and sum(len(str(m.get("content", ""))) for m in messages) > _CTX_COMPRESS_THRESHOLD_CHARS:
                 from jinxus.core.context_guard import get_context_guard, CompactionStrategy
                 guard = get_context_guard()
                 messages = guard.compact(messages, CompactionStrategy.REMOVE_TOOL_DETAILS)
@@ -620,13 +661,15 @@ class DynamicToolExecutor:
             }
 
 
-# 에이전트별 executor 캐시
+# 에이전트별 executor 캐시 (thread-safe)
 _executors: dict[str, DynamicToolExecutor] = {}
+_executors_lock = threading.Lock()
 
 
 def get_dynamic_executor(agent_name: str) -> DynamicToolExecutor:
-    """에이전트용 DynamicToolExecutor 싱글톤 반환"""
-    global _executors
+    """에이전트용 DynamicToolExecutor 싱글톤 반환 (thread-safe)"""
     if agent_name not in _executors:
-        _executors[agent_name] = DynamicToolExecutor(agent_name=agent_name)
+        with _executors_lock:
+            if agent_name not in _executors:  # double-check locking
+                _executors[agent_name] = DynamicToolExecutor(agent_name=agent_name)
     return _executors[agent_name]

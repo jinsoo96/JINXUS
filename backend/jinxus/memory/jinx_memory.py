@@ -6,6 +6,7 @@ v1.7.0: 비동기 메모리 쓰기 (ThreadPoolExecutor + drain barrier)
 """
 import asyncio
 import logging
+
 from concurrent.futures import ThreadPoolExecutor, Future
 from threading import Lock
 from typing import Optional
@@ -161,14 +162,30 @@ class JinxMemory:
     def search_long_term(
         self, agent_name: str, query: str, limit: int = 5
     ) -> list[dict]:
-        """장기기억에서 유사 경험 검색 (검색 전 pending 쓰기 flush)"""
-        self.drain_writes()
+        """장기기억에서 유사 경험 검색 (pending 쓰기 있을 때만 flush)"""
+        if self._pending_writes:
+            self.drain_writes()
         return self._long_term.search(agent_name, query, limit)
 
+    async def search_long_term_async(
+        self, agent_name: str, query: str, limit: int = 5
+    ) -> list[dict]:
+        """장기기억 검색 (비블로킹)"""
+        if self._pending_writes:
+            await asyncio.to_thread(self.drain_writes, 5.0)
+        return await asyncio.to_thread(self._long_term.search, agent_name, query, limit)
+
     def search_all_memories(self, query: str, limit: int = 5) -> list[dict]:
-        """모든 에이전트 메모리에서 검색 (검색 전 pending 쓰기 flush)"""
-        self.drain_writes()
+        """모든 에이전트 메모리에서 검색 (pending 쓰기 있을 때만 flush)"""
+        if self._pending_writes:
+            self.drain_writes()
         return self._long_term.search_all(query, limit)
+
+    async def search_all_memories_async(self, query: str, limit: int = 5) -> list[dict]:
+        """모든 에이전트 메모리 검색 (비블로킹)"""
+        if self._pending_writes:
+            await asyncio.to_thread(self.drain_writes, 5.0)
+        return await asyncio.to_thread(self._long_term.search_all, query, limit)
 
     def delete_memory(self, agent_name: str, task_id: str) -> bool:
         """특정 기억 삭제"""

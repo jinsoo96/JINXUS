@@ -106,6 +106,9 @@ class BackgroundWorker:
         self._autonomous_runners: dict = {}  # task_id -> AutonomousRunner
         # 인메모리 이벤트 큐 (task_id -> list[asyncio.Queue]) — SSE 구독자용
         self._event_subscribers: dict[str, list[asyncio.Queue]] = {}
+        # 이벤트 버퍼 (구독 전 발생한 이벤트 보관, 구독 시 replay)
+        self._event_buffer: dict[str, list[dict]] = {}
+        _EVENT_BUFFER_MAX = 100  # 작업당 최대 버퍼 수
         # v1.7.0: 체이닝 대기 작업 (depends_on task_id -> [waiting task_ids])
         self._waiting_tasks: dict[str, list[str]] = {}
 
@@ -310,7 +313,7 @@ class BackgroundWorker:
         return True
 
     async def clear_completed_tasks(self) -> int:
-        """완료된 작업 정리"""
+        """완료된 작업 정리 (모든 관련 데이터 일괄 제거)"""
         to_remove = []
         for task_id, task in self._tasks.items():
             if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
@@ -318,8 +321,13 @@ class BackgroundWorker:
 
         for task_id in to_remove:
             del self._tasks[task_id]
+            self._event_buffer.pop(task_id, None)
+            self._event_subscribers.pop(task_id, None)
+            self._waiting_tasks.pop(task_id, None)
+            self._autonomous_runners.pop(task_id, None)
 
-        logger.info(f"[BackgroundWorker] 완료된 작업 {len(to_remove)}개 정리")
+        if to_remove:
+            logger.info(f"[BackgroundWorker] 완료된 작업 {len(to_remove)}개 정리")
         return len(to_remove)
 
     async def _worker_loop(self, worker_id: int):
@@ -404,11 +412,22 @@ class BackgroundWorker:
         return attachments[:5]
 
     def subscribe_events(self, task_id: str) -> asyncio.Queue:
-        """작업 이벤트 구독 (SSE 스트림용)"""
+        """작업 이벤트 구독 (SSE 스트림용)
+
+        구독 전 발생한 이벤트가 버퍼에 있으면 자동 replay.
+        """
         q: asyncio.Queue = asyncio.Queue()
         if task_id not in self._event_subscribers:
             self._event_subscribers[task_id] = []
         self._event_subscribers[task_id].append(q)
+
+        # 버퍼된 이벤트 replay (구독 전 발생한 이벤트)
+        for buffered in self._event_buffer.get(task_id, []):
+            try:
+                q.put_nowait(buffered)
+            except asyncio.QueueFull:
+                break
+
         return q
 
     def unsubscribe_events(self, task_id: str, q: asyncio.Queue):
@@ -418,10 +437,22 @@ class BackgroundWorker:
             subs.remove(q)
         if not subs:
             self._event_subscribers.pop(task_id, None)
+            # 마지막 구독자 해제 시 버퍼도 정리
+            self._event_buffer.pop(task_id, None)
 
     async def _publish_progress(self, task_id: str, event_type: str, data: dict):
-        """인메모리 이벤트 큐로 진행 상황 전파"""
+        """인메모리 이벤트 큐로 진행 상황 전파 + 버퍼 저장"""
         event = {"event": event_type, "task_id": task_id, **data}
+
+        # 버퍼에 저장 (구독자 없을 때 유실 방지)
+        if task_id not in self._event_buffer:
+            self._event_buffer[task_id] = []
+        buf = self._event_buffer[task_id]
+        buf.append(event)
+        if len(buf) > 100:
+            buf[:] = buf[-100:]
+
+        # 구독자에게 전달
         for q in self._event_subscribers.get(task_id, []):
             try:
                 q.put_nowait(event)
@@ -611,13 +642,12 @@ class BackgroundWorker:
         """자율 멀티스텝 실행"""
         from jinxus.core.autonomous_runner import AutonomousRunner
 
-        # 15분마다 텔레그램 heartbeat
-        _HEARTBEAT_SECS = 900
-        last_notify_time = datetime.now()
+        # 텔레그램 하트비트: 작업 규모에 비례 (총 스텝의 ~20%마다 보고)
+        last_reported_pct = 0
 
         # 실시간 진행률 콜백 설정 (runner 생성 전에 정의)
         async def update_progress(pct: int, completed: int, total: int):
-            nonlocal last_notify_time
+            nonlocal last_reported_pct
             task.progress = pct
             task.steps_completed = completed
             task.steps_total = total
@@ -626,18 +656,17 @@ class BackgroundWorker:
                 "steps_completed": completed,
                 "steps_total": total,
             })
-            # 15분마다 텔레그램 heartbeat
-            if task.notify_callback:
-                now = datetime.now()
-                if (now - last_notify_time).total_seconds() >= _HEARTBEAT_SECS:
-                    last_notify_time = now
-                    try:
-                        await task.notify_callback(
-                            f"⏱️ [진행중] ID: {task.task_id[:8]}\n"
-                            f"진행: {completed}/{total} 단계 ({pct}%)"
-                        )
-                    except Exception as e:
-                        logger.warning(f"[BackgroundWorker] 하트비트 알림 콜백 실패: {e}")
+            # 진행률 20% 구간마다 텔레그램 보고 (3스텝이면 33%마다, 50스텝이면 20%마다)
+            report_interval = max(20, 100 // max(total, 1))  # 최소 20% 간격
+            if task.notify_callback and pct - last_reported_pct >= report_interval:
+                last_reported_pct = pct
+                try:
+                    await task.notify_callback(
+                        f"⏱️ [진행중] ID: {task.task_id[:8]}\n"
+                        f"진행: {completed}/{total} 단계 ({pct}%)"
+                    )
+                except Exception as e:
+                    logger.warning(f"[BackgroundWorker] 하트비트 알림 콜백 실패: {e}")
 
         runner = AutonomousRunner(
             max_steps=task.max_steps,

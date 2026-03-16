@@ -142,16 +142,69 @@ MCP_SERVERS: list[MCPServerConfig] = [
     ),
 
     # ----------------------------------------------------------
-    # Puppeteer - 브라우저 자동화 (대안)
-    # 웹 스크래핑, 스크린샷
+    # Firecrawl - 웹 크롤링/스크래핑 (JS 렌더링, 전체 사이트 크롤)
+    # FIRECRAWL_API_KEY 필요 (https://firecrawl.dev)
     # ----------------------------------------------------------
     MCPServerConfig(
-        name="puppeteer",
+        name="firecrawl",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-puppeteer"],
-        allowed_agents=["JX_RESEARCHER", "JX_CODER"],
-        enabled=False,  # playwright 사용하므로 비활성화
-        description="Puppeteer 브라우저 자동화",
+        args=["-y", "firecrawl-mcp"],
+        env={"FIRECRAWL_API_KEY": os.getenv("FIRECRAWL_API_KEY", "")},
+        allowed_agents=["JX_RESEARCHER", "JX_WRITER", "JX_ANALYST", "JX_WEB_SEARCHER"],
+        enabled=bool(os.getenv("FIRECRAWL_API_KEY")),
+        description="Firecrawl 웹 크롤링 (JS 렌더링, 사이트 전체 크롤)",
+        requires_api_key="FIRECRAWL_API_KEY",
+    ),
+
+    # ----------------------------------------------------------
+    # Time - 시간/타임존 변환
+    # ----------------------------------------------------------
+    # ----------------------------------------------------------
+    # Time / Docker — npm 패키지 미배포 상태. 동적 MCP 로더로 추가 가능
+    # POST /status/mcp/servers 로 런타임에 추가
+    # ----------------------------------------------------------
+
+    # ----------------------------------------------------------
+    # PostgreSQL - PostgreSQL 데이터베이스
+    # DATABASE_URL 환경변수 필요
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="postgres",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-postgres", os.getenv("DATABASE_URL", "")],
+        allowed_agents=["JX_ANALYST", "JX_OPS", "JX_BACKEND"],
+        enabled=bool(os.getenv("DATABASE_URL")),
+        description="PostgreSQL 데이터베이스 쿼리",
+        requires_api_key="DATABASE_URL",
+    ),
+
+    # ----------------------------------------------------------
+    # Sentry - 에러 모니터링
+    # SENTRY_AUTH_TOKEN 필요
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="sentry",
+        command="npx",
+        args=["-y", "mcp-server-sentry", "--auth-token", os.getenv("SENTRY_AUTH_TOKEN", "")],
+        allowed_agents=["JX_OPS", "JX_CODER", "JX_INFRA"],
+        enabled=bool(os.getenv("SENTRY_AUTH_TOKEN")),
+        description="Sentry 에러 모니터링 및 이슈 추적",
+        requires_api_key="SENTRY_AUTH_TOKEN",
+    ),
+
+    # ----------------------------------------------------------
+    # Todoist - 할일/태스크 관리
+    # TODOIST_API_TOKEN 필요
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="todoist",
+        command="npx",
+        args=["-y", "mcp-todoist"],
+        env={"TODOIST_API_TOKEN": os.getenv("TODOIST_API_TOKEN", "")},
+        allowed_agents=["JX_OPS", "JX_WRITER", "JS_PERSONA"],
+        enabled=bool(os.getenv("TODOIST_API_TOKEN")),
+        description="Todoist 할일/프로젝트 관리",
+        requires_api_key="TODOIST_API_TOKEN",
     ),
 
     # ----------------------------------------------------------

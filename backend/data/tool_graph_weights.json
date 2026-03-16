@@ -82,7 +82,7 @@
         "forecast",
         "서울"
       ],
-      "weight": 0.8499999999999999
+      "weight": 0.5999999999999996
     },
     {
       "name": "file_manager",
@@ -222,7 +222,7 @@
         "cache",
         "cleanup"
       ],
-      "weight": 0.8999999999999999
+      "weight": 0.5999999999999996
     },
     {
       "name": "pdf_reader",
@@ -304,90 +304,163 @@
       "weight": 1.0
     },
     {
-      "name": "mcp:memory:create_entities",
-      "description": "Create multiple new entities in the knowledge graph",
+      "name": "data_processor",
+      "description": "CSV, Excel, JSON 파일을 읽고 분석합니다. 통계 요약, 필터링, 정렬, 그룹핑 등 데이터 처리를 수행합니다.",
       "category": "general",
-      "allowed_agents": [],
+      "allowed_agents": [
+        "JX_ANALYST",
+        "JX_RESEARCHER",
+        "JX_CODER",
+        "JX_WRITER"
+      ],
       "actions": [],
       "keywords": [],
       "weight": 1.0
+    },
+    {
+      "name": "doc_generator",
+      "description": "Word(.docx) 또는 PowerPoint(.pptx) 문서를 생성합니다. 보고서, 제안서, 프레젠테이션 등을 만들 수 있습니다.",
+      "category": "general",
+      "allowed_agents": [
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_OPS",
+        "JS_PERSONA"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:memory:create_entities",
+      "description": "Create multiple new entities in the knowledge graph",
+      "category": "mcp:memory",
+      "allowed_agents": [],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:memory:create_relations",
       "description": "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:memory:add_observations",
       "description": "Add new observations to existing entities in the knowledge graph",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:memory:delete_entities",
       "description": "Delete multiple entities and their associated relations from the knowledge graph",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": true,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:memory:delete_observations",
       "description": "Delete specific observations from entities in the knowledge graph",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": true,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:memory:delete_relations",
       "description": "Delete multiple relations from the knowledge graph",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": true,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:memory:read_graph",
       "description": "Read the entire knowledge graph",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 0.95
+      "weight": 0.95,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:memory:search_nodes",
       "description": "Search for nodes in the knowledge graph based on a query",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:memory:open_nodes",
       "description": "Open specific nodes in the knowledge graph by their names",
-      "category": "general",
+      "category": "mcp:memory",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:read_file",
       "description": "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -401,12 +474,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:read_text_file",
       "description": "Read the complete contents of a file from the file system as text. Handles various text encodings and provides detailed error messages if the file cannot be read. Use this tool when you need to examine the contents of a single file. Use the 'head' parameter to read only the first N lines of a file, or the 'tail' parameter to read only the last N lines of a file. Operates on the file as text regardless of extension. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -420,12 +498,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:read_media_file",
       "description": "Read an image or audio file. Returns the base64 encoded data and MIME type. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -439,12 +522,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:read_multiple_files",
       "description": "Read the contents of multiple files simultaneously. This is more efficient than reading files one by one when you need to analyze or compare multiple files. Each file's content is returned with its path as a reference. Failed reads for individual files won't stop the entire operation. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -458,12 +546,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:write_file",
       "description": "Create a new file or completely overwrite an existing file with new content. Use with caution as it will overwrite existing files without warning. Handles text content with proper encoding. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -477,12 +570,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:edit_file",
       "description": "Make line-based edits to a text file. Each edit replaces exact line sequences with new content. Returns a git-style diff showing the changes made. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -496,12 +594,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:create_directory",
       "description": "Create a new directory or ensure a directory exists. Can create multiple nested directories in one operation. If the directory already exists, this operation will succeed silently. Perfect for setting up directory structures for projects or ensuring required paths exist. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -515,12 +618,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:filesystem:list_directory",
       "description": "Get a detailed listing of all files and directories in a specified path. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is essential for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -534,12 +642,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:list_directory_with_sizes",
       "description": "Get a detailed listing of all files and directories in a specified path, including sizes. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is useful for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -553,12 +666,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:directory_tree",
       "description": "Get a recursive tree view of files and directories as a JSON structure. Each entry includes 'name', 'type' (file/directory), and 'children' for directories. Files have no children array, while directories always have a children array (which may be empty). The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -577,7 +695,7 @@
     {
       "name": "mcp:filesystem:move_file",
       "description": "Move or rename files and directories. Can move files between directories and rename them in a single operation. If the destination exists, the operation will fail. Works across different directories and can be used for simple renaming within the same directory. Both source and destination must be within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -596,7 +714,7 @@
     {
       "name": "mcp:filesystem:search_files",
       "description": "Recursively search for files and directories matching a pattern. The patterns should be glob-style patterns that match paths relative to the working directory. Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. Returns full paths to all matching items. Great for finding files when you don't know their exact location. Only searches within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -610,12 +728,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:get_file_info",
       "description": "Retrieve detailed metadata about a file or directory. Returns comprehensive information including size, creation time, last modified time, permissions, and type. This tool is perfect for understanding file characteristics without reading the actual content. Only works within allowed directories.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -629,12 +752,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:filesystem:list_allowed_directories",
       "description": "Returns the list of directories that this server is allowed to access. Subdirectories within these allowed directories are also accessible. Use this to understand which directories and their nested paths are available before trying to access files.",
-      "category": "general",
+      "category": "mcp:filesystem",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -648,12 +776,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:brave-search:brave_web_search",
       "description": "Performs a web search using the Brave Search API, ideal for general queries, news, articles, and online content. Use this for broad information gathering, recent events, or when you need diverse web sources. Supports pagination, content filtering, and freshness controls. Maximum 20 results per request, with offset for pagination. ",
-      "category": "general",
+      "category": "mcp:brave-search",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
@@ -662,7 +795,7 @@
     {
       "name": "mcp:brave-search:brave_local_search",
       "description": "Searches for local businesses and places using Brave's Local Search API. Best for queries related to physical locations, businesses, restaurants, services, etc. Returns detailed information including:\n- Business names and addresses\n- Ratings and review counts\n- Phone numbers and opening hours\nUse this when the query implies 'near me' or mentions specific locations. Automatically falls back to web search if no local results are found.",
-      "category": "general",
+      "category": "mcp:brave-search",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
@@ -671,7 +804,7 @@
     {
       "name": "mcp:fetch:imageFetch",
       "description": "\n画像取得に強いMCPフェッチツール。記事本文をMarkdown化し、ページ内の画像を抽出・最適化して返します。\n\n新APIの既定（imagesを指定した場合）\n- 画像: 取得してBASE64で返却（最大3枚を縦結合した1枚JPEG）\n- 保存: しない（オプトイン）\n- クロスオリジン: 許可（CDN想定）\n\nパラメータ（新API）\n- url: 取得先URL（必須）\n- images: true | { output, layout, maxCount, startIndex, size, originPolicy, saveDir }\n  - output: \"base64\" | \"file\" | \"both\"（既定: base64）\n  - layout: \"merged\" | \"individual\" | \"both\"（既定: merged）\n  - maxCount/startIndex（既定: 3 / 0）\n  - size: { maxWidth, maxHeight, quality }（既定: 1000/1600/80）\n  - originPolicy: \"cross-origin\" | \"same-origin\"（既定: cross-origin）\n- text: { maxLength, startIndex, raw }（既定: 20000/0/false）\n- security: { ignoreRobotsTxt }（既定: false）\n\n旧APIキー（enableFetchImages, returnBase64, saveImages, imageMax*, imageStartIndex 等）は後方互換のため引き続き受け付けます（非推奨）。\n\nExamples（新API）\n{\n  \"url\": \"https://example.com\",\n  \"images\": true\n}\n\n{\n  \"url\": \"https://example.com\",\n  \"images\": { \"output\": \"both\", \"layout\": \"both\", \"maxCount\": 4 }\n}\n\nExamples（旧API互換）\n{\n  \"url\": \"https://example.com\",\n  \"enableFetchImages\": true,\n  \"returnBase64\": true,\n  \"imageMaxCount\": 2\n}",
-      "category": "general",
+      "category": "mcp:fetch",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
@@ -680,7 +813,7 @@
     {
       "name": "mcp:github:create_or_update_file",
       "description": "Create or update a single file in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -688,12 +821,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:search_repositories",
       "description": "Search for GitHub repositories",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -701,12 +839,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:create_repository",
       "description": "Create a new GitHub repository in your account",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -714,12 +857,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:get_file_contents",
       "description": "Get the contents of a file or directory from a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -727,12 +875,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:push_files",
       "description": "Push multiple files to a GitHub repository in a single commit",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -740,12 +893,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:create_issue",
       "description": "Create a new issue in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -753,12 +911,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:create_pull_request",
       "description": "Create a new pull request in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -766,12 +929,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:fork_repository",
       "description": "Fork a GitHub repository to your account or specified organization",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -784,7 +952,7 @@
     {
       "name": "mcp:github:create_branch",
       "description": "Create a new branch in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -792,12 +960,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:list_commits",
       "description": "Get list of commits of a branch in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -805,12 +978,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:list_issues",
       "description": "List issues in a GitHub repository with filtering options",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -818,12 +996,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:update_issue",
       "description": "Update an existing issue in a GitHub repository",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -831,12 +1014,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:add_issue_comment",
       "description": "Add a comment to an existing issue",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -844,12 +1032,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:search_code",
       "description": "Search for code across GitHub repositories",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -857,12 +1050,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:search_issues",
       "description": "Search for issues and pull requests across GitHub repositories",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -870,12 +1068,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:search_users",
       "description": "Search for users on GitHub",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -883,12 +1086,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:get_issue",
       "description": "Get details of a specific issue in a GitHub repository.",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -896,12 +1104,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:get_pull_request",
       "description": "Get details of a specific pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -909,12 +1122,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:list_pull_requests",
       "description": "List and filter repository pull requests",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -922,12 +1140,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:create_pull_request_review",
       "description": "Create a review on a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -935,12 +1158,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": false
+      }
     },
     {
       "name": "mcp:github:merge_pull_request",
       "description": "Merge a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -953,7 +1181,7 @@
     {
       "name": "mcp:github:get_pull_request_files",
       "description": "Get the list of files changed in a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -961,12 +1189,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:get_pull_request_status",
       "description": "Get the combined status of all status checks for a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -974,12 +1207,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:update_pull_request_branch",
       "description": "Update a pull request branch with the latest changes from the base branch",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -987,12 +1225,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": false,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:get_pull_request_comments",
       "description": "Get the review comments on a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -1000,12 +1243,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:github:get_pull_request_reviews",
       "description": "Get the reviews on a pull request",
-      "category": "general",
+      "category": "mcp:github",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER",
@@ -1013,12 +1261,17 @@
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:git:git_status",
       "description": "Shows the working tree status",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1030,7 +1283,7 @@
     {
       "name": "mcp:git:git_diff_unstaged",
       "description": "Shows changes in working directory not yet staged",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1042,7 +1295,7 @@
     {
       "name": "mcp:git:git_diff_staged",
       "description": "Shows changes that are staged for commit",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1054,7 +1307,7 @@
     {
       "name": "mcp:git:git_diff",
       "description": "Shows differences between branches or commits",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1066,7 +1319,7 @@
     {
       "name": "mcp:git:git_commit",
       "description": "Records changes to the repository",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1078,7 +1331,7 @@
     {
       "name": "mcp:git:git_add",
       "description": "Adds file contents to the staging area",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1090,7 +1343,7 @@
     {
       "name": "mcp:git:git_reset",
       "description": "Unstages all staged changes",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1102,7 +1355,7 @@
     {
       "name": "mcp:git:git_log",
       "description": "Shows the commit logs",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1114,7 +1367,7 @@
     {
       "name": "mcp:git:git_create_branch",
       "description": "Creates a new branch",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1126,7 +1379,7 @@
     {
       "name": "mcp:git:git_checkout",
       "description": "Switches branches",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1138,7 +1391,7 @@
     {
       "name": "mcp:git:git_show",
       "description": "Shows the contents of a commit",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1150,19 +1403,19 @@
     {
       "name": "mcp:git:git_init",
       "description": "Initializes a Git repository",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 0.95
     },
     {
       "name": "mcp:git:git_stash",
       "description": "Stashes changes in working directory",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1174,7 +1427,7 @@
     {
       "name": "mcp:git:git_stash_pop",
       "description": "Applies and removes a single stashed state",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1186,7 +1439,7 @@
     {
       "name": "mcp:git:git_stash_apply",
       "description": "Applies a single stashed state without removing it",
-      "category": "general",
+      "category": "mcp:git",
       "allowed_agents": [
         "JX_OPS",
         "JX_CODER"
@@ -1198,7 +1451,7 @@
     {
       "name": "mcp:sequential-thinking:sequentialthinking",
       "description": "A detailed tool for dynamic and reflective problem-solving through thoughts.\nThis tool helps analyze problems through a flexible thinking process that can adapt and evolve.\nEach thought can build on, question, or revise previous insights as understanding deepens.\n\nWhen to use this tool:\n- Breaking down complex problems into steps\n- Planning and design with room for revision\n- Analysis that might need course correction\n- Problems where the full scope might not be clear initially\n- Problems that require a multi-step solution\n- Tasks that need to maintain context over multiple steps\n- Situations where irrelevant information needs to be filtered out\n\nKey features:\n- You can adjust total_thoughts up or down as you progress\n- You can question or revise previous thoughts\n- You can add more thoughts even after reaching what seemed like the end\n- You can express uncertainty and explore alternative approaches\n- Not every thought needs to build linearly - you can branch or backtrack\n- Generates a solution hypothesis\n- Verifies the hypothesis based on the Chain of Thought steps\n- Repeats the process until satisfied\n- Provides a correct answer\n\nParameters explained:\n- thought: Your current thinking step, which can include:\n  * Regular analytical steps\n  * Revisions of previous thoughts\n  * Questions about previous decisions\n  * Realizations about needing more analysis\n  * Changes in approach\n  * Hypothesis generation\n  * Hypothesis verification\n- nextThoughtNeeded: True if you need more thinking, even if at what seemed like the end\n- thoughtNumber: Current number in sequence (can go beyond initial total if needed)\n- totalThoughts: Current estimate of thoughts needed (can be adjusted up/down)\n- isRevision: A boolean indicating if this thought revises previous thinking\n- revisesThought: If is_revision is true, which thought number is being reconsidered\n- branchFromThought: If branching, which thought number is the branching point\n- branchId: Identifier for the current branch (if any)\n- needsMoreThoughts: If reaching end but realizing more thoughts needed\n\nYou should:\n1. Start with an initial estimate of needed thoughts, but be ready to adjust\n2. Feel free to question or revise previous thoughts\n3. Don't hesitate to add more thoughts if needed, even at the \"end\"\n4. Express uncertainty when present\n5. Mark thoughts that revise previous thinking or branch into new paths\n6. Ignore information that is irrelevant to the current step\n7. Generate a solution hypothesis when appropriate\n8. Verify the hypothesis based on the Chain of Thought steps\n9. Repeat the process until satisfied with the solution\n10. Provide a single, ideally correct answer as the final output\n11. Only set nextThoughtNeeded to false when truly done and a satisfactory answer is reached",
-      "category": "general",
+      "category": "mcp:sequential-thinking",
       "allowed_agents": [],
       "actions": [],
       "keywords": [],
@@ -1207,7 +1460,7 @@
     {
       "name": "mcp:playwright:browser_close",
       "description": "Close the page",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1220,7 +1473,7 @@
     {
       "name": "mcp:playwright:browser_resize",
       "description": "Resize the browser window",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1233,7 +1486,7 @@
     {
       "name": "mcp:playwright:browser_console_messages",
       "description": "Returns all console messages",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1246,7 +1499,7 @@
     {
       "name": "mcp:playwright:browser_handle_dialog",
       "description": "Handle a dialog",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1259,7 +1512,7 @@
     {
       "name": "mcp:playwright:browser_evaluate",
       "description": "Evaluate JavaScript expression on page or element",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1272,7 +1525,7 @@
     {
       "name": "mcp:playwright:browser_file_upload",
       "description": "Upload one or multiple files",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1285,7 +1538,7 @@
     {
       "name": "mcp:playwright:browser_fill_form",
       "description": "Fill multiple form fields",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1298,7 +1551,7 @@
     {
       "name": "mcp:playwright:browser_install",
       "description": "Install the browser specified in the config. Call this if you get an error about the browser not being installed.",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1311,7 +1564,7 @@
     {
       "name": "mcp:playwright:browser_press_key",
       "description": "Press a key on the keyboard",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1324,7 +1577,7 @@
     {
       "name": "mcp:playwright:browser_type",
       "description": "Type text into editable element",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1337,7 +1590,7 @@
     {
       "name": "mcp:playwright:browser_navigate",
       "description": "Navigate to a URL",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1350,7 +1603,7 @@
     {
       "name": "mcp:playwright:browser_navigate_back",
       "description": "Go back to the previous page in the history",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1363,7 +1616,7 @@
     {
       "name": "mcp:playwright:browser_network_requests",
       "description": "Returns all network requests since loading the page",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1376,7 +1629,7 @@
     {
       "name": "mcp:playwright:browser_run_code",
       "description": "Run Playwright code snippet",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1389,7 +1642,7 @@
     {
       "name": "mcp:playwright:browser_take_screenshot",
       "description": "Take a screenshot of the current page. You can't perform actions based on the screenshot, use browser_snapshot for actions.",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1402,7 +1655,7 @@
     {
       "name": "mcp:playwright:browser_snapshot",
       "description": "Capture accessibility snapshot of the current page, this is better than screenshot",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1415,7 +1668,7 @@
     {
       "name": "mcp:playwright:browser_click",
       "description": "Perform click on a web page",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1428,7 +1681,7 @@
     {
       "name": "mcp:playwright:browser_drag",
       "description": "Perform drag and drop between two elements",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1441,7 +1694,7 @@
     {
       "name": "mcp:playwright:browser_hover",
       "description": "Hover over element on page",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1454,7 +1707,7 @@
     {
       "name": "mcp:playwright:browser_select_option",
       "description": "Select an option in a dropdown",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1467,7 +1720,7 @@
     {
       "name": "mcp:playwright:browser_tabs",
       "description": "List, create, close, or select a browser tab.",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1480,7 +1733,7 @@
     {
       "name": "mcp:playwright:browser_wait_for",
       "description": "Wait for text to appear or disappear or a specified time to pass",
-      "category": "general",
+      "category": "mcp:playwright",
       "allowed_agents": [
         "JX_RESEARCHER",
         "JX_CODER",
@@ -1491,9 +1744,177 @@
       "weight": 1.0
     },
     {
+      "name": "mcp:firecrawl:firecrawl_scrape",
+      "description": "\nScrape content from a single URL with advanced options.\nThis is the most powerful, fastest and most reliable scraper tool, if available you should always default to using this tool for any web scraping needs.\n\n**Best for:** Single page content extraction, when you know exactly which page contains the information.\n**Not recommended for:** Multiple pages (call scrape multiple times or use crawl), unknown page location (use search).\n**Common mistakes:** Using markdown format when extracting specific data points (use JSON instead).\n**Other Features:** Use 'branding' format to extract brand identity (colors, fonts, typography, spacing, UI components) for design analysis or style replication.\n\n**CRITICAL - Format Selection (you MUST follow this):**\nWhen the user asks for SPECIFIC data points, you MUST use JSON format with a schema. Only use markdown when the user needs the ENTIRE page content.\n\n**Use JSON format when user asks for:**\n- Parameters, fields, or specifications (e.g., \"get the header parameters\", \"what are the required fields\")\n- Prices, numbers, or structured data (e.g., \"extract the pricing\", \"get the product details\")\n- API details, endpoints, or technical specs (e.g., \"find the authentication endpoint\")\n- Lists of items or properties (e.g., \"list the features\", \"get all the options\")\n- Any specific piece of information from a page\n\n**Use markdown format ONLY when:**\n- User wants to read/summarize an entire article or blog post\n- User needs to see all content on a page without specific extraction\n- User explicitly asks for the full page content\n\n**Handling JavaScript-rendered pages (SPAs):**\nIf JSON extraction returns empty, minimal, or just navigation content, the page is likely JavaScript-rendered or the content is on a different URL. Try these steps IN ORDER:\n1. **Add waitFor parameter:** Set `waitFor: 5000` to `waitFor: 10000` to allow JavaScript to render before extraction\n2. **Try a different URL:** If the URL has a hash fragment (#section), try the base URL or look for a direct page URL\n3. **Use firecrawl_map to find the correct page:** Large documentation sites or SPAs often spread content across multiple URLs. Use `firecrawl_map` with a `search` parameter to discover the specific page containing your target content, then scrape that URL directly.\n   Example: If scraping \"https://docs.example.com/reference\" fails to find webhook parameters, use `firecrawl_map` with `{\"url\": \"https://docs.example.com/reference\", \"search\": \"webhook\"}` to find URLs like \"/reference/webhook-events\", then scrape that specific page.\n4. **Use firecrawl_agent:** As a last resort for heavily dynamic pages where map+scrape still fails, use the agent which can autonomously navigate and research\n\n**Usage Example (JSON format - REQUIRED for specific data extraction):**\n```json\n{\n  \"name\": \"firecrawl_scrape\",\n  \"arguments\": {\n    \"url\": \"https://example.com/api-docs\",\n    \"formats\": [\"json\"],\n    \"jsonOptions\": {\n      \"prompt\": \"Extract the header parameters for the authentication endpoint\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"parameters\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"name\": { \"type\": \"string\" },\n                \"type\": { \"type\": \"string\" },\n                \"required\": { \"type\": \"boolean\" },\n                \"description\": { \"type\": \"string\" }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n```\n**Usage Example (markdown format - ONLY when full content genuinely needed):**\n```json\n{\n  \"name\": \"firecrawl_scrape\",\n  \"arguments\": {\n    \"url\": \"https://example.com/article\",\n    \"formats\": [\"markdown\"],\n    \"onlyMainContent\": true\n  }\n}\n```\n**Usage Example (branding format - extract brand identity):**\n```json\n{\n  \"name\": \"firecrawl_scrape\",\n  \"arguments\": {\n    \"url\": \"https://example.com\",\n    \"formats\": [\"branding\"]\n  }\n}\n```\n**Branding format:** Extracts comprehensive brand identity (colors, fonts, typography, spacing, logo, UI components) for design analysis or style replication.\n**Performance:** Add maxAge parameter for 500% faster scrapes using cached data.\n**Returns:** JSON structured data, markdown, branding profile, or other formats as specified.\n\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_map",
+      "description": "\nMap a website to discover all indexed URLs on the site.\n\n**Best for:** Discovering URLs on a website before deciding what to scrape; finding specific sections or pages within a large site; locating the correct page when scrape returns empty or incomplete results.\n**Not recommended for:** When you already know which specific URL you need (use scrape); when you need the content of the pages (use scrape after mapping).\n**Common mistakes:** Using crawl to discover URLs instead of map; jumping straight to firecrawl_agent when scrape fails instead of using map first to find the right page.\n\n**IMPORTANT - Use map before agent:** If `firecrawl_scrape` returns empty, minimal, or irrelevant content, use `firecrawl_map` with the `search` parameter to find the specific page URL containing your target content. This is faster and cheaper than using `firecrawl_agent`. Only use the agent as a last resort after map+scrape fails.\n\n**Prompt Example:** \"Find the webhook documentation page on this API docs site.\"\n**Usage Example (discover all URLs):**\n```json\n{\n  \"name\": \"firecrawl_map\",\n  \"arguments\": {\n    \"url\": \"https://example.com\"\n  }\n}\n```\n**Usage Example (search for specific content - RECOMMENDED when scrape fails):**\n```json\n{\n  \"name\": \"firecrawl_map\",\n  \"arguments\": {\n    \"url\": \"https://docs.example.com/api\",\n    \"search\": \"webhook events\"\n  }\n}\n```\n**Returns:** Array of URLs found on the site, filtered by search query if provided.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_search",
+      "description": "\nSearch the web and optionally extract content from search results. This is the most powerful web search tool available, and if available you should always default to using this tool for any web search needs.\n\nThe query also supports search operators, that you can use if needed to refine the search:\n| Operator | Functionality | Examples |\n---|-|-|\n| `\"\"` | Non-fuzzy matches a string of text | `\"Firecrawl\"`\n| `-` | Excludes certain keywords or negates other operators | `-bad`, `-site:firecrawl.dev`\n| `site:` | Only returns results from a specified website | `site:firecrawl.dev`\n| `inurl:` | Only returns results that include a word in the URL | `inurl:firecrawl`\n| `allinurl:` | Only returns results that include multiple words in the URL | `allinurl:git firecrawl`\n| `intitle:` | Only returns results that include a word in the title of the page | `intitle:Firecrawl`\n| `allintitle:` | Only returns results that include multiple words in the title of the page | `allintitle:firecrawl playground`\n| `related:` | Only returns results that are related to a specific domain | `related:firecrawl.dev`\n| `imagesize:` | Only returns images with exact dimensions | `imagesize:1920x1080`\n| `larger:` | Only returns images larger than specified dimensions | `larger:1920x1080`\n\n**Best for:** Finding specific information across multiple websites, when you don't know which website has the information; when you need the most relevant content for a query.\n**Not recommended for:** When you need to search the filesystem. When you already know which website to scrape (use scrape); when you need comprehensive coverage of a single website (use map or crawl.\n**Common mistakes:** Using crawl or map for open-ended questions (use search instead).\n**Prompt Example:** \"Find the latest research papers on AI published in 2023.\"\n**Sources:** web, images, news, default to web unless needed images or news.\n**Scrape Options:** Only use scrapeOptions when you think it is absolutely necessary. When you do so default to a lower limit to avoid timeouts, 5 or lower.\n**Optimal Workflow:** Search first using firecrawl_search without formats, then after fetching the results, use the scrape tool to get the content of the relevantpage(s) that you want to scrape\n\n**Usage Example without formats (Preferred):**\n```json\n{\n  \"name\": \"firecrawl_search\",\n  \"arguments\": {\n    \"query\": \"top AI companies\",\n    \"limit\": 5,\n    \"sources\": [\n      { \"type\": \"web\" }\n    ]\n  }\n}\n```\n**Usage Example with formats:**\n```json\n{\n  \"name\": \"firecrawl_search\",\n  \"arguments\": {\n    \"query\": \"latest AI research papers 2023\",\n    \"limit\": 5,\n    \"lang\": \"en\",\n    \"country\": \"us\",\n    \"sources\": [\n      { \"type\": \"web\" },\n      { \"type\": \"images\" },\n      { \"type\": \"news\" }\n    ],\n    \"scrapeOptions\": {\n      \"formats\": [\"markdown\"],\n      \"onlyMainContent\": true\n    }\n  }\n}\n```\n**Returns:** Array of search results (with optional scraped content).\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_crawl",
+      "description": "\n Starts a crawl job on a website and extracts content from all pages.\n \n **Best for:** Extracting content from multiple related pages, when you need comprehensive coverage.\n **Not recommended for:** Extracting content from a single page (use scrape); when token limits are a concern (use map + batch_scrape); when you need fast results (crawling can be slow).\n **Warning:** Crawl responses can be very large and may exceed token limits. Limit the crawl depth and number of pages, or use map + batch_scrape for better control.\n **Common mistakes:** Setting limit or maxDiscoveryDepth too high (causes token overflow) or too low (causes missing pages); using crawl for a single page (use scrape instead). Using a /* wildcard is not recommended.\n **Prompt Example:** \"Get all blog posts from the first two levels of example.com/blog.\"\n **Usage Example:**\n ```json\n {\n   \"name\": \"firecrawl_crawl\",\n   \"arguments\": {\n     \"url\": \"https://example.com/blog/*\",\n     \"maxDiscoveryDepth\": 5,\n     \"limit\": 20,\n     \"allowExternalLinks\": false,\n     \"deduplicateSimilarURLs\": true,\n     \"sitemap\": \"include\"\n   }\n }\n ```\n **Returns:** Operation ID for status checking; use firecrawl_check_crawl_status to check progress.\n \n ",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_check_crawl_status",
+      "description": "\nCheck the status of a crawl job.\n\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_check_crawl_status\",\n  \"arguments\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\"\n  }\n}\n```\n**Returns:** Status and progress of the crawl job, including results if available.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_extract",
+      "description": "\nExtract structured information from web pages using LLM capabilities. Supports both cloud AI and self-hosted LLM extraction.\n\n**Best for:** Extracting specific structured data like prices, names, details from web pages.\n**Not recommended for:** When you need the full content of a page (use scrape); when you're not looking for specific structured data.\n**Arguments:**\n- urls: Array of URLs to extract information from\n- prompt: Custom prompt for the LLM extraction\n- schema: JSON schema for structured data extraction\n- allowExternalLinks: Allow extraction from external links\n- enableWebSearch: Enable web search for additional context\n- includeSubdomains: Include subdomains in extraction\n**Prompt Example:** \"Extract the product name, price, and description from these product pages.\"\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_extract\",\n  \"arguments\": {\n    \"urls\": [\"https://example.com/page1\", \"https://example.com/page2\"],\n    \"prompt\": \"Extract product information including name, price, and description\",\n    \"schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"name\": { \"type\": \"string\" },\n        \"price\": { \"type\": \"number\" },\n        \"description\": { \"type\": \"string\" }\n      },\n      \"required\": [\"name\", \"price\"]\n    },\n    \"allowExternalLinks\": false,\n    \"enableWebSearch\": false,\n    \"includeSubdomains\": false\n  }\n}\n```\n**Returns:** Extracted structured data as defined by your schema.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_agent",
+      "description": "\nAutonomous web research agent. This is a separate AI agent layer that independently browses the internet, searches for information, navigates through pages, and extracts structured data based on your query. You describe what you need, and the agent figures out where to find it.\n\n**How it works:** The agent performs web searches, follows links, reads pages, and gathers data autonomously. This runs **asynchronously** - it returns a job ID immediately, and you poll `firecrawl_agent_status` to check when complete and retrieve results.\n\n**IMPORTANT - Async workflow with patient polling:**\n1. Call `firecrawl_agent` with your prompt/schema → returns job ID immediately\n2. Poll `firecrawl_agent_status` with the job ID to check progress\n3. **Keep polling for at least 2-3 minutes** - agent research typically takes 1-5 minutes for complex queries\n4. Poll every 15-30 seconds until status is \"completed\" or \"failed\"\n5. Do NOT give up after just a few polling attempts - the agent needs time to research\n\n**Expected wait times:**\n- Simple queries with provided URLs: 30 seconds - 1 minute\n- Complex research across multiple sites: 2-5 minutes\n- Deep research tasks: 5+ minutes\n\n**Best for:** Complex research tasks where you don't know the exact URLs; multi-source data gathering; finding information scattered across the web; extracting data from JavaScript-heavy SPAs that fail with regular scrape.\n**Not recommended for:** Simple single-page scraping where you know the URL (use scrape with JSON format instead - faster and cheaper).\n\n**Arguments:**\n- prompt: Natural language description of the data you want (required, max 10,000 characters)\n- urls: Optional array of URLs to focus the agent on specific pages\n- schema: Optional JSON schema for structured output\n\n**Prompt Example:** \"Find the founders of Firecrawl and their backgrounds\"\n**Usage Example (start agent, then poll patiently for results):**\n```json\n{\n  \"name\": \"firecrawl_agent\",\n  \"arguments\": {\n    \"prompt\": \"Find the top 5 AI startups founded in 2024 and their funding amounts\",\n    \"schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"startups\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"name\": { \"type\": \"string\" },\n              \"funding\": { \"type\": \"string\" },\n              \"founded\": { \"type\": \"string\" }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n```\nThen poll with `firecrawl_agent_status` every 15-30 seconds for at least 2-3 minutes.\n\n**Usage Example (with URLs - agent focuses on specific pages):**\n```json\n{\n  \"name\": \"firecrawl_agent\",\n  \"arguments\": {\n    \"urls\": [\"https://docs.firecrawl.dev\", \"https://firecrawl.dev/pricing\"],\n    \"prompt\": \"Compare the features and pricing information from these pages\"\n  }\n}\n```\n**Returns:** Job ID for status checking. Use `firecrawl_agent_status` to poll for results.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_agent_status",
+      "description": "\nCheck the status of an agent job and retrieve results when complete. Use this to poll for results after starting an agent with `firecrawl_agent`.\n\n**IMPORTANT - Be patient with polling:**\n- Poll every 15-30 seconds\n- **Keep polling for at least 2-3 minutes** before considering the request failed\n- Complex research can take 5+ minutes - do not give up early\n- Only stop polling when status is \"completed\" or \"failed\"\n\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_agent_status\",\n  \"arguments\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\"\n  }\n}\n```\n**Possible statuses:**\n- processing: Agent is still researching - keep polling, do not give up\n- completed: Research finished - response includes the extracted data\n- failed: An error occurred (only stop polling on this status)\n\n**Returns:** Status, progress, and results (if completed) of the agent job.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_browser_create",
+      "description": "\nCreate a browser session for code execution via CDP (Chrome DevTools Protocol).\n\n**Best for:** Running code (Python/JS) that interacts with a live browser page, multi-step browser automation, sessions with profiles that survive across multiple tool calls.\n**Not recommended for:** Simple page scraping (use firecrawl_scrape instead).\n\n**Arguments:**\n- ttl: Total session lifetime in seconds (30-3600, optional)\n- activityTtl: Idle timeout in seconds (10-3600, optional)\n- streamWebView: Whether to enable live view streaming (optional)\n- profile: Save and reuse browser state (cookies, localStorage) across sessions (optional)\n  - name: Profile name (sessions with the same name share state)\n  - saveChanges: Whether to save changes back to the profile (default: true)\n\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_browser_create\",\n  \"arguments\": {\n    \"profile\": { \"name\": \"my-profile\", \"saveChanges\": true }\n  }\n}\n```\n**Returns:** Session ID, CDP URL, and live view URL.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_browser_execute",
+      "description": "\nExecute code in a browser session. Supports agent-browser commands (bash), Python, or JavaScript.\n\n**Best for:** Browser automation, navigating pages, clicking elements, extracting data, multi-step browser workflows.\n**Requires:** An active browser session (create one with firecrawl_browser_create first).\n\n**Arguments:**\n- sessionId: The browser session ID (required)\n- code: The code to execute (required)\n- language: \"bash\", \"python\", or \"node\" (optional, defaults to \"bash\")\n\n**Recommended: Use bash with agent-browser commands** (pre-installed in every sandbox):\n```json\n{\n  \"name\": \"firecrawl_browser_execute\",\n  \"arguments\": {\n    \"sessionId\": \"session-id-here\",\n    \"code\": \"agent-browser open https://example.com\",\n    \"language\": \"bash\"\n  }\n}\n```\n\n**Common agent-browser commands:**\n- `agent-browser open <url>` — Navigate to URL\n- `agent-browser snapshot` — Get accessibility tree with clickable refs (for AI)\n- `agent-browser snapshot -i -c` — Interactive elements only, compact\n- `agent-browser click @e5` — Click element by ref from snapshot\n- `agent-browser type @e3 \"text\"` — Type into element\n- `agent-browser fill @e3 \"text\"` — Clear and fill element\n- `agent-browser get text @e1` — Get text content\n- `agent-browser get title` — Get page title\n- `agent-browser get url` — Get current URL\n- `agent-browser screenshot [path]` — Take screenshot\n- `agent-browser scroll down` — Scroll page\n- `agent-browser wait 2000` — Wait 2 seconds\n- `agent-browser --help` — Full command reference\n\n**For Playwright scripting, use Python** (has proper async/await support):\n```json\n{\n  \"name\": \"firecrawl_browser_execute\",\n  \"arguments\": {\n    \"sessionId\": \"session-id-here\",\n    \"code\": \"await page.goto('https://example.com')\\ntitle = await page.title()\\nprint(title)\",\n    \"language\": \"python\"\n  }\n}\n```\n\n**Note:** Prefer bash (agent-browser) or Python.\n**Returns:** Execution result including stdout, stderr, and exit code.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_browser_delete",
+      "description": "\nDestroy a browser session.\n\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_browser_delete\",\n  \"arguments\": {\n    \"sessionId\": \"session-id-here\"\n  }\n}\n```\n**Returns:** Success confirmation.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
+      "name": "mcp:firecrawl:firecrawl_browser_list",
+      "description": "\nList browser sessions, optionally filtered by status.\n\n**Usage Example:**\n```json\n{\n  \"name\": \"firecrawl_browser_list\",\n  \"arguments\": {\n    \"status\": \"active\"\n  }\n}\n```\n**Returns:** Array of browser sessions.\n",
+      "category": "mcp:firecrawl",
+      "allowed_agents": [
+        "JX_RESEARCHER",
+        "JX_WRITER",
+        "JX_ANALYST",
+        "JX_WEB_SEARCHER"
+      ],
+      "actions": [],
+      "keywords": [],
+      "weight": 1.0
+    },
+    {
       "name": "mcp:sqlite:query",
       "description": "Execute a SQL query against a SQLite database. Returns results as a formatted table. Read-only by default.",
-      "category": "general",
+      "category": "mcp:sqlite",
       "allowed_agents": [
         "JX_ANALYST",
         "JX_OPS"
@@ -1505,7 +1926,7 @@
     {
       "name": "mcp:sqlite:schema",
       "description": "Get the schema of a SQLite database: all tables with columns and row counts.",
-      "category": "general",
+      "category": "mcp:sqlite",
       "allowed_agents": [
         "JX_ANALYST",
         "JX_OPS"
@@ -1517,7 +1938,7 @@
     {
       "name": "mcp:sqlite:table_info",
       "description": "Get detailed info about a single table: columns, types, constraints, and row count.",
-      "category": "general",
+      "category": "mcp:sqlite",
       "allowed_agents": [
         "JX_ANALYST",
         "JX_OPS"
@@ -1529,7 +1950,7 @@
     {
       "name": "mcp:sqlite:explain",
       "description": "Explain the query plan for a SQL query (EXPLAIN QUERY PLAN). Helps optimize queries.",
-      "category": "general",
+      "category": "mcp:sqlite",
       "allowed_agents": [
         "JX_ANALYST",
         "JX_OPS"
@@ -1541,19 +1962,24 @@
     {
       "name": "mcp:sqlite:list_databases",
       "description": "List all SQLite database files (.db, .sqlite, .sqlite3) in a directory.",
-      "category": "general",
+      "category": "mcp:sqlite",
       "allowed_agents": [
         "JX_ANALYST",
         "JX_OPS"
       ],
       "actions": [],
       "keywords": [],
-      "weight": 1.0
+      "weight": 1.0,
+      "annotations": {
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true
+      }
     },
     {
       "name": "mcp:notion:API-get-user",
       "description": "Notion | Retrieve a user\nError Responses:\n400: 400",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1566,7 +1992,7 @@
     {
       "name": "mcp:notion:API-get-users",
       "description": "Notion | List all users\nError Responses:\n400: 400",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1579,7 +2005,7 @@
     {
       "name": "mcp:notion:API-get-self",
       "description": "Notion | Retrieve your token's bot user\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1592,7 +2018,7 @@
     {
       "name": "mcp:notion:API-post-search",
       "description": "Notion | Search by title\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1605,7 +2031,7 @@
     {
       "name": "mcp:notion:API-get-block-children",
       "description": "Notion | Retrieve block children\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1618,7 +2044,7 @@
     {
       "name": "mcp:notion:API-patch-block-children",
       "description": "Notion | Append block children\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1631,7 +2057,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-block",
       "description": "Notion | Retrieve a block\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1644,7 +2070,7 @@
     {
       "name": "mcp:notion:API-update-a-block",
       "description": "Notion | Update a block\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1657,7 +2083,7 @@
     {
       "name": "mcp:notion:API-delete-a-block",
       "description": "Notion | Delete a block\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1670,7 +2096,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-page",
       "description": "Notion | Retrieve a page\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1683,7 +2109,7 @@
     {
       "name": "mcp:notion:API-patch-page",
       "description": "Notion | Update page properties\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1696,7 +2122,7 @@
     {
       "name": "mcp:notion:API-post-page",
       "description": "Notion | Create a page\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1709,7 +2135,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-page-property",
       "description": "Notion | Retrieve a page property item\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1722,7 +2148,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-comment",
       "description": "Notion | Retrieve comments\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1735,7 +2161,7 @@
     {
       "name": "mcp:notion:API-create-a-comment",
       "description": "Notion | Create comment\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1748,7 +2174,7 @@
     {
       "name": "mcp:notion:API-query-data-source",
       "description": "Notion | Query a data source\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1761,7 +2187,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-data-source",
       "description": "Notion | Retrieve a data source\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1774,7 +2200,7 @@
     {
       "name": "mcp:notion:API-update-a-data-source",
       "description": "Notion | Update a data source\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1787,7 +2213,7 @@
     {
       "name": "mcp:notion:API-create-a-data-source",
       "description": "Notion | Create a data source\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1800,7 +2226,7 @@
     {
       "name": "mcp:notion:API-list-data-source-templates",
       "description": "Notion | List templates in a data source\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1813,7 +2239,7 @@
     {
       "name": "mcp:notion:API-retrieve-a-database",
       "description": "Notion | Retrieve a database\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",
@@ -1826,7 +2252,7 @@
     {
       "name": "mcp:notion:API-move-page",
       "description": "Notion | Move a page\nError Responses:\n400: Bad request",
-      "category": "general",
+      "category": "mcp:notion",
       "allowed_agents": [
         "JX_WRITER",
         "JX_ANALYST",

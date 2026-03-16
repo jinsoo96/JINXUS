@@ -4,12 +4,13 @@ import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { systemApi, agentApi, type AgentRuntimeStatus } from '@/lib/api';
-import { LayoutDashboard, MessageSquare, GitBranch, Bot, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, GitBranch, Bot, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban } from 'lucide-react';
 import { MAX_SIDEBAR_AGENTS } from '@/lib/constants';
 
 const tabs = [
   { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
   { id: 'chat', label: '채팅', icon: MessageSquare },
+  { id: 'projects', label: '프로젝트', icon: FolderKanban },
   { id: 'graph', label: '그래프', icon: GitBranch },
   { id: 'agents', label: '에이전트', icon: Bot },
   { id: 'memory', label: '메모리', icon: Brain },
@@ -43,7 +44,7 @@ export default function Sidebar() {
       } catch { /* 무시 */ }
     };
     poll();
-    const iv = setInterval(poll, 5000);
+    const iv = setInterval(poll, 20000);  // 20초 간격 (불필요한 API 호출 절감)
     return () => clearInterval(iv);
   }, []);
 

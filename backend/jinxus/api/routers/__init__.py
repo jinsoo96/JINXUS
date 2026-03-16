@@ -9,6 +9,9 @@ from .logs import router as logs_router
 from .hr import router as hr_router
 from .plugins import router as plugins_router
 from .dev_notes import router as dev_notes_router
+from .projects import router as projects_router
+from .processes import router as processes_router
+from .docker_logs import router as docker_logs_router
 
 __all__ = [
     "chat_router",
@@ -22,4 +25,7 @@ __all__ = [
     "hr_router",
     "plugins_router",
     "dev_notes_router",
+    "projects_router",
+    "processes_router",
+    "docker_logs_router",
 ]

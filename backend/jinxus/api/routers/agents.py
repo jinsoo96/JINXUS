@@ -169,6 +169,26 @@ async def get_jx_coder_team():
     return {"parent": "JX_CODER", "team": team}
 
 
+@router.get("/JX_RESEARCHER/team")
+async def get_jx_researcher_team():
+    """JX_RESEARCHER 전문가 팀 조회"""
+    from jinxus.agents.research import RESEARCH_SPECIALISTS
+    from jinxus.agents.state_tracker import get_state_tracker
+
+    tracker = get_state_tracker()
+    team = []
+    for name, cls in RESEARCH_SPECIALISTS.items():
+        state = tracker.get_state(name)
+        team.append({
+            "name": name,
+            "description": cls.description,
+            "status": state.status.value if state else "idle",
+            "current_task": state.current_task if state else None,
+            "current_node": state.current_node.value if (state and state.current_node) else None,
+        })
+    return {"parent": "JX_RESEARCHER", "team": team}
+
+
 @router.get("/{agent_name}/graph")
 async def get_agent_graph(agent_name: str):
     """에이전트 LangGraph 구조 반환 (시각화용)"""

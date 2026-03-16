@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react';
 import {
-  UserPlus, RotateCcw, Loader2, Bot, Code2, ChevronDown, ChevronUp,
-  CheckCircle, XCircle, Clock, Wrench, Send, MessageSquare, Trash2,
+  UserPlus, RotateCcw, Loader2, Bot, Code2, Search, ChevronDown, ChevronUp,
+  CheckCircle, XCircle, Clock, Wrench, Send, MessageSquare, Trash2, Users,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { agentApi, hrApi, logsApi, chatApi, type AgentRuntimeStatus, type HRAgentRecord, type CodingSpecialist, type TaskLog, type SSEEvent } from '@/lib/api';
@@ -11,6 +11,8 @@ import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import { formatTimeWithSeconds } from '@/lib/utils';
 import toast from 'react-hot-toast';
 import HireAgentModal from '../HireAgentModal';
+import AgentCard from '../AgentCard';
+import OrgChart from '../OrgChart';
 
 interface DirectMessage {
   role: 'user' | 'assistant';
@@ -19,7 +21,7 @@ interface DirectMessage {
   timestamp: Date;
 }
 
-export default function AgentsTab() {
+export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   const { agents, loadAgents } = useAppStore();
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [showHireModal, setShowHireModal] = useState(false);
@@ -27,6 +29,7 @@ export default function AgentsTab() {
   const [firedAgents, setFiredAgents] = useState<HRAgentRecord[]>([]);
   const [showFired, setShowFired] = useState(false);
   const [coderTeam, setCoderTeam] = useState<CodingSpecialist[]>([]);
+  const [researcherTeam, setResearcherTeam] = useState<CodingSpecialist[]>([]);
   const [logsMap, setLogsMap] = useState<Record<string, TaskLog[]>>({});
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
 
@@ -35,6 +38,7 @@ export default function AgentsTab() {
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [showOrgChart, setShowOrgChart] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -63,16 +67,26 @@ export default function AgentsTab() {
     } catch { /* 무시 */ }
   };
 
+  const fetchResearcherTeam = async () => {
+    try {
+      const res = await agentApi.getResearcherTeam();
+      setResearcherTeam(res.team);
+    } catch { /* 무시 */ }
+  };
+
   useEffect(() => {
+    if (!isActive) return;
     fetchAllRuntimes();
     fetchFiredAgents();
     fetchCoderTeam();
+    fetchResearcherTeam();
     const interval = setInterval(() => {
       fetchAllRuntimes();
       fetchCoderTeam();
+      fetchResearcherTeam();
     }, POLLING_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 채팅창 자동 스크롤
   useEffect(() => {
@@ -139,26 +153,29 @@ export default function AgentsTab() {
       undefined,
       (event: SSEEvent) => {
         if (event.event === 'message' && event.data.content) {
+          // 마지막 메시지만 교체 (전체 배열 복사 방지)
           setDirectMessages((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
+            const last = prev[prev.length - 1];
             if (last && last.role === 'assistant') {
-              updated[updated.length - 1] = { ...last, content: event.data.content! };
+              const updated = prev.slice(0, -1);
+              updated.push({ ...last, content: event.data.content! });
+              return updated;
             }
-            return updated;
+            return prev;
           });
         } else if (event.event === 'tool_call' && event.data.tool) {
           setDirectMessages((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
+            const last = prev[prev.length - 1];
             if (last && last.role === 'assistant') {
               const tool = `${event.data.tool} (${event.data.status ?? 'done'})`;
-              updated[updated.length - 1] = {
+              const updated = prev.slice(0, -1);
+              updated.push({
                 ...last,
                 toolCalls: [...(last.toolCalls || []), tool],
-              };
+              });
+              return updated;
             }
-            return updated;
+            return prev;
           });
         } else if (event.event === 'error') {
           setDirectMessages((prev) => {
@@ -361,6 +378,40 @@ export default function AgentsTab() {
           </div>
         )}
 
+        {/* JX_RESEARCHER 전문가 팀 */}
+        {researcherTeam.length > 0 && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Search size={11} className="text-blue-400" />
+              <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wide">리서치 팀</span>
+            </div>
+            <div className="border border-dark-border rounded-xl overflow-hidden">
+              {researcherTeam.map((specialist, i) => (
+                <div
+                  key={specialist.name}
+                  className={`flex items-center gap-2 px-3 py-1.5 ${i < researcherTeam.length - 1 ? 'border-b border-dark-border' : ''}`}
+                >
+                  {getStatusDot(specialist.status)}
+                  <span className="text-xs text-zinc-300">{specialist.name.replace('JX_', '')}</span>
+                  {getStatusBadge(specialist.status)}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 조직도 */}
+        <div>
+          <button
+            onClick={() => setShowOrgChart(!showOrgChart)}
+            className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 mb-1.5 transition-colors"
+          >
+            <Users size={11} />
+            조직도 {showOrgChart ? '▲' : '▼'}
+          </button>
+          {showOrgChart && <OrgChart />}
+        </div>
+
         {/* 해고된 에이전트 */}
         {firedAgents.length > 0 && (
           <div>
@@ -398,12 +449,19 @@ export default function AgentsTab() {
       {/* ── 오른쪽 패널: 직접 채팅 ── */}
       <div className="flex-1 flex flex-col min-h-0 border border-dark-border rounded-xl overflow-hidden">
         {!chatAgent ? (
-          /* 에이전트 미선택 상태 */
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <Bot size={40} className="mx-auto mb-3 text-zinc-700" />
-              <p className="text-sm text-zinc-500">에이전트를 선택하면</p>
-              <p className="text-sm text-zinc-500">직접 대화할 수 있습니다</p>
+          /* 에이전트 미선택 — 카드 그리드로 전체 에이전트 현황 표시 */
+          <div className="flex-1 overflow-y-auto p-4">
+            <p className="text-xs text-zinc-500 mb-3">에이전트를 선택하면 직접 대화할 수 있습니다</p>
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+              {agents.map((agent) => (
+                <AgentCard
+                  key={agent.name}
+                  agent={agent}
+                  runtime={runtimeMap[agent.name] || null}
+                  onSelect={() => handleSelectAgent(agent.name)}
+                  selected={false}
+                />
+              ))}
             </div>
           </div>
         ) : (

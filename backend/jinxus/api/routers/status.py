@@ -255,6 +255,159 @@ async def reconnect_mcp_server(server_name: str):
     }
 
 
+class MCPServerAddRequest(BaseModel):
+    """동적 MCP 서버 추가 요청"""
+    name: str
+    command: str = "npx"
+    args: List[str]
+    env: Optional[dict] = None
+    allowed_agents: Optional[List[str]] = None
+    description: str = ""
+    requires_api_key: str = ""
+
+
+@router.post("/mcp/servers")
+async def add_mcp_server(request: MCPServerAddRequest):
+    """MCP 서버 동적 추가 (런타임)
+
+    npm 패키지명이나 명령어를 지정하면 즉시 연결 시도.
+    서버 재시작 시 유지하려면 별도 설정 파일에 저장 필요.
+    """
+    import logging
+    from jinxus.tools.mcp_client import get_mcp_client
+    from jinxus.config.mcp_servers import MCP_SERVERS, MCPServerConfig as ConfigMCPServerConfig
+
+    logger = logging.getLogger(__name__)
+
+    # 이름 중복 확인
+    for existing in MCP_SERVERS:
+        if existing.name == request.name:
+            raise HTTPException(status_code=409, detail=f"서버 '{request.name}'이 이미 존재합니다")
+
+    # 설정 생성
+    server_config = ConfigMCPServerConfig(
+        name=request.name,
+        command=request.command,
+        args=request.args,
+        env=request.env or {},
+        allowed_agents=request.allowed_agents or [],
+        enabled=True,
+        description=request.description,
+        requires_api_key=request.requires_api_key,
+    )
+
+    # MCP 클라이언트로 연결 시도
+    mcp_client = get_mcp_client()
+    from jinxus.tools.mcp_client import MCPServerConfig as ClientConfig
+    client_config = ClientConfig(
+        name=server_config.name,
+        command=server_config.command,
+        args=server_config.args,
+        env=server_config.env,
+        allowed_agents=server_config.allowed_agents,
+    )
+
+    success = await mcp_client.connect_server(client_config)
+    if not success:
+        return {"success": False, "error": f"서버 '{request.name}' 연결 실패"}
+
+    # 연결 성공 → 설정 리스트에 추가 (런타임 유지)
+    MCP_SERVERS.append(server_config)
+
+    # 도구 등록 (TOOL_REGISTRY에 추가)
+    from jinxus.tools import TOOL_REGISTRY
+    from jinxus.tools.mcp_client import MCPToolAdapter
+    tools = await mcp_client.list_tools(request.name)
+    registered_tools = []
+    for tool_info in tools:
+        tool_key = f"mcp:{request.name}:{tool_info['name']}"
+        adapter = MCPToolAdapter(
+            mcp_client=mcp_client,
+            server_name=request.name,
+            tool_name=tool_info["name"],
+            description=tool_info.get("description", ""),
+            input_schema=tool_info.get("input_schema", {}),
+            allowed_agents=server_config.allowed_agents,
+        )
+        TOOL_REGISTRY[tool_key] = adapter
+        registered_tools.append(tool_info["name"])
+
+    logger.info(f"[MCP] 서버 동적 추가: {request.name} ({len(registered_tools)}개 도구)")
+
+    return {
+        "success": True,
+        "server_name": request.name,
+        "tools_count": len(registered_tools),
+        "tools": registered_tools,
+        "message": f"서버 '{request.name}' 연결 및 도구 {len(registered_tools)}개 등록 완료",
+    }
+
+
+@router.delete("/mcp/servers/{server_name}")
+async def remove_mcp_server(server_name: str):
+    """MCP 서버 동적 제거"""
+    import logging
+    from jinxus.tools.mcp_client import get_mcp_client
+    from jinxus.config.mcp_servers import MCP_SERVERS
+    from jinxus.tools import TOOL_REGISTRY
+
+    logger = logging.getLogger(__name__)
+
+    # 설정에서 제거
+    found = False
+    for i, s in enumerate(MCP_SERVERS):
+        if s.name == server_name:
+            MCP_SERVERS.pop(i)
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(status_code=404, detail=f"서버 '{server_name}'을 찾을 수 없습니다")
+
+    # TOOL_REGISTRY에서 해당 서버 도구 제거
+    prefix = f"mcp:{server_name}:"
+    removed_tools = [k for k in TOOL_REGISTRY if k.startswith(prefix)]
+    for k in removed_tools:
+        del TOOL_REGISTRY[k]
+
+    # MCP 클라이언트 연결 해제 (가능한 경우)
+    mcp_client = get_mcp_client()
+    if hasattr(mcp_client, '_sessions') and server_name in mcp_client._sessions:
+        try:
+            session = mcp_client._sessions.pop(server_name, None)
+            if session:
+                await session.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"[MCP] 세션 종료 중 오류 (무시): {e}")
+
+    logger.info(f"[MCP] 서버 동적 제거: {server_name} ({len(removed_tools)}개 도구 해제)")
+
+    return {
+        "success": True,
+        "server_name": server_name,
+        "removed_tools": len(removed_tools),
+        "message": f"서버 '{server_name}' 제거 완료 ({len(removed_tools)}개 도구 해제)",
+    }
+
+
+@router.post("/mcp/servers/{server_name}/test")
+async def test_mcp_server(server_name: str):
+    """MCP 서버 연결 테스트 (도구 목록 반환)"""
+    from jinxus.tools.mcp_client import get_mcp_client
+
+    mcp_client = get_mcp_client()
+    if server_name not in mcp_client.connected_servers:
+        return {"success": False, "error": f"서버 '{server_name}'이 연결되지 않았습니다"}
+
+    tools = await mcp_client.list_tools(server_name)
+    return {
+        "success": True,
+        "server_name": server_name,
+        "tools_count": len(tools),
+        "tools": [{"name": t["name"], "description": t.get("description", "")[:100]} for t in tools],
+    }
+
+
 @router.get("/tool-policies")
 async def get_tool_policies():
     """에이전트별 도구 정책 조회"""

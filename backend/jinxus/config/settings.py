@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """JINXUS 설정 - Pydantic BaseSettings로 환경변수 자동 로드"""
 
     # 버전
-    jinxus_version: str = Field(default="1.9.6")
+    jinxus_version: str = Field(default="2.3.0")
 
     # 서버
     jinxus_host: str = Field(default="0.0.0.0")

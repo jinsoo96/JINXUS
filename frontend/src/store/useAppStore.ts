@@ -15,7 +15,7 @@ interface AppState {
   _agentsLoading: boolean;
 
   // 현재 탭
-  activeTab: 'dashboard' | 'chat' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
+  activeTab: 'dashboard' | 'chat' | 'projects' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
 
   // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
   logsAgentFilter: string;
@@ -51,12 +51,11 @@ export const useAppStore = create<AppState>((set) => ({
   // 채팅 액션
   addMessage: (message) =>
     set((state) => {
-      const newMessages = [...state.messages, message];
-      // 최대 300개 유지 (메모리 누수 방지)
-      if (newMessages.length > 300) {
-        return { messages: newMessages.slice(-300) };
+      // 300개 초과 시 앞쪽 50개 제거 (매번 1개씩 자르지 않고 배치 트림)
+      if (state.messages.length >= 300) {
+        return { messages: [...state.messages.slice(-250), message] };
       }
-      return { messages: newMessages };
+      return { messages: [...state.messages, message] };
     }),
 
   setLoading: (loading) => set({ isLoading: loading }),

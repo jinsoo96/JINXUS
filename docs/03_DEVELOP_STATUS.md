@@ -1,5 +1,74 @@
 # JINXUS 개발 현황
 
+## 버전 v2.3.0 (2026-03-15) — 자율 프로젝트 실행 강화 (자동 라우팅 + 아티팩트 + 리뷰 루프 + 프로세스 관리)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| ROUTE-1 | Smart Router (자동 라우팅) | `core/smart_router.py` | 사용자 메시지를 chat/task/background/project 4단계로 자동 분류. 패턴 매칭 → LLM 폴백 2단계 분류 |
+| ROUTE-2 | `/chat/smart` 엔드포인트 | `api/routers/chat.py` | 자동 라우팅 SSE 스트리밍. chat/task → 기존 JINXUS_CORE, background → BackgroundWorker, project → ProjectManager 자동 연결 |
+| ROUTE-3 | 프론트엔드 스마트 API | `frontend/src/lib/api.ts` | `chatApi.streamSmart()` 추가 |
+| ART-1 | Artifact Store | `core/artifact_store.py` | Redis 기반 페이즈 간 아티팩트 공유. file/data/code/report 4종. 자동 추출 (파일경로, 코드블록, 보고서) |
+| ART-2 | ProjectManager 아티팩트 통합 | `core/project_manager.py` | 페이즈 완료 시 아티팩트 자동 추출, 후속 페이즈에 아티팩트 컨텍스트 주입, 프로젝트 삭제 시 아티팩트 정리 |
+| ART-3 | 아티팩트 API | `api/routers/projects.py` | `GET /projects/{id}/artifacts` 엔드포인트 추가 |
+| REVIEW-1 | Review→Fix Loop | `core/review_loop.py` | LLM 기반 코드 리뷰. critical/warning 이슈 감지 → 수정 지시 생성. 최대 2회 반복 |
+| REVIEW-2 | ProjectManager 리뷰 통합 | `core/project_manager.py` | 코딩 페이즈 완료 시 자동 리뷰 → 이슈 발견 시 수정 페이즈 동적 추가. depends_on 자동 재배선 |
+| PROC-1 | Subprocess Manager | `core/subprocess_manager.py` | 장기 프로세스 시작/중지/재시작/헬스체크. 로그 버퍼, 자동 재시작, 보안 검증 (명령어/디렉토리 화이트리스트) |
+| PROC-2 | 프로세스 관리 API | `api/routers/processes.py` | `/processes` CRUD + `/logs` + `/health` 엔드포인트 |
+| PROC-3 | 서버 종료 시 프로세스 정리 | `api/server.py` | lifespan 종료 시 `SubprocessManager.stop_all()` 호출 |
+| FIX-1 | WAITING 페이즈 디스패치 누락 수정 | `core/project_manager.py` | `_dispatch_ready_phases`에서 `PENDING`만 체크 → `WAITING`도 포함. WAITING 상태 페이즈가 영원히 대기하던 버그 |
+| FIX-2 | 수정 페이즈 리뷰 스킵 | `core/project_manager.py` | `is_fix_phase=True`인 페이즈는 리뷰 대상에서 제외. 무한 수정 체인 방지 |
+| FIX-3 | 빈 결과 리뷰 방지 | `core/project_manager.py` | 결과가 50자 미만이거나 "계획 생성 실패"인 경우 리뷰 스킵. 의미없는 수정 페이즈 생성 방지 |
+| FIX-5 | 페이즈 지시에 파일 생성 명시 | `core/project_manager.py` | `_DECOMPOSE_PROMPT`에 mcp:filesystem/code_executor로 실제 파일 생성하라는 규칙 추가 |
+| FIX-6 | BackgroundWorker 작업 유실 대응 | `core/project_manager.py` | `_phase_watcher`에서 task가 None인 경우 (조기 정리됨) 완료 처리. 페이즈가 영원히 running 상태로 남는 버그 |
+| ROUTE-4 | Smart Router 분류 정확도 개선 | `core/smart_router.py` | 프로젝트 패턴 확대 (파이프라인, 에이전트, 구조 등), 복합 마커 + 프로젝트 패턴 조합 판정, 백그라운드 패턴 엄격화 |
+
+---
+
+## 버전 v2.2.0 (2026-03-14) — 성능/메모리 누수 패치 + 동시성 개선 + 프론트엔드 연동 + 정리
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| PERF-1 | Anthropic API 비블로킹화 | `jinxus_core.py`, `base_agent.py`, `dynamic_executor.py` | `self._client.messages.create()` → `asyncio.to_thread()` 래핑. 동시 채팅 요청 시 이벤트루프 블로킹 제거. 10개 호출 지점 전부 적용 |
+| LEAK-1 | `_cancel_events` TTL 자동 정리 | `api/routers/chat.py` | `Dict[str, Event]` → `Dict[str, tuple[Event, float]]`. 10분 TTL 초과 좀비 엔트리 자동 제거 |
+| LEAK-2 | 시스템 프롬프트 캐시 크기 제한 | `tools/dynamic_executor.py` | `_enhanced_system_prompt_cache` 무제한 → 최대 8개 (LRU 방식) |
+| LEAK-3 | BackgroundWorker 완료 작업 정리 확장 | `core/background_worker.py` | `clear_completed_tasks()`에서 `_event_subscribers`, `_waiting_tasks`, `_autonomous_runners` 함께 정리 |
+| LEAK-4 | JinxMemory.close() 서버 종료 시 호출 | `api/server.py` | lifespan 종료 시 ThreadPoolExecutor 쓰기 풀 안전 종료 |
+| FIX-1 | 세마포어 TOCTTOU 수정 | `api/routers/chat.py` | `sem._value` (비공개 API) → `sem.locked()` (공개 API) |
+| FIX-2 | executor 싱글톤 race condition | `tools/dynamic_executor.py` | double-check locking 패턴 (`threading.Lock`) 적용 |
+| FE-1 | AgentCard AgentsTab 연동 | `components/tabs/AgentsTab.tsx` | 에이전트 미선택 시 오른쪽 패널에 AgentCard 그리드 표시 |
+| FE-2 | OrgChart AgentsTab 연동 | `components/tabs/AgentsTab.tsx` | 왼쪽 패널 하단에 조직도 토글 섹션 추가 |
+| INF-1 | daemon.sh Linux systemd 수정 | `daemon.sh` | ExecStart → uvicorn 직접 실행, Restart=always, journalctl 로그 |
+| CLN-1 | 미사용 파일 삭제 | 4개 파일 | `wrrf_weights.py` (빈 파일), macOS plist 2개, `frontend/rebuild.sh` |
+| OPS-1 | JX_OPS 도구 초기화 보호 | `agents/jx_ops.py` | 각 도구 개별 try/except. 하나 실패해도 나머지 도구 정상 작동 |
+| COLLAB-1 | 실패 서브태스크 재분배 | `agents/jinxus_core.py` | `_reassign_failed_tasks()`: 에이전트 A 실패 → 대체 에이전트 B에 재위임. `_REASSIGN_MAP` 기반 역량 매칭 |
+| MCP-1 | MCP 서버 6개 추가 | `config/mcp_servers.py` | firecrawl, postgres, sentry, todoist + 조건부 활성화 (API 키 기반) |
+| MCP-2 | 동적 MCP 로더 API | `api/routers/status.py` | `POST/DELETE /status/mcp/servers` — URL/npm 패키지 입력 → 즉시 연결/등록/제거 |
+| MCP-3 | 동적 MCP 로더 UI | `components/tabs/ToolsTab.tsx` | MCP 탭에 "서버 추가" 폼 + 삭제 버튼. 서버명/패키지/환경변수/에이전트 설정 |
+| TOOL-1 | data_processor 네이티브 도구 | `tools/data_processor.py` | pandas 기반 CSV/Excel/JSON 분석 (read, describe, filter, query, convert) |
+| TOOL-2 | doc_generator 네이티브 도구 | `tools/doc_generator.py` | python-docx/python-pptx 기반 Word/PPT 문서 생성 (마크다운 → 문서 변환) |
+| TOOL-3 | Tool Policy 확장 | `core/tool_policy.py` | JX_WRITER/JX_ANALYST에 data_processor, doc_generator, firecrawl 추가 |
+| PKG-1 | 패키지 설치 | `requirements.txt` | pdfplumber, feedparser, pandas, openpyxl, python-docx, python-pptx |
+
+---
+
+## 버전 v2.1.0 (2026-03-13) — 리서치팀 체계 + SSE 로그 수정 + 프론트엔드 성능
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| TEAM-R1 | JX_RESEARCHER 팀 오케스트레이터 승격 | `agents/jx_researcher.py` | JX_CODER 패턴 적용. `_decompose_research()` → delegate/direct 모드 분기. 전문가 팀 병렬/순차 실행 + fallback |
+| TEAM-R2 | JX_WEB_SEARCHER 신규 | `agents/research/jx_web_searcher.py` | 웹/뉴스 검색, 실시간 정보 수집 전문가. Brave Search, 네이버, RSS, 커뮤니티 |
+| TEAM-R3 | JX_DEEP_READER 신규 | `agents/research/jx_deep_reader.py` | 문서/PDF/이미지 심층 분석, GitHub 코드 분석 전문가 |
+| TEAM-R4 | JX_FACT_CHECKER 신규 | `agents/research/jx_fact_checker.py` | 교차 검증, 출처 신뢰도 평가, 팩트체크 전문가 |
+| TEAM-R5 | 리서치팀 레지스트리 | `agents/research/__init__.py` | RESEARCH_SPECIALISTS 딕셔너리 (코딩팀과 동일 패턴) |
+| TEAM-R6 | 리서치팀 Tool Policy | `core/tool_policy.py` | JX_WEB_SEARCHER, JX_DEEP_READER, JX_FACT_CHECKER 각각 전용 정책 |
+| TEAM-R7 | 리서치팀 API 엔드포인트 | `api/routers/agents.py` | `GET /agents/JX_RESEARCHER/team` 추가 |
+| SSE-1 | BackgroundWorker 이벤트 버퍼 | `core/background_worker.py` | `_event_buffer` 추가. 구독 전 발생한 이벤트 보관 → 구독 시 자동 replay. 실시간 로그 유실 방지 |
+| FE-P1 | 비활성 탭 폴링 중지 | `app/page.tsx`, `DashboardTab.tsx`, `AgentsTab.tsx` | `isActive` prop 추가. 숨겨진 탭에서 폴링 완전 중지 → 탭 전환 시 랙 해소 |
+| FE-P2 | AgentsTab 리서치팀 UI | `components/tabs/AgentsTab.tsx` | 코더팀 아래 리서치팀 목록 표시 (Search 아이콘, 상태 배지) |
+| FE-P3 | API 클라이언트 확장 | `lib/api.ts` | `agentApi.getResearcherTeam()` 추가 |
+
+---
+
 ## 버전 v2.0.1 (2026-03-13) — 프론트엔드 버그 수정 + SelfModifier 워크스페이스 확장
 
 | # | 항목 | 파일 | 설명 |

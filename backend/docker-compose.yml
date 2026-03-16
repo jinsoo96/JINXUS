@@ -30,11 +30,13 @@ services:
       retries: 3
       start_period: 30s
     volumes:
-      - ./jinxus:/app/jinxus    # 소스코드 마운트 (코드 변경 시 restart만 하면 됨)
+      - ./jinxus:/app/jinxus           # Python 소스 (코드 변경 → restart만)
+      - ./requirements.txt:/app/requirements.txt  # 패키지 목록 (변경 → restart 시 자동 pip install)
+      - ./entrypoint.sh:/app/entrypoint.sh  # 엔트리포인트
       - ./data:/app/data
       - ./prompts:/app/prompts
-      - /home/jinsookim:/home/jinsookim:rw  # filesystem MCP용 — 에이전트가 프로젝트 파일 직접 수정
-      - /var/run/docker.sock:/var/run/docker.sock:ro  # self_modifier: 자기 재시작용
+      - /home/jinsookim:/home/jinsookim:rw  # filesystem MCP용
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker 소켓
 
   redis:
     image: redis:7-alpine

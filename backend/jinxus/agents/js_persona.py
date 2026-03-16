@@ -446,7 +446,7 @@ class JSPersona:
             return {
                 "success": False,
                 "score": 0.0,
-                "output": "",
+                "output": f"작업 실행 중 오류: {str(e)[:200]}",
                 "error": str(e),
             }
 

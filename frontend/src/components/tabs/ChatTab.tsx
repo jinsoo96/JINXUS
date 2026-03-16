@@ -1,16 +1,101 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { chatApi, feedbackApi, taskApi, type ChatSession, type SSEEvent } from '@/lib/api';
+import { createSmoothStreamer } from '@/lib/smooth-streaming';
 import {
   Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2,
-  MessageSquare, RefreshCw, ChevronDown, Brain
+  MessageSquare, RefreshCw, ChevronDown, Brain, Terminal
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import ThinkingPanel, { type ThinkingLog } from '@/components/ThinkingPanel';
 import MarkdownRenderer from '@/components/MarkdownRenderer';
+import DockerLogPanel from '@/components/DockerLogPanel';
 import toast from 'react-hot-toast';
+
+// ── Memo된 메시지 컴포넌트 ──
+const ChatMessageItem = memo(function ChatMessageItem({
+  message,
+  onFeedback,
+}: {
+  message: ChatMessage;
+  onFeedback: (taskId: string, score: number) => void;
+}) {
+  const isUser = message.role === 'user';
+
+  return (
+    <div className={`flex gap-4 ${isUser ? 'flex-row-reverse' : ''}`}>
+      {/* 아바타 */}
+      {isUser ? (
+        <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 bg-primary">
+          <User size={20} />
+        </div>
+      ) : (
+        <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
+          <img
+            src="/jinxus-mascot.png"
+            alt="JINXUS"
+            width={40}
+            height={40}
+            className="w-full h-full object-cover object-top scale-150"
+          />
+        </div>
+      )}
+
+      {/* 메시지 내용 */}
+      <div className={`flex-1 ${isUser ? 'max-w-[75%] text-right' : 'max-w-[92%]'}`}>
+        <div
+          className={`inline-block p-4 rounded-2xl ${
+            isUser
+              ? 'bg-primary text-white rounded-tr-none'
+              : 'bg-dark-card border border-dark-border rounded-tl-none'
+          }`}
+        >
+          {isUser ? (
+            <div className="whitespace-pre-wrap">{message.content}</div>
+          ) : (
+            <MarkdownRenderer content={message.content} />
+          )}
+        </div>
+
+        {/* 메타 정보 */}
+        <div
+          className={`mt-2 flex items-center gap-2 text-xs text-zinc-500 ${
+            isUser ? 'justify-end' : ''
+          }`}
+        >
+          <span>{message.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}</span>
+          {message.agentsUsed && message.agentsUsed.length > 0 && (
+            <span className="text-primary">
+              {message.agentsUsed.join(', ')}
+            </span>
+          )}
+        </div>
+
+        {/* 피드백 버튼 (AI 응답에만) */}
+        {!isUser && (
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={() => onFeedback(message.id, 5)}
+              className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-green-400 transition-colors"
+              title="좋아요"
+            >
+              <ThumbsUp size={16} />
+            </button>
+            <button
+              onClick={() => onFeedback(message.id, 1)}
+              className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-red-400 transition-colors"
+              title="싫어요"
+            >
+              <ThumbsDown size={16} />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
 
 export default function ChatTab() {
   const { messages, addMessage, isLoading, setLoading, sessionId, setSessionId, clearMessages } = useAppStore();
@@ -24,12 +109,22 @@ export default function ChatTab() {
 
   // AbortController for SSE cancellation on unmount
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamerRef = useRef<ReturnType<typeof createSmoothStreamer> | null>(null);
+
+  // SSE abort 유틸 (5곳 중복 제거)
+  const abortSSE = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }, []);
 
   // Thinking Panel 상태
   const [thinkingLogs, setThinkingLogs] = useState<ThinkingLog[]>([]);
   const [showThinking, setShowThinking] = useState(true);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [isBackgroundTask, setIsBackgroundTask] = useState(false);
+  const [showDockerLogs, setShowDockerLogs] = useState(false);
 
 
   // Thinking 로그 추가 헬퍼
@@ -48,10 +143,7 @@ export default function ChatTab() {
   const handleStopTask = async () => {
     try {
       // 1. 프론트엔드 SSE 연결 즉시 중단 (taskId 유무 무관)
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
+      abortSSE();
 
       // 2. 백엔드에 취소 알림 (taskId 있을 때만)
       if (currentTaskId) {
@@ -142,10 +234,7 @@ export default function ChatTab() {
     setThinkingLogs([]);
 
     // 2. SSE 연결 중단
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
+    abortSSE();
 
     // 3. 백엔드 정리 (비동기)
     const sid = sessionId;
@@ -165,8 +254,20 @@ export default function ChatTab() {
     }
   };
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+
   const scrollToBottom = () => {
+    // 사용자가 위로 스크롤한 경우 강제 스크롤하지 않음
+    if (!isNearBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // 하단 100px 이내면 "바닥 근처"로 판정
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
   };
 
   // 컴포넌트 마운트 시 잔여 상태 정리 & 언마운트 시 SSE 정리
@@ -180,28 +281,12 @@ export default function ChatTab() {
     }
 
     // 컴포넌트 언마운트 시 SSE 연결 정리
-    return () => {
-      if (abortControllerRef.current) {
-        console.log('ChatTab unmount: aborting SSE connection');
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-    };
+    return () => { abortSSE(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, streamingContent]);
-
-  // 컴포넌트 unmount 시 SSE 정리 (메모리 누수 방지)
-  useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-    };
-  }, []);
 
   // 로딩 타임아웃: SSE 채팅만 적용 (background task는 자체 타임아웃 있으므로 제외)
   useEffect(() => {
@@ -268,6 +353,10 @@ export default function ChatTab() {
     let taskId = '';
     let newSessionId = sessionId;
 
+    // 타이핑 애니메이션 큐 (NextChat 패턴)
+    const streamer = createSmoothStreamer((text) => setStreamingContent(text));
+    streamerRef.current = streamer;
+
     // 새 AbortController 생성
     abortControllerRef.current = new AbortController();
 
@@ -319,10 +408,10 @@ export default function ChatTab() {
               );
               break;
             case 'message':
-              // content 필드에 청크 데이터가 있음
+              // content 청크 → 타이핑 애니메이션 큐 (NextChat 패턴: rAF + 글자 단위 출력)
               if (event.data.content) {
                 fullResponse += event.data.content;
-                setStreamingContent(fullResponse);
+                streamer.push(event.data.content);
               }
               break;
             case 'log':
@@ -332,7 +421,9 @@ export default function ChatTab() {
               }
               break;
             case 'done':
+              // 타이핑 큐 플러시 — 잔여 텍스트 즉시 출력
               fullResponse = event.data.response || fullResponse;
+              streamer.flush();
               agentsUsed = event.data.agents_used || agentsUsed;
               addThinkingLog('done', '응답 완료', undefined, 'done');
               break;
@@ -561,14 +652,6 @@ export default function ChatTab() {
     }
   };
 
-  const handleFeedback = async (taskId: string, score: number) => {
-    try {
-      await feedbackApi.submit(taskId, score);
-    } catch (error) {
-      console.error('Failed to submit feedback:', error);
-    }
-  };
-
   const getSessionIcon = (type: string) => {
     switch (type) {
       case 'telegram': return '📱';
@@ -588,86 +671,13 @@ export default function ChatTab() {
     return date.toLocaleDateString();
   };
 
-  const renderMessage = (message: ChatMessage) => {
-    const isUser = message.role === 'user';
-
-    return (
-      <div
-        key={message.id}
-        className={`flex gap-4 ${isUser ? 'flex-row-reverse' : ''}`}
-      >
-        {/* 아바타 */}
-        {isUser ? (
-          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 bg-primary">
-            <User size={20} />
-          </div>
-        ) : (
-          <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
-            <img
-              src="/jinxus-mascot.png"
-              alt="JINXUS"
-              width={40}
-              height={40}
-              className="w-full h-full object-cover object-top scale-150"
-            />
-          </div>
-        )}
-
-        {/* 메시지 내용 */}
-        <div
-          className={`flex-1 ${isUser ? 'max-w-[75%] text-right' : 'max-w-[92%]'}`}
-        >
-          <div
-            className={`inline-block p-4 rounded-2xl ${
-              isUser
-                ? 'bg-primary text-white rounded-tr-none'
-                : 'bg-dark-card border border-dark-border rounded-tl-none'
-            }`}
-          >
-            {isUser ? (
-                <div className="whitespace-pre-wrap">{message.content}</div>
-              ) : (
-                <MarkdownRenderer content={message.content} />
-              )}
-          </div>
-
-          {/* 메타 정보 */}
-          <div
-            className={`mt-2 flex items-center gap-2 text-xs text-zinc-500 ${
-              isUser ? 'justify-end' : ''
-            }`}
-          >
-            <span>{message.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}</span>
-            {message.agentsUsed && message.agentsUsed.length > 0 && (
-              <span className="text-primary">
-                {message.agentsUsed.join(', ')}
-              </span>
-            )}
-          </div>
-
-          {/* 피드백 버튼 (AI 응답에만) */}
-          {!isUser && (
-            <div className="mt-2 flex gap-2">
-              <button
-                onClick={() => handleFeedback(message.id, 5)}
-                className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-green-400 transition-colors"
-                title="좋아요"
-              >
-                <ThumbsUp size={16} />
-              </button>
-              <button
-                onClick={() => handleFeedback(message.id, 1)}
-                className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-red-400 transition-colors"
-                title="싫어요"
-              >
-                <ThumbsDown size={16} />
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
+  const handleFeedbackCb = useCallback(async (taskId: string, score: number) => {
+    try {
+      await feedbackApi.submit(taskId, score);
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+    }
+  }, []);
 
   return (
     <div className="h-full flex flex-col">
@@ -705,30 +715,8 @@ export default function ChatTab() {
 
                 {/* 새 대화 버튼 */}
                 <button
-                  onClick={async () => {
-                    // 1. SSE 연결 즉시 중단
-                    if (abortControllerRef.current) {
-                      abortControllerRef.current.abort();
-                      abortControllerRef.current = null;
-                    }
-
-                    // 2. 백엔드에 취소 알림
-                    if (currentTaskId) {
-                      try {
-                        await chatApi.cancelStream(currentTaskId);
-                      } catch (e) {
-                        console.warn('Cancel failed:', e);
-                      }
-                    }
-
-                    // 3. 모든 상태 초기화
-                    setLoading(false);
-                    setStreamingContent('');
-                    setCurrentAgent(null);
-                    setCurrentTaskId(null);
-                    setThinkingLogs([]);
-                    clearMessages();
-                    setSessionId('');
+                  onClick={() => {
+                    handleClearChat();
                     setShowSessions(false);
                   }}
                   className="w-full px-3 py-2 text-left hover:bg-zinc-800 flex items-center gap-2 text-sm"
@@ -804,28 +792,48 @@ export default function ChatTab() {
             </button>
           )}
 
-          {/* Thinking Panel 토글 */}
+          {/* 오른쪽 패널 탭 전환: 실행 로그 / Docker */}
           <button
-            onClick={() => setShowThinking(!showThinking)}
+            onClick={() => { setShowThinking(true); setShowDockerLogs(false); }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-              showThinking
+              showThinking && !showDockerLogs
                 ? 'bg-primary/20 text-primary'
                 : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
             }`}
-            title="Thinking Log 토글"
+            title="실행 로그"
           >
             <Brain size={14} className={isLoading ? 'animate-pulse' : ''} />
             로그
           </button>
+          <button
+            onClick={() => {
+              if (showDockerLogs) {
+                setShowDockerLogs(false);
+                setShowThinking(true);
+              } else {
+                setShowDockerLogs(true);
+                setShowThinking(false);
+              }
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              showDockerLogs
+                ? 'bg-green-500/20 text-green-400'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+            title="Docker 로그"
+          >
+            <Terminal size={14} />
+            Docker
+          </button>
         </div>
       </div>
 
-      {/* 채팅 + Thinking 패널 래퍼 */}
+      {/* 채팅 + 오른쪽 패널 래퍼 */}
       <div className="flex-1 flex overflow-hidden">
         {/* 채팅 영역 */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* 메시지 목록 */}
-          <div className="flex-1 overflow-y-auto space-y-6 pb-4 pr-2">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto space-y-6 pb-4 pr-2">
         {messages.length === 0 && !streamingContent ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
@@ -846,7 +854,9 @@ export default function ChatTab() {
           </div>
         ) : (
           <>
-            {messages.map(renderMessage)}
+            {messages.map(msg => (
+              <ChatMessageItem key={msg.id} message={msg} onFeedback={handleFeedbackCb} />
+            ))}
 
             {/* 스트리밍 중인 메시지 */}
             {streamingContent && (
@@ -931,8 +941,8 @@ export default function ChatTab() {
       </form>
         </div>
 
-        {/* Thinking Panel */}
-        {showThinking && (
+        {/* 오른쪽 패널: 실행 로그 또는 Docker 로그 */}
+        {showThinking && !showDockerLogs && (
           <ThinkingPanel
             logs={thinkingLogs}
             isActive={isLoading}
@@ -941,6 +951,9 @@ export default function ChatTab() {
             onClose={() => setShowThinking(false)}
             messages={messages}
           />
+        )}
+        {showDockerLogs && (
+          <DockerLogPanel onClose={() => setShowDockerLogs(false)} />
         )}
       </div>
     </div>

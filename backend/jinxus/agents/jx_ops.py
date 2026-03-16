@@ -50,11 +50,22 @@ class JXOps:
         self._memory = get_jinx_memory()
         self._prompt_version = "v1.0"
 
-        # 실제 도구 초기화
-        self._github = GitHubAgent()
-        self._scheduler = Scheduler()
-        self._file_manager = FileManager()
-        self._system_manager = SystemManager()
+        # 도구 초기화 (개별 보호 — 하나 실패해도 나머지 사용 가능)
+        self._github = None
+        self._scheduler = None
+        self._file_manager = None
+        self._system_manager = None
+
+        for name, factory in [
+            ("github", lambda: GitHubAgent()),
+            ("scheduler", lambda: Scheduler()),
+            ("file_manager", lambda: FileManager()),
+            ("system_manager", lambda: SystemManager()),
+        ]:
+            try:
+                setattr(self, f"_{name}", factory())
+            except Exception as e:
+                logger.error(f"[JX_OPS] 도구 초기화 실패 ({name}): {e}")
 
         # 상태 추적기 (실시간 UI 연동)
         self._state_tracker = get_state_tracker()

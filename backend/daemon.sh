@@ -207,12 +207,13 @@ After=network.target docker.service
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$PYTHON_BIN main.py
-Restart=on-failure
+ExecStart=$PYTHON_BIN -m uvicorn jinxus.api.server:app --host 0.0.0.0 --port 19000
+Restart=always
 RestartSec=5
-StandardOutput=append:$LOG_FILE
-StandardError=append:$ERROR_LOG
+StandardOutput=journal
+StandardError=journal
 Environment=PATH=$SCRIPT_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-$SCRIPT_DIR/.env
 
 [Install]

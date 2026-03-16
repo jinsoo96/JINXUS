@@ -3,7 +3,7 @@
 #
 # 사용법:
 #   bash dev.sh          — 서버 시작/재시작 (HMR 유지, 빠름)
-#   bash dev.sh --clean  — .next 삭제 후 클린 재시작 (패키지 추가/이상 시)
+#   bash dev.sh --clean  — node_modules + .next 삭제 후 클린 재시작
 #   bash dev.sh --stop   — 서버 중지
 #   bash dev.sh --log    — 실시간 로그
 
@@ -24,11 +24,24 @@ fi
 cd "$DIR"
 mkdir -p "$DIR/logs"
 
-# --clean 플래그: .next 삭제
+# --clean 플래그: node_modules + .next 삭제
 if [ "$1" = "--clean" ]; then
-  echo "[JINXUS] 클린 빌드 (캐시 삭제 중...)"
-  rm -rf "$DIR/.next"
+  echo "[JINXUS] 클린 빌드 (캐시 + node_modules 삭제 중...)"
+  rm -rf "$DIR/.next" "$DIR/node_modules"
   PORT=5000
+fi
+
+# package.json 해시 비교 → 변경 시 자동 npm install
+HASH_FILE="$DIR/.package_hash"
+CURRENT_HASH=$(md5sum "$DIR/package.json" 2>/dev/null | cut -d' ' -f1)
+SAVED_HASH=""
+[ -f "$HASH_FILE" ] && SAVED_HASH=$(cat "$HASH_FILE")
+
+if [ "$CURRENT_HASH" != "$SAVED_HASH" ] || [ ! -d "$DIR/node_modules" ]; then
+  echo "[JINXUS] package.json 변경 감지 → npm install 실행..."
+  npm install --prefer-offline 2>&1 | tail -3
+  echo "$CURRENT_HASH" > "$HASH_FILE"
+  echo "[JINXUS] npm install 완료"
 fi
 
 # 기존 pm2 프로세스 종료

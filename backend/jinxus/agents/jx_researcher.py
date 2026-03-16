@@ -1,19 +1,25 @@
-"""JX_RESEARCHER - 정보 수집/분석/요약 전문 에이전트
+"""JX_RESEARCHER - 리서치팀 오케스트레이터
 
-LangGraph 패턴 적용:
-- retry 로직 (최대 3회, 지수 백오프)
-- reflect (반성 → 개선점 도출)
-- memory_write (장기기억 저장)
+JX_RESEARCHER는 리서치 작업의 총괄 팀장이다.
+단순 검색은 직접 처리하지만, 복잡한 조사는 전문가 팀에게 분배한다.
+
+전문가 팀:
+- JX_WEB_SEARCHER: 웹/뉴스 검색, 실시간 정보 수집
+- JX_DEEP_READER: 문서/PDF/이미지 심층 분석
+- JX_FACT_CHECKER: 교차 검증, 출처 신뢰도 평가
+
+작업 흐름:
+1. 작업 분류 → 직접 처리 or 전문가 배치
+2. 전문가 배치 (병렬 가능)
+3. 결과 수집 → 교차 검증 (선택)
+4. 최종 결과 취합 → JINXUS_CORE에 보고
 
 v2.0: DynamicToolExecutor 통합
-- MCP 도구 자동 사용 (brave-search, fetch, playwright 등)
-- Claude tool_use 기반 동적 도구 선택
-
-v2.1: 출력 정제
-- XML 태그 자동 제거
-- 날짜 자동 변환
+v2.1: 출력 정제 (XML 태그 제거)
+v3.0: 리서치팀 오케스트레이터 승격
 """
 import asyncio
+import json
 import logging
 import uuid
 import time
@@ -33,7 +39,9 @@ logger = logging.getLogger("jinxus.agents.jx_researcher")
 
 
 class JXResearcher:
-    """리서치 전문가 에이전트
+    """리서치팀 오케스트레이터
+
+    단순 검색은 직접 처리, 복잡한 조사는 전문가 팀에게 분배.
 
     블루프린트 그래프 구조:
     [receive] → [plan] → [execute] → [evaluate] → [reflect] → [memory_write] → [return_result]
@@ -42,7 +50,7 @@ class JXResearcher:
     """
 
     name = "JX_RESEARCHER"
-    description = "정보 수집, 분석, 요약을 전담하는 에이전트"
+    description = "리서치팀 총괄 오케스트레이터 (웹검색/문서분석/팩트체크 전문가 팀 보유)"
     max_retries = 3
 
     def __init__(self):
@@ -55,19 +63,253 @@ class JXResearcher:
         self._naver_client_id = settings.naver_client_id
         self._naver_client_secret = settings.naver_client_secret
         self._memory = get_jinx_memory()
-        self._prompt_version = "v2.0"  # 동적 도구 실행 버전
+        self._prompt_version = "v3.0"  # 팀 오케스트레이터 버전
         # 동적 도구 실행기 (MCP 포함)
         self._executor: Optional[DynamicToolExecutor] = None
         self._use_dynamic_tools = settings.use_dynamic_tools if hasattr(settings, 'use_dynamic_tools') else True
         # 상태 추적기 (실시간 UI 연동)
         self._state_tracker = get_state_tracker()
         self._state_tracker.register_agent(self.name)
+        self._progress_callback = None
+
+        # 전문가 팀 (지연 초기화)
+        self._specialists: dict = {}
+        self._specialists_initialized = False
 
     def _get_executor(self) -> DynamicToolExecutor:
         """동적 도구 실행기 지연 로드"""
         if self._executor is None:
             self._executor = get_dynamic_executor(self.name)
         return self._executor
+
+    def _init_specialists(self):
+        """전문가 팀 지연 초기화"""
+        if self._specialists_initialized:
+            return
+        try:
+            from jinxus.agents.research import RESEARCH_SPECIALISTS
+            for name, cls in RESEARCH_SPECIALISTS.items():
+                self._specialists[name] = cls()
+                logger.info(f"[JX_RESEARCHER] 전문가 등록: {name}")
+            self._specialists_initialized = True
+        except Exception as e:
+            logger.error(f"[JX_RESEARCHER] 전문가 팀 초기화 실패: {e}")
+
+    async def _decompose_research(self, instruction: str) -> dict:
+        """리서치 작업을 분석하여 전문가 배치 계획 수립"""
+        decompose_prompt = f"""리서치 작업을 분석하여 전문가 배치를 결정해.
+
+작업: "{instruction}"
+
+사용 가능한 전문가:
+- JX_WEB_SEARCHER: 웹/뉴스 검색, 실시간 정보 수집 (날씨, 주가, 뉴스, 트렌드 등)
+- JX_DEEP_READER: 문서/PDF/이미지 심층 분석, 웹페이지 깊은 내용 파악, GitHub 소스코드 분석
+- JX_FACT_CHECKER: 교차 검증, 출처 신뢰도 평가, 정보 정확성 확인
+
+판단 기준:
+- 단순 검색 (날씨, 뉴스, 시세 등): "direct" (내가 직접 처리)
+- 깊은 조사 (비교 분석, 논문 리뷰 등): 전문가 2명 이상 배치
+- 문서/코드 분석: JX_DEEP_READER 배치
+- 중요한 사실 확인이 필요한 경우: needs_verification=true → JX_FACT_CHECKER 후속
+- 여러 출처 수집 + 분석: JX_WEB_SEARCHER → JX_DEEP_READER 순차
+
+JSON으로 답변:
+{{
+    "mode": "direct 또는 delegate",
+    "specialists": ["필요한 전문가 이름"],
+    "tasks": [
+        {{"agent": "전문가 이름", "instruction": "구체적인 지시사항"}}
+    ],
+    "needs_verification": true/false,
+    "execution": "parallel 또는 sequential",
+    "reason": "판단 이유 한 줄"
+}}"""
+
+        try:
+            response = self._client.messages.create(
+                model=self._fast_model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": decompose_prompt}],
+            )
+            text = response.content[0].text
+
+            match = re.search(r'\{[\s\S]*\}', text)
+            if match:
+                return json.loads(match.group())
+        except Exception as e:
+            logger.warning(f"[JX_RESEARCHER] 작업 분해 실패, 직접 처리: {e}")
+
+        return {
+            "mode": "direct",
+            "specialists": [],
+            "tasks": [],
+            "needs_verification": False,
+            "execution": "parallel",
+            "reason": "분해 실패, 직접 처리",
+        }
+
+    async def _report_progress(self, message: str, agent_name: str = None):
+        """진행 상황 보고"""
+        if self._progress_callback:
+            try:
+                await self._progress_callback(message)
+            except Exception as e:
+                logger.debug(f"[JX_RESEARCHER] 프로그레스 콜백 실패: {e}")
+
+    async def _run_specialist(
+        self, agent_name: str, instruction: str, context: list = None
+    ) -> dict:
+        """전문가 에이전트 실행 (실패 시 직접 처리 fallback)"""
+        specialist = self._specialists.get(agent_name)
+        if not specialist:
+            logger.warning(f"[JX_RESEARCHER] 전문가 {agent_name} 없음, 직접 처리로 전환")
+            return await self._fallback_direct(agent_name, instruction, context)
+
+        # 프로그레스 콜백 전달
+        if self._progress_callback:
+            specialist._progress_callback = self._progress_callback
+
+        await self._report_progress(f"[{agent_name}] 작업 시작", agent_name=agent_name)
+
+        try:
+            result = await specialist.run(instruction, context)
+            status = "완료" if result.get("success") else "실패"
+            await self._report_progress(f"[{agent_name}] {status}", agent_name=agent_name)
+
+            if not result.get("success"):
+                logger.warning(f"[JX_RESEARCHER] {agent_name} 실패, 직접 처리 시도")
+                await self._report_progress(f"[{agent_name}] 실패 → JX_RESEARCHER 직접 처리로 전환")
+                fallback = await self._fallback_direct(agent_name, instruction, context)
+                if fallback.get("success"):
+                    return fallback
+            return result
+        except Exception as e:
+            logger.error(f"[JX_RESEARCHER] {agent_name} 실행 예외: {e}")
+            await self._report_progress(f"[{agent_name}] 예외 → 직접 처리 전환")
+            return await self._fallback_direct(agent_name, instruction, context)
+
+    async def _fallback_direct(
+        self, agent_name: str, instruction: str, context: list = None
+    ) -> dict:
+        """전문가 실패 시 JX_RESEARCHER가 직접 처리"""
+        start_time = time.time()
+        try:
+            result = await self._execute_with_retry(instruction, context or [], [])
+            duration_ms = int((time.time() - start_time) * 1000)
+            return {
+                "task_id": str(uuid.uuid4()),
+                "agent_name": f"{agent_name}(fallback→JX_RESEARCHER)",
+                "success": result.get("success", False),
+                "success_score": result.get("score", 0.5),
+                "output": result.get("output", ""),
+                "failure_reason": result.get("error"),
+                "duration_ms": duration_ms,
+            }
+        except Exception as e:
+            logger.error(f"[JX_RESEARCHER] fallback 직접 처리도 실패: {e}")
+            return {
+                "task_id": str(uuid.uuid4()),
+                "agent_name": f"{agent_name}(fallback→JX_RESEARCHER)",
+                "success": False,
+                "success_score": 0.0,
+                "output": f"전문가 및 직접 처리 모두 실패: {e}",
+                "failure_reason": str(e),
+                "duration_ms": int((time.time() - start_time) * 1000),
+            }
+
+    async def _execute_delegated(
+        self, plan: dict, instruction: str, context: list
+    ) -> dict:
+        """전문가 팀에게 위임 실행"""
+        self._init_specialists()
+
+        tasks = plan.get("tasks", [])
+        execution = plan.get("execution", "parallel")
+        needs_verification = plan.get("needs_verification", False)
+
+        if not tasks:
+            specialists = plan.get("specialists", [])
+            tasks = [{"agent": s, "instruction": instruction} for s in specialists]
+
+        # === 1단계: 메인 작업 실행 ===
+        await self._report_progress(
+            f"리서치팀 배치: {', '.join(t['agent'] for t in tasks)} ({execution})"
+        )
+
+        main_results = []
+
+        if execution == "parallel" and len(tasks) > 1:
+            coros = [
+                self._run_specialist(t["agent"], t["instruction"], context)
+                for t in tasks
+            ]
+            main_results = await asyncio.gather(*coros, return_exceptions=True)
+            main_results = [
+                r if isinstance(r, dict) else {
+                    "agent_name": tasks[i]["agent"],
+                    "success": False,
+                    "output": str(r),
+                    "failure_reason": str(r),
+                }
+                for i, r in enumerate(main_results)
+            ]
+        else:
+            accumulated_context = list(context) if context else []
+            for task in tasks:
+                result = await self._run_specialist(
+                    task["agent"], task["instruction"], accumulated_context
+                )
+                main_results.append(result)
+                if result.get("success"):
+                    accumulated_context.append(result)
+
+        # === 2단계: 교차 검증 (선택) ===
+        verification_results = []
+
+        if needs_verification and "JX_FACT_CHECKER" in self._specialists:
+            main_outputs = [r for r in main_results if r.get("success")]
+            if main_outputs:
+                info_summary = "\n\n".join(
+                    f"### {r.get('agent_name', '?')} 수집 결과:\n{r.get('output', '')[:1000]}"
+                    for r in main_outputs
+                )
+                verify_instruction = (
+                    f"아래 수집된 정보의 정확성을 교차 검증해줘.\n\n"
+                    f"원본 요청: {instruction}\n\n{info_summary}"
+                )
+                await self._report_progress("교차 검증 단계: JX_FACT_CHECKER")
+                verify_result = await self._run_specialist(
+                    "JX_FACT_CHECKER", verify_instruction, main_results
+                )
+                verification_results.append(verify_result)
+
+        # === 3단계: 결과 취합 ===
+        all_results = main_results + verification_results
+        all_success = all(r.get("success", False) for r in main_results)
+        avg_score = (
+            sum(r.get("success_score", 0.0) for r in all_results) / len(all_results)
+            if all_results else 0.0
+        )
+
+        output_parts = []
+        for r in all_results:
+            agent = r.get("agent_name", "?")
+            status = "성공" if r.get("success") else "실패"
+            output_parts.append(
+                f"### [{agent}] {status}\n{r.get('output', '결과 없음')[:2000]}"
+            )
+
+        combined_output = "\n\n---\n\n".join(output_parts)
+
+        return {
+            "success": all_success,
+            "score": avg_score,
+            "output": combined_output,
+            "error": None if all_success else "일부 전문가 작업 실패",
+            "sources": [],
+            "tool_calls": [],
+            "specialists_used": [t["agent"] for t in tasks],
+        }
 
     def _sanitize_output(self, text: str) -> str:
         """출력에서 XML 태그 및 도구 호출 형식 제거"""
@@ -168,14 +410,22 @@ class JXResearcher:
             except Exception as e:
                 logger.warning(f"[JXResearcher] 장기 메모리 검색 실패, 컨텍스트 없이 진행: {e}")
 
-            # === [plan] 실행 계획 ===
+            # === [plan] 작업 분해 → 직접 처리 or 팀 위임 ===
             self._state_tracker.update_node(self.name, GraphNode.PLAN)
-            plan = {"strategy": "search_and_analyze", "instruction": instruction}
+            plan = await self._decompose_research(instruction)
+            logger.info(f"[JX_RESEARCHER] 작업 모드: {plan.get('mode')} - {plan.get('reason', '')}")
 
             # === [execute] + [evaluate] + [retry] ===
             self._state_tracker.update_node(self.name, GraphNode.EXECUTE)
-            self._state_tracker.update_tools(self.name, ["naver", "tavily", "brave-search"])
-            result = await self._execute_with_retry(instruction, context, memory_context)
+
+            if plan["mode"] == "delegate" and plan.get("specialists"):
+                await self._report_progress(
+                    f"리서치 계획: {plan.get('reason', '전문가 팀 배치')}"
+                )
+                result = await self._execute_delegated(plan, instruction, context or [])
+            else:
+                self._state_tracker.update_tools(self.name, ["naver", "tavily", "brave-search"])
+                result = await self._execute_with_retry(instruction, context, memory_context)
 
             # === [evaluate] ===
             self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
@@ -414,20 +664,25 @@ simple/browser/github/file 중 하나만 답해."""
                     "raw_tool_results": result.raw_results,
                 }
             else:
+                # 도구 실패해도 부분 결과가 있으면 전달
+                partial = ""
+                for r in result.raw_results:
+                    if r.get("output"):
+                        partial += str(r["output"])[:300] + "\n"
+                fallback_output = partial.strip() if partial else f"도구 실행에 실패했습니다: {result.error or '알 수 없는 오류'}"
                 return {
-                    "success": False,
-                    "score": 0.0,
-                    "output": "",
+                    "success": bool(partial),
+                    "score": 0.3 if partial else 0.0,
+                    "output": fallback_output,
                     "error": result.error,
-                    "tool_calls": [],
+                    "tool_calls": [tc.tool_name for tc in result.tool_calls] if result.tool_calls else [],
                 }
 
         except Exception as e:
-            # 동적 도구 실패 시 폴백으로 진행
             return {
                 "success": False,
                 "score": 0.0,
-                "output": "",
+                "output": f"리서치 실행 중 오류가 발생했습니다: {str(e)[:200]}",
                 "error": str(e),
                 "tool_calls": [],
             }

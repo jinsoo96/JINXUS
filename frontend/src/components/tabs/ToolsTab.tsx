@@ -10,7 +10,7 @@ import {
   Plug, Wrench, RefreshCw, CheckCircle, AlertCircle,
   XCircle, Key, Loader2, ChevronDown, ChevronUp,
   Network, Search, ScrollText, Shield,
-  BarChart2, Package, ToggleLeft, ToggleRight,
+  BarChart2, Package, ToggleLeft, ToggleRight, Plus, Trash2,
 } from 'lucide-react';
 
 type TabId = 'mcp' | 'native' | 'graph' | 'tool-logs' | 'policies' | 'analytics' | 'plugins';
@@ -74,6 +74,82 @@ export default function ToolsTab() {
   const [pluginsLoading, setPluginsLoading] = useState(false);
   const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
+
+  // MCP 서버 추가 폼
+  const [showAddMCP, setShowAddMCP] = useState(false);
+  const [newMCP, setNewMCP] = useState({ name: '', args: '', env: '', description: '', allowed_agents: '' });
+  const [addingMCP, setAddingMCP] = useState(false);
+
+  const handleAddMCP = async () => {
+    if (!newMCP.name || !newMCP.args) { toast.error('이름과 패키지를 입력하세요'); return; }
+    setAddingMCP(true);
+    try {
+      const envObj: Record<string, string> = {};
+      if (newMCP.env) {
+        newMCP.env.split(',').forEach(kv => {
+          const [k, v] = kv.split('=').map(s => s.trim());
+          if (k && v) envObj[k] = v;
+        });
+      }
+      const result = await systemApi.addMCPServer({
+        name: newMCP.name.trim(),
+        args: ['-y', ...newMCP.args.trim().split(/\s+/)],
+        env: Object.keys(envObj).length > 0 ? envObj : undefined,
+        description: newMCP.description || undefined,
+        allowed_agents: newMCP.allowed_agents ? newMCP.allowed_agents.split(',').map(s => s.trim()) : undefined,
+      });
+      if (result.success) {
+        toast.success(`${result.server_name}: ${result.tools_count}개 도구 등록`);
+        setNewMCP({ name: '', args: '', env: '', description: '', allowed_agents: '' });
+        setShowAddMCP(false);
+        loadMCPStatus();
+      } else {
+        toast.error(result.message || '추가 실패');
+      }
+    } catch (err) {
+      toast.error(`MCP 서버 추가 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`);
+    } finally {
+      setAddingMCP(false);
+    }
+  };
+
+  const handleRemoveMCP = async (name: string) => {
+    if (!confirm(`'${name}' 서버를 제거하시겠습니까?`)) return;
+    try {
+      const result = await systemApi.removeMCPServer(name);
+      if (result.success) {
+        toast.success(result.message);
+        loadMCPStatus();
+      }
+    } catch { toast.error('제거 실패'); }
+  };
+
+  // 정책 편집
+  const [editingPolicy, setEditingPolicy] = useState<string | null>(null);
+  const [policyBlacklist, setPolicyBlacklist] = useState('');
+  const [policyNewTool, setPolicyNewTool] = useState('');
+
+  const handleSavePolicy = async (agentName: string, blacklist: string[]) => {
+    try {
+      await systemApi.updateToolPolicy(agentName, { blacklist });
+      toast.success(`${agentName} 정책 업데이트 완료`);
+      setEditingPolicy(null);
+      loadToolPolicies();
+    } catch { toast.error('정책 업데이트 실패'); }
+  };
+
+  const handleToggleAllowAll = async (agentName: string, currentWhitelist: string[] | null) => {
+    try {
+      if (currentWhitelist === null) {
+        // 모든 도구 허용 → 기본 whitelist로 전환
+        await systemApi.updateToolPolicy(agentName, { whitelist: [], allow_all: false });
+      } else {
+        await systemApi.updateToolPolicy(agentName, { allow_all: true });
+      }
+      toast.success(`${agentName} 정책 변경됨`);
+      loadToolPolicies();
+    } catch { toast.error('정책 변경 실패'); }
+  };
 
   // 엣지가 있는 노드만 (MCP 포함 전체 노드 중 연결된 것만 표시)
   const visibleNodes = useMemo(() => {
@@ -394,14 +470,65 @@ export default function ToolsTab() {
                 </>
               )}
             </div>
-            <button
-              onClick={loadMCPStatus}
-              disabled={mcpLoading}
-              className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            >
-              {mcpLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowAddMCP(!showAddMCP)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary/90 text-black rounded-lg text-xs font-medium transition-colors"
+              >
+                <Plus size={14} />
+                서버 추가
+              </button>
+              <button
+                onClick={loadMCPStatus}
+                disabled={mcpLoading}
+                className="p-2 rounded-lg hover:bg-zinc-800 transition-colors disabled:opacity-50"
+              >
+                {mcpLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+              </button>
+            </div>
           </div>
+
+          {/* MCP 서버 추가 폼 */}
+          {showAddMCP && (
+            <div className="bg-dark-card border border-primary/30 rounded-xl p-4 mb-4">
+              <h4 className="text-sm font-semibold text-white mb-3">MCP 서버 추가</h4>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-zinc-500 block mb-1">서버 이름 *</label>
+                  <input value={newMCP.name} onChange={e => setNewMCP(p => ({...p, name: e.target.value}))}
+                    placeholder="예: firecrawl" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                </div>
+                <div>
+                  <label className="text-zinc-500 block mb-1">npm 패키지 / 명령 *</label>
+                  <input value={newMCP.args} onChange={e => setNewMCP(p => ({...p, args: e.target.value}))}
+                    placeholder="예: firecrawl-mcp" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                </div>
+                <div>
+                  <label className="text-zinc-500 block mb-1">환경변수 (KEY=VALUE, 쉼표 구분)</label>
+                  <input value={newMCP.env} onChange={e => setNewMCP(p => ({...p, env: e.target.value}))}
+                    placeholder="예: API_KEY=sk-xxx" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                </div>
+                <div>
+                  <label className="text-zinc-500 block mb-1">허용 에이전트 (쉼표 구분, 비우면 전체)</label>
+                  <input value={newMCP.allowed_agents} onChange={e => setNewMCP(p => ({...p, allowed_agents: e.target.value}))}
+                    placeholder="예: JX_RESEARCHER,JX_OPS" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-zinc-500 block mb-1">설명</label>
+                  <input value={newMCP.description} onChange={e => setNewMCP(p => ({...p, description: e.target.value}))}
+                    placeholder="예: 웹 크롤링 도구" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 mt-3">
+                <button onClick={() => setShowAddMCP(false)} className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white transition-colors">취소</button>
+                <button onClick={handleAddMCP} disabled={addingMCP}
+                  className="px-4 py-1.5 bg-primary hover:bg-primary/90 text-black rounded text-xs font-medium disabled:opacity-50 flex items-center gap-1">
+                  {addingMCP ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                  연결 및 추가
+                </button>
+              </div>
+            </div>
+          )}
 
           {mcpStatus ? (
             <div className="space-y-3">
@@ -459,6 +586,13 @@ export default function ToolsTab() {
                             {reconnecting === server.name ? <Loader2 size={14} className="animate-spin" /> : '재연결'}
                           </button>
                         )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleRemoveMCP(server.name); }}
+                          className="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                          title="서버 제거"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                         {server.status === 'connected' && server.tools.length > 0 && (
                           expandedServers.has(server.name) ? <ChevronUp size={18} className="text-zinc-500" /> : <ChevronDown size={18} className="text-zinc-500" />
                         )}
@@ -1048,11 +1182,24 @@ export default function ToolsTab() {
                       <Shield size={18} className="text-blue-400" />
                       <span className="font-semibold">{agentName}</span>
                     </div>
-                    {policy.max_rounds && (
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-400">
-                        최대 {policy.max_rounds}회
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {policy.max_rounds && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-400">
+                          최대 {policy.max_rounds}회
+                        </span>
+                      )}
+                      <button
+                        onClick={() => handleToggleAllowAll(agentName, policy.whitelist)}
+                        className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                          policy.whitelist === null
+                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                            : 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600'
+                        }`}
+                        title={policy.whitelist === null ? '도구 제한으로 전환' : '모든 도구 허용으로 전환'}
+                      >
+                        {policy.whitelist === null ? '전체 허용' : '제한됨'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1086,8 +1233,13 @@ export default function ToolsTab() {
                       ) : (
                         <div className="flex flex-wrap gap-1">
                           {policy.blacklist.map((tool: string) => (
-                            <span key={tool} className="px-2 py-0.5 text-xs rounded bg-red-500/10 text-red-400 font-mono">
+                            <span key={tool} className="px-2 py-0.5 text-xs rounded bg-red-500/10 text-red-400 font-mono flex items-center gap-1">
                               {tool}
+                              <button
+                                onClick={() => handleSavePolicy(agentName, policy.blacklist.filter((t: string) => t !== tool))}
+                                className="hover:text-red-300 ml-0.5"
+                                title="차단 해제"
+                              >×</button>
                             </span>
                           ))}
                         </div>

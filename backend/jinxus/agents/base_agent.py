@@ -1,4 +1,5 @@
 """JINXUS 에이전트 기반 클래스"""
+import asyncio
 from abc import ABC, abstractmethod
 from typing import TypedDict, Optional
 from datetime import datetime
@@ -180,7 +181,7 @@ class BaseAgent(ABC):
         system_prompt = self._get_system_prompt()
         plan_prompt = self._get_plan_prompt(state)
 
-        response = self._client.messages.create(
+        response = await asyncio.to_thread(self._client.messages.create,
             model=self._model,
             max_tokens=2048,
             system=system_prompt,
@@ -402,7 +403,7 @@ JSON으로 응답해:
 {{"reflection": "...", "improvement_hint": "..."}}
 """
 
-        response = self._client.messages.create(
+        response = await asyncio.to_thread(self._client.messages.create,
             model=self._model,
             max_tokens=512,
             messages=[{"role": "user", "content": reflection_prompt}],

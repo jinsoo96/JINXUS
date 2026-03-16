@@ -690,10 +690,11 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "tool_calls": tools_used,
                 }
             else:
+                partial = "\n".join(str(r.get("output",""))[:300] for r in result.raw_results if r.get("output"))
                 return {
-                    "success": False,
-                    "score": 0.0,
-                    "output": "",
+                    "success": bool(partial),
+                    "score": 0.3 if partial else 0.0,
+                    "output": partial or f"코드 실행 실패: {result.error or '알 수 없는 오류'}",
                     "error": result.error,
                     "code": None,
                 }
@@ -703,7 +704,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
             return {
                 "success": False,
                 "score": 0.0,
-                "output": "",
+                "output": f"코드 실행 중 오류: {str(e)[:200]}",
                 "error": str(e),
                 "code": None,
             }

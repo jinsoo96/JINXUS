@@ -22,6 +22,8 @@ from .rss_reader import RSSReader
 from .stock_price import StockPrice
 from .community_monitor import CommunityMonitor
 from .self_modifier import SelfModifier
+from .data_processor import DataProcessor
+from .doc_generator import DocGenerator
 from .prompt_version_manager import (
     PromptVersionManager,
     get_prompt_version_manager,
@@ -113,6 +115,8 @@ def register_tools() -> dict[str, JinxTool]:
             "community_monitor": CommunityMonitor(),
             "self_modifier": SelfModifier(),
             "prompt_version_manager": PromptVersionManager(),
+            "data_processor": DataProcessor(),
+            "doc_generator": DocGenerator(),
         }
         logger.info(f"기존 도구 {len(TOOL_REGISTRY)}개 등록됨")
 

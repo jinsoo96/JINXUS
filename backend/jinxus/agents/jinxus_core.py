@@ -25,6 +25,11 @@ from jinxus.core.workflow_executor import WorkflowExecutor
 from jinxus.core.delegation_logger import get_delegation_logger
 
 
+async def _async_llm(client, **kwargs):
+    """Anthropic API 호출을 별도 스레드에서 실행 (이벤트루프 블로킹 방지)"""
+    return await asyncio.to_thread(client.messages.create, **kwargs)
+
+
 class SubTask(TypedDict):
     """서브태스크 스키마"""
     task_id: str
@@ -103,6 +108,8 @@ class JinxusCore:
         self._memory = get_jinx_memory()
         self._agents = {}  # 에이전트 레지스트리
         self._graph = self._build_graph()
+        self._tools_info_cache = None  # 도구 정보 캐시
+        self._tools_info_ts = 0.0
 
         # 모델 폴백 러너 (LLM 호출 시 자동 폴백)
         self._fallback_runner = ModelFallbackRunner()
@@ -278,7 +285,7 @@ class JinxusCore:
         conversation_history = await self._memory.get_short_term(session_id, limit=10)
 
         # 장기기억에서 유사 과거 작업 검색
-        memory_context = self._memory.search_all_memories(user_input, limit=5)
+        memory_context = await self._memory.search_all_memories_async(user_input, limit=5)
 
         # 단기기억에 현재 입력 저장
         await self._memory.save_short_term(
@@ -301,11 +308,19 @@ class JinxusCore:
         memory_context = state.get("memory_context", [])
         conversation_history = state.get("conversation_history", [])
 
+        # 단순 검색은 classify/decompose LLM 호출 없이 바로 위임 (비용+시간 절감)
+        if self._is_simple_search(user_input):
+            return {
+                **state,
+                "subtasks": [{"task_id": "sub_001", "assigned_agent": "JX_RESEARCHER", "instruction": user_input, "depends_on": [], "priority": "normal"}],
+                "execution_mode": "sequential",
+            }
+
         # 분해 프롬프트 (대화 기록 포함)
         decompose_prompt = self._get_decompose_prompt(user_input, memory_context, conversation_history)
 
         async def _decompose_call(model_id: str):
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=model_id,
                 max_tokens=2048,
                 system=self._get_system_prompt(),
@@ -405,12 +420,19 @@ class JinxusCore:
             # 순차 실행
             results = await self._execute_sequential(subtasks, progress_callback)
 
+        # === 실패 재분배: 다른 에이전트에게 재위임 ===
+        failed_tasks = [r for r in results if not r.get("success")]
+        if failed_tasks:
+            reassigned = await self._reassign_failed_tasks(
+                failed_tasks, results, state["user_input"], progress_callback,
+            )
+            results.extend(reassigned)
+
         # ToolGraph 워크플로우 보완 실행
         # 에이전트 실행이 실패했거나, tool_workflow가 추가 도구를 제안한 경우
         tool_workflow_data = state.get("tool_workflow")
-        if tool_workflow_data and tool_workflow_data.get("tools"):
-            failed_tasks = [r for r in results if not r.get("success")]
-            if failed_tasks:
+        still_failed = [r for r in results if not r.get("success")]
+        if tool_workflow_data and tool_workflow_data.get("tools") and still_failed:
                 # 실패한 작업이 있으면 ToolGraph 워크플로우로 보완 시도
                 if progress_callback:
                     await progress_callback("🔄 ToolGraph 워크플로우로 보완 실행 중...")
@@ -654,6 +676,71 @@ class JinxusCore:
 
         return results
 
+    # 에이전트 역량 매핑 (실패 시 대체 에이전트 후보)
+    _REASSIGN_MAP: dict[str, list[str]] = {
+        "JX_CODER": ["JX_OPS", "JX_RESEARCHER"],
+        "JX_RESEARCHER": ["JX_WRITER", "JX_ANALYST"],
+        "JX_WRITER": ["JX_RESEARCHER", "JS_PERSONA"],
+        "JX_ANALYST": ["JX_RESEARCHER", "JX_WRITER"],
+        "JX_OPS": ["JX_CODER"],
+        "JS_PERSONA": ["JX_WRITER"],
+    }
+
+    async def _reassign_failed_tasks(
+        self,
+        failed_results: list[AgentResult],
+        all_results: list[AgentResult],
+        user_input: str,
+        progress_callback=None,
+    ) -> list[AgentResult]:
+        """실패한 서브태스크를 다른 에이전트에게 재위임"""
+        reassigned = []
+        # 이미 시도한 에이전트 목록
+        tried = {r["agent_name"] for r in all_results}
+
+        for failed in failed_results:
+            original = failed["agent_name"]
+            candidates = self._REASSIGN_MAP.get(original, [])
+
+            for candidate in candidates:
+                if candidate in tried or candidate not in self._agents:
+                    continue
+
+                if progress_callback:
+                    await progress_callback(
+                        f"🔄 {original} 실패 → {candidate}에게 재위임 중..."
+                    )
+
+                logger.info(
+                    f"[JINXUS_CORE] 재위임: {original} → {candidate} "
+                    f"(사유: {failed.get('failure_reason', 'unknown')[:100]})"
+                )
+
+                result = await self._run_agent(
+                    task_id=f"reassign_{failed['task_id']}",
+                    agent=self._agents[candidate],
+                    instruction=failed.get("output", "") or user_input,
+                    context=[{
+                        "from_agent": original,
+                        "failure_reason": failed.get("failure_reason", ""),
+                        "partial_output": failed.get("output", "")[:500],
+                    }],
+                    progress_callback=progress_callback,
+                )
+
+                tried.add(candidate)
+                reassigned.append(result)
+
+                if result.get("success"):
+                    if progress_callback:
+                        await progress_callback(f"   ✓ {candidate} 재위임 성공")
+                    break  # 성공하면 다음 실패 태스크로
+                else:
+                    if progress_callback:
+                        await progress_callback(f"   ✗ {candidate}도 실패, 다음 후보 시도...")
+
+        return reassigned
+
     async def _run_agent(
         self, task_id: str, agent, instruction: str, context: list = None,
         progress_callback=None, memory_context: list = None,
@@ -674,7 +761,14 @@ class JinxusCore:
         try:
             # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
             agent._progress_callback = progress_callback
-            result = await agent.run(instruction, context or [], memory_context=memory_context)
+            # 에이전트별 run() 시그니처 차이 대응 (memory_context 지원 여부)
+            if not hasattr(agent, '_accepts_memory_ctx'):
+                import inspect
+                agent._accepts_memory_ctx = 'memory_context' in inspect.signature(agent.run).parameters
+            if agent._accepts_memory_ctx:
+                result = await agent.run(instruction, context or [], memory_context=memory_context)
+            else:
+                result = await agent.run(instruction, context or [])
             agent_result = {
                 "task_id": task_id,
                 "agent_name": agent.name,
@@ -710,7 +804,7 @@ class JinxusCore:
                 "agent_name": agent.name,
                 "success": False,
                 "success_score": 0.0,
-                "output": "",
+                "output": f"에이전트 실행 실패: {str(e)[:200]}",
                 "failure_reason": str(e),
                 "duration_ms": 0,
             }
@@ -740,7 +834,7 @@ B) no - 일반 지식, 대화, 의견 등 내 지식으로 충분
 yes 또는 no 한 단어만 답해."""
 
         try:
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=self._fast_model,
                 max_tokens=5,
                 messages=[{"role": "user", "content": check_prompt}],
@@ -829,7 +923,7 @@ yes 또는 no 한 단어만 답해."""
         messages.append({"role": "user", "content": final_input})
 
         async def _direct_call(model_id: str):
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=model_id,
                 max_tokens=2048,
                 system=self._get_system_prompt(),
@@ -870,7 +964,7 @@ yes 또는 no 한 단어만 답해."""
 """
 
         async def _aggregate_call(model_id: str):
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=model_id,
                 max_tokens=2048,
                 system=self._get_system_prompt(),
@@ -963,8 +1057,13 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
             for mem in memory_context[:3]:
                 memory_str += f"- {mem.get('summary', '')[:100]}\n"
 
-        # MCP 도구 정보 수집
-        tools_info = get_all_tools_info()
+        # MCP 도구 정보 (1시간 TTL 캐시)
+        import time as _cache_time
+        _now = _cache_time.time()
+        if self._tools_info_cache is None or _now - self._tools_info_ts > 3600:
+            self._tools_info_cache = get_all_tools_info()
+            self._tools_info_ts = _now
+        tools_info = self._tools_info_cache
         mcp_tools = [t for t in tools_info if t["is_mcp"]]
         mcp_tools_str = ""
         if mcp_tools:
@@ -999,6 +1098,11 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
 - 날씨, 뉴스, 주가 등 실시간 정보 → 검색 필요 → JX_RESEARCHER
 - "모르겠다"는 변명 금지, 검색해서 알려줘라
 {mcp_tools_str}
+
+## 핵심 원칙: 최소 에이전트 배정
+- **단순 요청(날씨, 검색, 단일 작업)은 에이전트 1개만 배정.** 여러 에이전트에 같은 일을 시키지 마라.
+- 여러 에이전트가 필요한 건 **복합 작업**(코드 작성 + 문서 작성, 검색 + 분석 등)뿐이다.
+- 예: "날씨 알려줘" → JX_RESEARCHER 1개. "날씨 알려주고 보고서 써줘" → JX_RESEARCHER + JX_WRITER 2개.
 
 ## 중요: instruction 작성 규칙
 - 각 subtask의 instruction은 **그 자체만으로 완전히 이해 가능**해야 한다.
@@ -1072,6 +1176,20 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
         return {"subtasks": [], "execution_mode": "sequential", "brief_plan": "direct_response"}
 
     # ===== 공개 인터페이스 =====
+
+    def _is_simple_search(self, user_input: str) -> bool:
+        """단순 검색 요청인지 판별 (decompose 없이 바로 RESEARCHER 위임)"""
+        lower = user_input.strip().lower()
+        simple_patterns = [
+            "날씨", "기온", "비 오", "눈 오", "미세먼지",
+            "주가", "환율", "코스피", "비트코인", "나스닥",
+            "뉴스", "속보", "검색해", "찾아줘", "알아봐",
+            "맛집", "추천해", "근처", "주변",
+        ]
+        # 패턴 매칭 + 짧은 입력 (30자 미만이면 단순 검색 가능성 높음)
+        if len(lower) < 30 and any(p in lower for p in simple_patterns):
+            return True
+        return False
 
     async def _classify_input(self, user_input: str) -> str:
         """입력을 분류: 'chat' (일상대화) 또는 'task' (작업 필요)
@@ -1150,7 +1268,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
 한 단어만: chat / chat_search / task"""
 
         try:
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=self._fast_model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": classify_prompt}],
@@ -1267,30 +1385,35 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         # === 세션 신선도 평가 (Session Freshness Policy) ===
         await self._check_session_freshness(session_id)
 
-        # === 입력 분류: 일상대화 vs 작업 ===
+        # === 입력 분류 + 단순 요청 바이패스 ===
         input_type = await self._classify_input(user_input)
+
+        # 대화: decompose/dispatch 없이 직접 응답
         if input_type == "chat":
-            # 대화 기록 로드 (컨텍스트 유지)
             conversation_history = await self._memory.get_short_term(session_id, limit=10)
-
-            # 현재 입력 저장
             await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
-
-            # 대화 기록 포함하여 응답 생성
             response = await self._generate_direct_response(user_input, conversation_history)
-
-            # 응답 저장
             await self._memory.save_short_term(session_id, "assistant", response[:500], {"task_id": task_id})
-
             return {
-                "task_id": task_id,
-                "session_id": session_id,
-                "response": response,
-                "agents_used": [],
-                "success": True,
-                "created_at": datetime.now().isoformat(),
-                "completed_at": datetime.now().isoformat(),
+                "task_id": task_id, "session_id": session_id, "response": response,
+                "agents_used": [], "success": True,
+                "created_at": datetime.now().isoformat(), "completed_at": datetime.now().isoformat(),
             }
+
+        # 단순 검색 (날씨/뉴스/주가 등): 그래프 건너뛰고 바로 JX_RESEARCHER 위임
+        if input_type == "chat_search" or self._is_simple_search(user_input):
+            await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
+            if "JX_RESEARCHER" in self._agents:
+                import time as _t
+                _start = _t.time()
+                result = await self._run_agent(task_id, self._agents["JX_RESEARCHER"], user_input)
+                response = result.get("output", "")
+                await self._memory.save_short_term(session_id, "assistant", response[:500], {"task_id": task_id})
+                return {
+                    "task_id": task_id, "session_id": session_id, "response": response,
+                    "agents_used": ["JX_RESEARCHER"], "success": result.get("success", False),
+                    "created_at": datetime.now().isoformat(), "completed_at": datetime.now().isoformat(),
+                }
 
         initial_state: ManagerState = {
             "user_input": user_input,
@@ -1326,7 +1449,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             "session_id": session_id,
             "response": final_state["final_response"],
             "agents_used": agents_used,
-            "success": all(r["success"] for r in final_state["dispatch_results"]),
+            "success": any(r["success"] for r in final_state["dispatch_results"]),
             "created_at": final_state["created_at"],
             "completed_at": final_state["completed_at"],
         }
@@ -1425,7 +1548,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"대화 기록 {len(conversation_history)}개 로드"}}
 
         _mem_start = _t.time()
-        memory_context = self._memory.search_all_memories(user_input, limit=5)
+        memory_context = await self._memory.search_all_memories_async(user_input, limit=5)
         logger.debug(f"search_all_memories {(_t.time()-_mem_start)*1000:.0f}ms → {len(memory_context)}건")
         yield {"event": "manager_thinking", "data": {"step": "intake", "detail": f"관련 기억 {len(memory_context)}개 검색 완료"}}
         await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
@@ -1437,11 +1560,20 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         logger.info(f"_classify_input → {input_type!r} ({(_t.time()-_cls_start)*1000:.0f}ms)")
         yield {"event": "manager_thinking", "data": {"step": "classify", "detail": f"분류 결과: {input_type}"}}
 
-        if input_type in ("chat", "chat_search"):
-            # 단순 대화 (또는 검색 필요 대화): decompose/dispatch 없이 직접 스트리밍
-            detail = "일상 대화 감지 → 직접 응답" if input_type == "chat" else "대화 + 검색 필요 → 직접 응답"
-            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": detail}}
-            subtasks = [{"task_id": "sub_001", "assigned_agent": "DIRECT", "instruction": user_input, "depends_on": [], "priority": "normal", "_needs_search": input_type == "chat_search"}]
+        if input_type == "chat":
+            # 단순 대화: decompose 없이 직접 응답
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "일상 대화 감지 → 직접 응답"}}
+            subtasks = [{"task_id": "sub_001", "assigned_agent": "DIRECT", "instruction": user_input, "depends_on": [], "priority": "normal", "_needs_search": False}]
+            execution_mode = "sequential"
+        elif input_type == "chat_search":
+            # 검색 필요한 대화: JX_RESEARCHER에게 바로 위임 (decompose 불필요)
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "검색 필요 → JX_RESEARCHER 직접 위임"}}
+            subtasks = [{"task_id": "sub_001", "assigned_agent": "JX_RESEARCHER", "instruction": user_input, "depends_on": [], "priority": "normal"}]
+            execution_mode = "sequential"
+        elif self._is_simple_search(user_input):
+            # task지만 단순 검색 (날씨/주가/뉴스): decompose 건너뛰고 바로 위임
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "단순 검색 → JX_RESEARCHER 직접 위임"}}
+            subtasks = [{"task_id": "sub_001", "assigned_agent": "JX_RESEARCHER", "instruction": user_input, "depends_on": [], "priority": "normal"}]
             execution_mode = "sequential"
         else:
             # === 2. decompose (명령 분해) ===
@@ -1452,7 +1584,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             yield {"event": "manager_thinking", "data": {"step": "decompose", "detail": "에이전트 배정 결정 중..."}}
             logger.debug(f"decompose API call model={self._model} prompt_len={len(decompose_prompt)}")
             _dec_start = _t.time()
-            response = self._client.messages.create(
+            response = await _async_llm(self._client,
                 model=self._model,
                 max_tokens=2048,
                 system=self._get_system_prompt(),

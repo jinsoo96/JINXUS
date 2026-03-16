@@ -27,7 +27,7 @@ import { StatCardSkeleton, ListSkeleton } from '@/components/Skeleton';
 
 // 상태 색상/텍스트는 lib/utils.ts의 getAgentStatusColor, getAgentStatusText 사용
 
-export default function DashboardTab() {
+export default function DashboardTab({ isActive = true }: { isActive?: boolean }) {
   const { systemStatus } = useAppStore();
 
   // 상태
@@ -72,9 +72,9 @@ export default function DashboardTab() {
 
   // 초기 로드 및 자동 갱신 (비활성 탭에서는 폴링 중지)
   useEffect(() => {
-    loadData();
+    if (isActive) loadData();
 
-    if (autoRefresh) {
+    if (autoRefresh && isActive) {
       const poll = () => {
         if (document.visibilityState === 'visible') loadData();
       };
@@ -83,11 +83,22 @@ export default function DashboardTab() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [autoRefresh]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoRefresh, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 실시간 로그 자동 스크롤
+  // 실시간 로그 자동 스크롤 (100ms 디바운싱 — 빠른 로그 유입 시 GPU 부하 방지)
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollTimerRef.current) return;
+    scrollTimerRef.current = setTimeout(() => {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      scrollTimerRef.current = null;
+    }, 100);
+    return () => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    };
   }, [liveTaskLogs]);
 
   // 백그라운드 작업 SSE 구독

@@ -19,6 +19,9 @@ from jinxus.api.routers import (
     hr_router,
     plugins_router,
     dev_notes_router,
+    projects_router,
+    processes_router,
+    docker_logs_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize scheduler: {e}")
 
+    # 프로젝트 매니저 복원
+    try:
+        from jinxus.core.project_manager import get_project_manager
+        pm = get_project_manager()
+        await pm.restore_projects()
+        print("ProjectManager: projects restored")
+    except Exception as e:
+        logger.debug(f"ProjectManager restore failed: {e}")
+
     # 상태 추적기 Redis 초기화
     try:
         from jinxus.agents.state_tracker import get_state_tracker
@@ -170,8 +182,22 @@ async def lifespan(app: FastAPI):
     yield
 
     # 종료 시
+    # 관리 프로세스 정리
+    try:
+        from jinxus.core.subprocess_manager import get_subprocess_manager
+        await get_subprocess_manager().stop_all()
+    except Exception as e:
+        logger.debug(f"[server] SubprocessManager 종료 중 오류: {e}")
+
     from jinxus.core.background_worker import stop_background_worker
     await stop_background_worker()
+
+    # JinxMemory 쓰기 풀 종료
+    try:
+        from jinxus.memory import get_jinx_memory
+        get_jinx_memory().close()
+    except Exception as e:
+        logger.debug(f"[server] JinxMemory 종료 중 오류: {e}")
 
     # 스케줄러 종료
     try:
@@ -231,6 +257,9 @@ def create_app() -> FastAPI:
     app.include_router(hr_router)
     app.include_router(plugins_router)
     app.include_router(dev_notes_router)
+    app.include_router(projects_router)
+    app.include_router(processes_router)
+    app.include_router(docker_logs_router)
 
     @app.get("/")
     async def root():

@@ -1,7 +1,9 @@
-"""Chat API - SSE 스트리밍 + WebSocket 채팅 + 히스토리 관리"""
+"""Chat API - SSE 스트리밍 + WebSocket 채팅 + 히스토리 관리 + 스마트 라우팅"""
 import asyncio
 import json
 import logging
+import time
+import uuid
 from typing import Dict
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -25,21 +27,29 @@ def _get_stream_semaphore() -> asyncio.Semaphore:
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
-# SSE 스트리밍 취소용 이벤트 추적
-_cancel_events: Dict[str, asyncio.Event] = {}
+# SSE 스트리밍 취소용 이벤트 추적 (task_id -> (Event, 생성시각))
+_cancel_events: Dict[str, tuple[asyncio.Event, float]] = {}
+_CANCEL_EVENT_TTL = 600  # 10분 후 자동 정리
 
 
 def get_cancel_event(task_id: str) -> asyncio.Event:
-    """취소 이벤트 가져오기/생성"""
+    """취소 이벤트 가져오기/생성 + 오래된 엔트리 정리"""
+    # 주기적 정리: TTL 초과 좀비 엔트리 제거
+    now = time.monotonic()
+    stale = [k for k, (_, ts) in _cancel_events.items() if now - ts > _CANCEL_EVENT_TTL]
+    for k in stale:
+        _cancel_events.pop(k, None)
+    if stale:
+        logger.debug(f"[chat] 오래된 cancel_event {len(stale)}개 정리")
+
     if task_id not in _cancel_events:
-        _cancel_events[task_id] = asyncio.Event()
-    return _cancel_events[task_id]
+        _cancel_events[task_id] = (asyncio.Event(), now)
+    return _cancel_events[task_id][0]
 
 
 def cleanup_cancel_event(task_id: str):
     """취소 이벤트 정리"""
-    if task_id in _cancel_events:
-        del _cancel_events[task_id]
+    _cancel_events.pop(task_id, None)
 
 
 @router.post("")
@@ -59,7 +69,7 @@ async def chat(request: ChatRequest):
     """
     # [FIX #3] 동시 스트림 수 제한 — MAX_CONCURRENT_STREAMS 초과 시 503 반환
     sem = _get_stream_semaphore()
-    if not sem._value:  # Semaphore 잔여 슬롯 0 = 만원
+    if sem.locked():  # 잔여 슬롯 0 (공개 API 사용)
         raise HTTPException(
             status_code=503,
             detail=f"현재 서버가 최대 동시 요청 수({MAX_CONCURRENT_STREAMS})에 도달했습니다. 잠시 후 다시 시도해주세요.",
@@ -129,6 +139,215 @@ async def chat(request: ChatRequest):
     return EventSourceResponse(event_generator())
 
 
+@router.post("/smart")
+async def chat_smart(request: ChatRequest):
+    """스마트 라우팅 채팅 — 메시지를 자동 분류하여 최적 경로로 실행
+
+    분류:
+    - chat/task → 기존 SSE 스트리밍 (JINXUS_CORE)
+    - background → BackgroundWorker 자율 실행
+    - project → ProjectManager 다단계 실행
+
+    SSE 이벤트:
+    - route: 라우팅 결과 {route, reason}
+    - start/message/done: 기존 채팅 이벤트 (chat/task일 때)
+    - routed: 백그라운드/프로젝트로 라우팅됨 {route, task_id/project_id}
+    """
+    from jinxus.core.smart_router import get_smart_router, RouteType
+
+    sem = _get_stream_semaphore()
+    if sem.locked():
+        raise HTTPException(
+            status_code=503,
+            detail=f"동시 요청 수({MAX_CONCURRENT_STREAMS}) 초과",
+        )
+
+    router_instance = get_smart_router()
+    route = await router_instance.classify(request.message)
+
+    # chat/task → 기존 SSE 스트리밍
+    if route in (RouteType.CHAT, RouteType.TASK):
+        orchestrator = await get_ready_orchestrator()
+
+        async def event_generator():
+            async with _get_stream_semaphore():
+                task_id = None
+                cancel_event = None
+                got_done = False
+
+                try:
+                    # 라우팅 결과 먼저 전송
+                    yield {
+                        "event": "route",
+                        "data": json.dumps({"route": route.value}, ensure_ascii=False),
+                    }
+
+                    async for event in orchestrator.run_task_stream(
+                        request.message, request.session_id
+                    ):
+                        if event["event"] == "start" and "task_id" in event["data"]:
+                            task_id = event["data"]["task_id"]
+                            cancel_event = get_cancel_event(task_id)
+
+                        if cancel_event and cancel_event.is_set():
+                            yield {
+                                "event": "cancelled",
+                                "data": json.dumps({"task_id": task_id, "message": "취소"}, ensure_ascii=False),
+                            }
+                            got_done = True
+                            break
+
+                        if event["event"] == "done":
+                            got_done = True
+
+                        yield {
+                            "event": event["event"],
+                            "data": json.dumps(event["data"], ensure_ascii=False),
+                        }
+
+                except asyncio.CancelledError:
+                    yield {
+                        "event": "cancelled",
+                        "data": json.dumps({"task_id": task_id, "message": "취소"}, ensure_ascii=False),
+                    }
+                    got_done = True
+                except Exception as e:
+                    logger.error(f"스마트 SSE 에러: {e}", exc_info=True)
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
+                    }
+                finally:
+                    if not got_done:
+                        yield {
+                            "event": "done",
+                            "data": json.dumps({"task_id": task_id, "agents_used": ["JINXUS_CORE"], "success": False}, ensure_ascii=False),
+                        }
+                    if task_id:
+                        cleanup_cancel_event(task_id)
+
+        return EventSourceResponse(event_generator())
+
+    # background → BackgroundWorker 자율 실행
+    if route == RouteType.BACKGROUND:
+        from jinxus.core.background_worker import get_background_worker
+
+        worker = get_background_worker()
+        session_id = request.session_id or str(uuid.uuid4())
+
+        task_id = await worker.submit(
+            task_description=request.message,
+            session_id=session_id,
+            autonomous=True,
+            max_steps=15,
+            timeout_seconds=4 * 3600,
+        )
+
+        async def bg_event_generator():
+            # 라우팅 + task_id 전송
+            yield {
+                "event": "route",
+                "data": json.dumps({"route": "background"}, ensure_ascii=False),
+            }
+            yield {
+                "event": "routed",
+                "data": json.dumps({
+                    "route": "background",
+                    "task_id": task_id,
+                    "message": "백그라운드 자율 실행으로 라우팅됨",
+                }, ensure_ascii=False),
+            }
+
+            # 작업 진행 SSE 스트리밍
+            queue = worker.subscribe_events(task_id)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30)
+                        yield {
+                            "event": event.get("event", "progress"),
+                            "data": json.dumps(event, ensure_ascii=False),
+                        }
+                        if event.get("event") in ("completed", "failed"):
+                            break
+                    except asyncio.TimeoutError:
+                        # keepalive
+                        yield {"event": "keepalive", "data": "{}"}
+                        # 작업 상태 확인
+                        task = worker.get_task(task_id)
+                        if not task or task.status.value in ("completed", "failed", "cancelled"):
+                            break
+            finally:
+                worker.unsubscribe_events(task_id, queue)
+
+            yield {
+                "event": "done",
+                "data": json.dumps({"task_id": task_id, "route": "background", "success": True}, ensure_ascii=False),
+            }
+
+        return EventSourceResponse(bg_event_generator())
+
+    # project → ProjectManager
+    if route == RouteType.PROJECT:
+        from jinxus.core.project_manager import get_project_manager, ProjectStatus
+
+        pm = get_project_manager()
+        project = await pm.create_project(request.message)
+
+        if project.status == ProjectStatus.FAILED:
+            raise HTTPException(status_code=500, detail=f"프로젝트 생성 실패: {project.error}")
+
+        # 프로젝트 시작
+        await pm.start_project(project.id)
+
+        async def project_event_generator():
+            yield {
+                "event": "route",
+                "data": json.dumps({"route": "project"}, ensure_ascii=False),
+            }
+            yield {
+                "event": "routed",
+                "data": json.dumps({
+                    "route": "project",
+                    "project_id": project.id,
+                    "title": project.title,
+                    "phases": len(project.phases),
+                    "message": f"프로젝트 '{project.title}' ({len(project.phases)}개 페이즈) 실행 시작",
+                }, ensure_ascii=False),
+            }
+
+            # 프로젝트 진행 SSE 스트리밍
+            queue = pm.subscribe(project.id)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30)
+                        yield {
+                            "event": event["event"],
+                            "data": json.dumps(event["data"], ensure_ascii=False),
+                        }
+                        if event["event"] in ("project_completed", "project_stopped"):
+                            break
+                    except asyncio.TimeoutError:
+                        yield {"event": "keepalive", "data": "{}"}
+                        p = pm.get_project(project.id)
+                        if not p or p.status.value in ("completed", "failed", "cancelled"):
+                            break
+            finally:
+                pm.unsubscribe(project.id, queue)
+
+            yield {
+                "event": "done",
+                "data": json.dumps({
+                    "project_id": project.id,
+                    "route": "project",
+                    "success": True,
+                }, ensure_ascii=False),
+            }
+
+        return EventSourceResponse(project_event_generator())
+
+
 @router.post("/cancel/{task_id}")
 async def cancel_stream(task_id: str):
     """SSE 스트리밍 취소
@@ -139,9 +358,10 @@ async def cancel_stream(task_id: str):
     Returns:
         취소 결과
     """
-    if task_id in _cancel_events:
+    entry = _cancel_events.get(task_id)
+    if entry:
         try:
-            _cancel_events[task_id].set()
+            entry[0].set()
             logger.info(f"SSE 스트림 취소 요청: {task_id}")
             return {
                 "success": True,

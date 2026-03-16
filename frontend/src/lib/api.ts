@@ -126,70 +126,14 @@ export const chatApi = {
         body: JSON.stringify({ message, session_id: sessionId }),
         signal: abortController?.signal,
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) {
-        throw new Error('No response body');
-      }
-
-      // SSE 파서: event/data 쌍 손실 방지
-      let buffer = '';
-      let currentEvent: SSEEvent['event'] = 'message';
-      let currentData = '';
-
-      const flushEvent = () => {
-        if (currentData) {
-          try {
-            const data = JSON.parse(currentData);
-            onEvent({ event: currentEvent, data });
-          } catch {
-            // JSON 파싱 실패 무시
-          }
-        }
-        currentEvent = 'message';
-        currentData = '';
-      };
-
-      try {
-        while (true) {
-          if (abortController?.signal.aborted) {
-            reader.cancel();
-            break;
-          }
-
-          const { done, value } = await reader.read();
-          if (done) {
-            flushEvent();
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.trim() === '') {
-              flushEvent();
-            } else if (line.startsWith('event:')) {
-              currentEvent = line.slice(6).trim() as SSEEvent['event'];
-            } else if (line.startsWith('data:')) {
-              currentData += line.slice(5).trim();
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        onEvent({ event: event as SSEEvent['event'], data: data as SSEEvent['data'] });
+      }, abortController?.signal);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        return;
-      }
+      if (error instanceof Error && error.name === 'AbortError') return;
       onError(error instanceof Error ? error : new Error('Stream error'));
     }
   },
@@ -209,6 +153,33 @@ export const chatApi = {
     return apiCall<{ success: boolean; message: string }>(`/chat/sessions/${sessionId}`, {
       method: 'DELETE',
     });
+  },
+
+  // 스마트 라우팅 SSE 스트리밍 (자동 분류: chat/task/background/project)
+  streamSmart: async (
+    message: string,
+    sessionId: string | undefined,
+    onEvent: (event: SSEEvent) => void,
+    onError: (error: Error) => void,
+    abortController?: AbortController
+  ): Promise<void> => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/smart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, session_id: sessionId }),
+        signal: abortController?.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        onEvent({ event: event as SSEEvent['event'], data: data as SSEEvent['data'] });
+      }, abortController?.signal);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      onError(error instanceof Error ? error : new Error('Smart stream error'));
+    }
   },
 
   // SSE 스트리밍 취소
@@ -239,45 +210,12 @@ export const chatApi = {
         body: JSON.stringify({ message, session_id: sessionId }),
         signal: abortController?.signal,
       });
-
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      if (!reader) throw new Error('No response body');
-
-      let buffer = '';
-      let currentEvent: SSEEvent['event'] = 'message';
-      let currentData = '';
-
-      const flushEvent = () => {
-        if (currentData) {
-          try {
-            const data = JSON.parse(currentData);
-            onEvent({ event: currentEvent, data });
-          } catch { /* ignore */ }
-        }
-        currentEvent = 'message';
-        currentData = '';
-      };
-
-      try {
-        while (true) {
-          if (abortController?.signal.aborted) { reader.cancel(); break; }
-          const { done, value } = await reader.read();
-          if (done) { flushEvent(); break; }
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (line.trim() === '') { flushEvent(); }
-            else if (line.startsWith('event:')) { currentEvent = line.slice(6).trim() as SSEEvent['event']; }
-            else if (line.startsWith('data:')) { currentData += line.slice(5).trim(); }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        onEvent({ event: event as SSEEvent['event'], data: data as SSEEvent['data'] });
+      }, abortController?.signal);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
       onError(error instanceof Error ? error : new Error('Stream error'));
@@ -477,6 +415,44 @@ export const systemApi = {
   getToolAnalytics: async (): Promise<ToolAnalyticsResponse> => {
     return apiCall<ToolAnalyticsResponse>('/status/tool-analytics');
   },
+
+  // 에이전트 도구 정책 업데이트
+  updateToolPolicy: async (agentName: string, policy: {
+    whitelist?: string[] | null;
+    blacklist?: string[];
+    allow_all?: boolean;
+  }): Promise<{ success: boolean; policy: { whitelist: string[] | null; blacklist: string[] } }> => {
+    return apiCall(`/status/tool-policies/${agentName}`, {
+      method: 'PUT',
+      body: JSON.stringify(policy),
+    });
+  },
+
+  // MCP 서버 동적 추가
+  addMCPServer: async (config: {
+    name: string;
+    command?: string;
+    args: string[];
+    env?: Record<string, string>;
+    allowed_agents?: string[];
+    description?: string;
+    requires_api_key?: string;
+  }): Promise<{ success: boolean; server_name: string; tools_count: number; tools: string[]; message: string }> => {
+    return apiCall('/status/mcp/servers', {
+      method: 'POST',
+      body: JSON.stringify({ command: 'npx', ...config }),
+    });
+  },
+
+  // MCP 서버 동적 제거
+  removeMCPServer: async (serverName: string): Promise<{ success: boolean; removed_tools: number; message: string }> => {
+    return apiCall(`/status/mcp/servers/${serverName}`, { method: 'DELETE' });
+  },
+
+  // MCP 서버 테스트
+  testMCPServer: async (serverName: string): Promise<{ success: boolean; tools_count: number; tools: { name: string; description: string }[] }> => {
+    return apiCall(`/status/mcp/servers/${serverName}/test`, { method: 'POST' });
+  },
 };
 
 export interface ToolAnalyticsItem {
@@ -555,6 +531,11 @@ export const agentApi = {
   // JX_CODER 전문가 팀 조회
   getCoderTeam: async (): Promise<{ parent: string; team: CodingSpecialist[] }> => {
     return apiCall<{ parent: string; team: CodingSpecialist[] }>('/agents/JX_CODER/team');
+  },
+
+  // JX_RESEARCHER 전문가 팀 조회
+  getResearcherTeam: async (): Promise<{ parent: string; team: CodingSpecialist[] }> => {
+    return apiCall<{ parent: string; team: CodingSpecialist[] }>('/agents/JX_RESEARCHER/team');
   },
 };
 
@@ -821,12 +802,12 @@ export const taskApi = {
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEvent = 'progress';
-      let currentData = '';
+      let dataChunks: string[] = [];
 
       const flush = () => {
-        if (currentData) {
+        if (dataChunks.length > 0) {
           try {
-            const data = JSON.parse(currentData);
+            const data = JSON.parse(dataChunks.join(''));
             onEvent({ event: currentEvent, data });
             if (currentEvent === 'done' || currentEvent === 'completed' || currentEvent === 'failed') {
               onDone();
@@ -834,7 +815,7 @@ export const taskApi = {
           } catch { /* ignore */ }
         }
         currentEvent = 'progress';
-        currentData = '';
+        dataChunks = [];
       };
 
       try {
@@ -852,7 +833,7 @@ export const taskApi = {
             } else if (line.startsWith('event:')) {
               currentEvent = line.slice(6).trim();
             } else if (line.startsWith('data:')) {
-              currentData += line.slice(5).trim();
+              dataChunks.push(line.slice(5).trim());
             }
           }
         }
@@ -978,6 +959,53 @@ export const pluginsApi = {
   },
 };
 
+// ── Docker 컨테이너 ──────────────────────────────────────────────────────────
+
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  status: string;
+  state: string;
+  created: string;
+}
+
+export const dockerApi = {
+  getContainers: async (): Promise<{ containers: DockerContainer[] }> => {
+    return apiCall<{ containers: DockerContainer[] }>('/docker/containers');
+  },
+
+  streamLogs: (
+    containerId: string,
+    tail: number,
+    onLine: (line: string, stream: 'stdout' | 'stderr', timestamp: string) => void,
+    onError: (error: Error) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+
+    fetch(`${API_BASE}/docker/containers/${containerId}/logs?tail=${tail}`, {
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        if (event === 'log') {
+          const d = data as { line: string; stream: string; timestamp: string };
+          onLine(d.line, d.stream as 'stdout' | 'stderr', d.timestamp);
+        } else if (event === 'error') {
+          const d = data as { error: string };
+          onError(new Error(d.error));
+        }
+      }, controller.signal);
+    }).catch((err) => {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      onError(err instanceof Error ? err : new Error(String(err)));
+    });
+
+    return controller;
+  },
+};
+
 // ── 개발 노트 ─────────────────────────────────────────────────────────────────
 
 export interface DevNote {
@@ -1016,6 +1044,95 @@ export const devNotesApi = {
 
   delete: async (id: string): Promise<{ deleted: string }> => {
     return apiCall(`/dev-notes/${id}`, { method: 'DELETE' });
+  },
+};
+
+// ── 프로젝트 관리 ────────────────────────────────────────────────────────────
+
+export interface ProjectPhase {
+  id: string;
+  name: string;
+  instruction: string;
+  agent: string;
+  depends_on: string[];
+  status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled';
+  result_summary: string;
+  task_id: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string;
+  max_steps: number;
+}
+
+export interface ProjectDetail {
+  id: string;
+  title: string;
+  description: string;
+  status: 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  phases: ProjectPhase[];
+  created_at: string;
+  updated_at: string;
+  completed_at: string;
+  total_duration_s: number;
+  error: string;
+}
+
+export const projectApi = {
+  create: async (description: string): Promise<ProjectDetail> => {
+    return apiCall<ProjectDetail>('/projects', {
+      method: 'POST',
+      body: JSON.stringify({ description }),
+    });
+  },
+
+  list: async (): Promise<ProjectDetail[]> => {
+    return apiCall<ProjectDetail[]>('/projects');
+  },
+
+  get: async (projectId: string): Promise<ProjectDetail> => {
+    return apiCall<ProjectDetail>(`/projects/${projectId}`);
+  },
+
+  start: async (projectId: string): Promise<{ success: boolean; message: string }> => {
+    return apiCall(`/projects/${projectId}/start`, { method: 'POST' });
+  },
+
+  stop: async (projectId: string): Promise<{ success: boolean; message: string }> => {
+    return apiCall(`/projects/${projectId}/stop`, { method: 'POST' });
+  },
+
+  delete: async (projectId: string): Promise<{ success: boolean; message: string }> => {
+    return apiCall(`/projects/${projectId}`, { method: 'DELETE' });
+  },
+
+  updatePhase: async (projectId: string, phaseId: string, instruction: string): Promise<{ success: boolean }> => {
+    return apiCall(`/projects/${projectId}/phases/${phaseId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ instruction }),
+    });
+  },
+
+  streamProgress: (
+    projectId: string,
+    onEvent: (event: { event: string; data: Record<string, unknown> }) => void,
+    onError: (error: Error) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+
+    fetch(`${API_BASE}/projects/${projectId}/stream`, {
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        onEvent({ event, data: data as Record<string, unknown> });
+      }, controller.signal);
+    }).catch((err) => {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      onError(err instanceof Error ? err : new Error(String(err)));
+    });
+
+    return controller;
   },
 };
 

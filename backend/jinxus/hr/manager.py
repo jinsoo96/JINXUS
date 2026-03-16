@@ -309,11 +309,11 @@ class HRManager:
         return [
             {
                 "specialty": key,
-                "name": f"JX_{key.upper()}",
-                "description": spec.get("description", ""),
-                "capabilities": spec.get("capabilities", []),
+                "name": f"JX_{key.upper().replace(' ', '_')}",
+                "description": traits.get("focus", ""),
+                "capabilities": traits.get("strengths", []),
             }
-            for key, spec in AgentFactory.DEFAULT_SPECS.items()
+            for key, traits in AgentFactory._SPECIALTY_TRAITS.items()
         ]
 
 
