@@ -6,7 +6,7 @@
 
 ### Just Intelligent Nexus, eXecutes Under Supremacy
 
-A hyper-personalized multi-agent AI system that turns a single command into a fully orchestrated operation.
+A hyper-personalized multi-agent AI assistant system where you give one command and an entire team of specialized AI agents collaborates to deliver the result.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com)
@@ -20,165 +20,215 @@ A hyper-personalized multi-agent AI system that turns a single command into a fu
 
 ---
 
-## What JINXUS Does
+## What is JINXUS?
 
-You talk to **one agent** (JINXUS_CORE). It interprets your command, breaks it into subtasks, delegates to specialist agents, aggregates results, and reports back. You never deal with the internals.
+JINXUS is a **multi-agent AI orchestration system** built around a single principle: **you talk, agents work.**
 
-```
-You: "Build me a community language-style learning bot at /home/user/talker"
+You interact with one central orchestrator — **JINXUS_CORE** — and it handles everything behind the scenes. It interprets your intent, decomposes complex tasks into subtasks, delegates work to the right specialist agents, collects their results, and delivers a unified response. You never need to know which agent did what.
 
-JINXUS:
-  1. Decomposes into 12 phases (project structure, crawler, NLP pipeline, tests...)
-  2. Executes phases in dependency order, parallelizing where possible
-  3. Auto-reviews coding output, creates fix iterations if issues found
-  4. Shares artifacts (files, code, reports) between phases
-  5. Streams real-time progress via SSE
-  6. Delivers completed project
-```
+Whether it's writing code, researching a topic, generating documents, analyzing data, managing infrastructure, or running a multi-day project autonomously — JINXUS handles it end-to-end.
 
----
+### What Can It Actually Do?
 
-## Core Capabilities
-
-### Smart Routing
-
-Every message is automatically classified and routed to the optimal execution path:
-
-| You Say | Route | What Happens |
-|---------|-------|-------------|
-| "Hey, what's up?" | **Chat** | Direct LLM response (~1s) |
-| "Search today's weather in Seoul" | **Task** | Agent graph: decompose → dispatch → aggregate (~10s) |
-| "Deep-analyze this entire codebase" | **Background** | AutonomousRunner: multi-step, hours-long, checkpoint-safe |
-| "Build a web scraper with ML pipeline" | **Project** | ProjectManager: phase DAG, parallel execution, review loops |
-
-No manual routing needed. The Smart Router uses 2-stage classification (pattern matching + LLM fallback).
-
-### Autonomous Project Execution
-
-Give JINXUS a big project and walk away:
-
-- **LLM-driven decomposition** into 2-15 phases with dependency DAG
-- **Parallel execution** of independent phases (3 concurrent workers)
-- **Auto code review** on coding phases with fix iteration (max 2 rounds)
-- **Artifact sharing** between phases (files, code blocks, data, reports via Redis)
-- **Redis checkpointing** for crash recovery
-- **Pause / resume / cancel** at any time
-- **Real-time SSE streaming** of phase-level and step-level progress
-- **Telegram notifications** on milestones and completion
-
-### 15 Agents, One Orchestrator
-
-```
-JINXUS_CORE (orchestrator - the only agent you talk to)
- |
- |-- JX_CODER (coding lead)
- |    |-- JX_FRONTEND    (React, Vue, CSS)
- |    |-- JX_BACKEND     (Python, APIs, databases)
- |    |-- JX_INFRA       (Docker, CI/CD, configs)
- |    |-- JX_REVIEWER    (code review, quality checks)
- |    +-- JX_TESTER      (unit tests, integration tests)
- |
- |-- JX_RESEARCHER (research lead)
- |    |-- JX_WEB_SEARCHER  (Naver, Brave, RSS, community)
- |    |-- JX_DEEP_READER   (PDF, images, GitHub analysis)
- |    +-- JX_FACT_CHECKER  (cross-validation, source credibility)
- |
- |-- JX_WRITER     (documents, reports, presentations)
- |-- JX_ANALYST    (data analysis, visualization, stocks)
- |-- JX_OPS        (infrastructure, deployment, automation)
- +-- JS_PERSONA    (personality, conversational style)
-```
-
-Each agent has its own **Tool Policy** (whitelist/blacklist), max tool rounds, and continuation limits. Failed agents are automatically **reassigned** to alternates via `_REASSIGN_MAP`.
-
-### 148+ Tools
-
-**19 native tools:**
-code executor, web search (Tavily), Naver search, weather, GitHub (REST + GraphQL), file manager, PDF reader, image analyzer, RSS reader, stock prices, community monitor, data processor (pandas), document generator (Word/PPT), scheduler, HR tool, system manager, self-modifier, prompt version manager
-
-**13 MCP servers (130+ tools):**
-filesystem, git, GitHub, Brave Search, web fetch, Playwright (browser automation), Firecrawl, PostgreSQL, SQLite, Slack, Notion, sequential thinking, memory
-
-MCP servers can be **added/removed at runtime** via `POST /status/mcp/servers`.
-
-Tool selection uses Claude's native **tool_use API** with **Progressive Disclosure** -- each agent only sees the tools it's allowed to use.
-
-### Process Management
-
-Start, stop, monitor, and auto-restart long-running processes:
-
-```bash
-# Start a dev server
-POST /processes { "id": "dev", "name": "dev-server", "command": "npm run dev", "port": 3000, "auto_restart": true }
-
-# Health check
-GET /processes/dev/health  # { "healthy": true, "uptime_s": 3600, "http_healthy": true }
-
-# View logs
-GET /processes/dev/logs?lines=100
-```
-
-Security: command blacklist + directory whitelist. Max 3 auto-restarts.
+- **Write full applications** — "Build me a Flask REST API with auth and deploy it" triggers JX_CODER's team (frontend, backend, infra, reviewer, tester specialists) to scaffold, implement, review, test, and deploy.
+- **Deep research** — "Find everything about Korea's 2026 AI policy changes" activates JX_RESEARCHER's team (web searcher, deep reader, fact checker) to search multiple sources, read PDFs, cross-validate facts, and compile a report.
+- **Overnight autonomous projects** — Drop a big task and go to sleep. JINXUS runs it in the background for up to 8 hours with checkpoint recovery, sends Telegram progress updates every 15 minutes, and has the result ready when you wake up.
+- **Manage infrastructure** — Start/stop/monitor long-running processes, check health, view logs, auto-restart on failure.
+- **Generate documents** — Word docs, PowerPoint presentations, data analysis reports with pandas and visualization.
+- **Browse the web** — Playwright-powered browser automation, web scraping via Firecrawl, RSS monitoring.
+- **Remember everything** — 3-tier memory (Redis short-term, Qdrant vector long-term, SQLite metadata) so context persists across conversations and tasks.
 
 ---
 
-## Architecture
+## How It Works — Key Logic & Architecture
 
-| Layer | Tech |
-|-------|------|
+### 1. Smart Router (the brain at the gate)
+
+Every incoming message goes through a **2-stage classifier** before any agent touches it:
+
+| Stage | How | Purpose |
+|-------|-----|---------|
+| **Pattern Matching** | Regex + keyword rules | Instant classification for obvious cases (~0ms) |
+| **LLM Fallback** | Claude Haiku | Handles ambiguous messages the patterns can't catch (~200ms) |
+
+The router classifies into 4 execution paths:
+
+| Route | What Happens | Example |
+|-------|-------------|---------|
+| **Chat** | Direct LLM response, no tool use | "Hey, what's up?" |
+| **Task** | Full agent graph: decompose → dispatch → aggregate | "Search today's weather in Seoul" |
+| **Background** | AutonomousRunner: multi-step, hours-long, checkpoint-safe | "Deep-analyze this entire codebase" |
+| **Project** | ProjectManager: phase DAG, parallel execution, review loops | "Build a web scraper with ML pipeline" |
+
+### 2. LangGraph Orchestration Pipeline
+
+When a task reaches JINXUS_CORE, it flows through a **7-node directed graph**:
+
+```
+intake → decompose → dispatch → aggregate → reflect → memory_write → respond
+```
+
+- **Intake**: Parses intent, loads relevant memory context, identifies required capabilities
+- **Decompose**: Breaks complex requests into atomic subtasks with dependency ordering
+- **Dispatch**: Routes each subtask to the best-fit agent (with automatic reassignment on failure)
+- **Aggregate**: Merges results from multiple agents into a coherent response
+- **Reflect**: Self-evaluates quality, triggers retry if confidence is low
+- **Memory Write**: Persists important context to 3-tier memory for future use
+- **Respond**: Formats and streams the final answer via SSE
+
+### 3. Multi-Agent Hierarchy (15 agents)
+
+```
+JINXUS_CORE (central orchestrator — the only agent you talk to)
+ │
+ ├── JX_CODER (coding team lead)
+ │    ├── JX_FRONTEND    → React, Vue, CSS, UI/UX
+ │    ├── JX_BACKEND     → Python, APIs, databases, system design
+ │    ├── JX_INFRA       → Docker, CI/CD, configs, deployment
+ │    ├── JX_REVIEWER    → Code review, quality gates, best practices
+ │    └── JX_TESTER      → Unit tests, integration tests, test strategies
+ │
+ ├── JX_RESEARCHER (research team lead)
+ │    ├── JX_WEB_SEARCHER  → Naver, Brave, Tavily, RSS, community forums
+ │    ├── JX_DEEP_READER   → PDF analysis, image understanding, GitHub repos
+ │    └── JX_FACT_CHECKER  → Cross-validation, source credibility scoring
+ │
+ ├── JX_WRITER     → Documents, reports, presentations (Word/PPT)
+ ├── JX_ANALYST    → Data analysis (pandas), visualization, stock tracking
+ ├── JX_OPS        → Infrastructure, deployment, automation, monitoring
+ └── JS_PERSONA    → Personality layer, conversational style adaptation
+```
+
+**Key behaviors:**
+- Each agent has a **Tool Policy** — a whitelist/blacklist controlling exactly which tools it can access
+- **Progressive Disclosure** — agents only see tool descriptions relevant to their role, reducing confusion
+- **Automatic reassignment** — if JX_CODER fails, `_REASSIGN_MAP` routes the task to JX_OPS or another capable agent
+- **Team fallback** — if a specialist (e.g., JX_FRONTEND) fails, the team lead (JX_CODER) handles it directly
+
+### 4. DynamicToolExecutor (how agents use tools)
+
+Agents don't call tools directly. They go through the **DynamicToolExecutor**, which:
+
+1. Injects only the tools the agent is allowed to use (via Tool Policy)
+2. Sends the task + tool definitions to Claude's native **tool_use API**
+3. Executes the tool Claude selects, feeds the result back
+4. Repeats for multi-step tool chains (up to `max_rounds` per agent)
+5. **Auto-continues** if max rounds are hit mid-task — seamlessly picks up where it left off
+
+This means agents can chain 15+ tool calls in a single task without manual intervention.
+
+### 5. ToolGraph v2 (instant tool discovery)
+
+Before the DynamicToolExecutor runs, the system needs to know which tools are relevant. **ToolGraph v2** handles this:
+
+- **BM25 text scoring** on tool names and descriptions
+- **Weighted Reciprocal Rank Fusion (wRRF)** combining multiple signals
+- **Graph BFS traversal** to find related tools (e.g., "github" → git, filesystem)
+- **History demotion** to avoid re-suggesting recently failed tools
+- Result: **~26 microseconds per query, zero API calls**
+
+### 6. Autonomous Background Execution
+
+For long-running tasks, the **AutonomousRunner** + **BackgroundWorker** system provides:
+
+| Feature | How It Works |
+|---------|-------------|
+| **Redis Checkpointing** | State saved after every step → crash recovery without re-running completed work |
+| **Step Timeouts** | Each step has a 10-minute timeout via `asyncio.wait_for` — no infinite hangs |
+| **LLM Guardrails** | A separate Claude call validates each step's output before proceeding |
+| **Pause / Resume** | `asyncio.Event`-based control — pause mid-execution, resume later |
+| **Task Chaining** | `depends_on` field lets you build pipelines — Task B starts only after Task A completes |
+| **Real-time Progress** | SSE streams `step_progress` events with `steps_completed / steps_total` |
+| **Telegram Alerts** | Progress reports every 15 minutes + instant notification on completion/failure |
+| **Event Buffer** | Events that fire before a client subscribes are buffered and replayed on connect |
+
+Max runtime: **8 hours, 50 steps** per task.
+
+### 7. Project Manager (multi-phase execution)
+
+For large projects, the **ProjectManager** goes beyond simple task execution:
+
+1. **LLM Decomposition** — Claude analyzes the project description and generates 2-15 phases with a dependency DAG
+2. **DAG Execution** — Independent phases run in parallel (3 concurrent workers), dependent phases wait
+3. **Artifact Store** — Phases share outputs via Redis (files, code blocks, data, reports). Auto-extracted from results, auto-injected into downstream phases
+4. **Review Loop** — Every coding phase gets auto-reviewed. If issues are found, a fix phase is dynamically generated (max 2 iterations)
+5. **SSE Streaming** — Phase-level and step-level progress streamed in real-time
+
+### 8. 3-Tier Memory System
+
+| Tier | Storage | Purpose | Retention |
+|------|---------|---------|-----------|
+| **Short-term** | Redis | Current conversation context, recent tool results | Session-scoped with TTL |
+| **Long-term** | Qdrant (vector DB) | Semantic memory — searchable by meaning, not just keywords | Persistent, importance-scored |
+| **Metadata** | SQLite | Task logs, metrics, tool call history, agent performance | Persistent |
+
+Memory features:
+- **Async writes** — `ThreadPoolExecutor(1)` ensures memory writes never block the main response
+- **Importance scoring** — memories are scored and low-value entries are automatically pruned
+- **Semantic search** — "What did we discuss about deployment?" retrieves relevant memories by meaning
+
+### 9. 148+ Tools
+
+**19 Native Tools:**
+Code executor, web search (Tavily), Naver search, weather, GitHub (REST + GraphQL), file manager, PDF reader, image analyzer, RSS reader, stock prices, community monitor, data processor (pandas), document generator (Word/PPT), scheduler, HR tool, system manager, self-modifier, prompt version manager
+
+**13 MCP Servers (130+ tools):**
+Filesystem, Git, GitHub, Brave Search, web fetch, Playwright (browser automation), Firecrawl (web scraping), PostgreSQL, SQLite, Slack, Notion, sequential thinking, memory
+
+MCP servers can be **hot-loaded and removed at runtime** via `POST /status/mcp/servers` — no restart needed.
+
+### 10. Self-Improvement Loop
+
+JINXUS gets better over time:
+- **Feedback ingestion** — every task can receive user feedback via `/feedback`
+- **Prompt A/B testing** — system prompts are versioned and tested against each other
+- **Automatic rollback** — if a new prompt version regresses quality, it rolls back
+- **Failure pattern learning** — repeated failures on similar tasks trigger prompt adjustments
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
 | **Backend** | FastAPI + LangGraph, Python 3.11+ |
 | **Frontend** | Next.js 14 + Zustand + TailwindCSS |
 | **Memory** | Redis (short-term) + Qdrant (long-term vectors) + SQLite (metadata) |
-| **AI** | Anthropic Claude API (model router: sonnet for main, haiku for classification) |
+| **AI** | Anthropic Claude API — Sonnet 4 (main) + Haiku 4.5 (classification/evaluation) |
 | **Tools** | 19 native + 13 MCP servers (130+ tools) + runtime MCP loader |
-| **Channels** | Web UI, Telegram bot, CLI, daemon |
-
-### Key Systems
-
-| System | What It Does |
-|--------|-------------|
-| **LangGraph Orchestration** | intake -> decompose -> dispatch -> aggregate -> reflect -> memory_write -> respond |
-| **3-Tier Memory** | Redis short-term (conversation), Qdrant long-term (semantic search), SQLite metadata (task logs, metrics) |
-| **ToolGraph v2** | BM25 + weighted RRF + graph BFS for tool discovery (~26us/query, zero API calls) |
-| **DynamicToolExecutor** | Claude tool_use with auto-continuation when max rounds reached |
-| **AutonomousRunner** | Multi-step execution with Redis checkpoints, per-step timeouts, guardrail validation, pause/resume |
-| **BackgroundWorker** | 3 concurrent workers, task chaining (depends_on), conditional branching, SSE event buffer replay |
-| **ProjectManager** | LLM phase decomposition, DAG execution, artifact store, review-fix loop |
-| **Smart Router** | 2-stage classification: pattern matching -> LLM fallback (chat/task/background/project) |
-| **Review Loop** | Auto code review on completed phases, fix phase generation, max 2 iterations |
-| **Artifact Store** | Redis-based cross-phase sharing: files, code, data, reports. Auto-extraction from results |
-| **Subprocess Manager** | Long-running process lifecycle: start/stop/restart/health/logs |
-| **HR System** | Dynamic agent hiring/firing, specialist team delegation, failure reassignment |
-| **Self-Improvement** | Feedback loop, A/B prompt testing, automatic rollback on regression |
+| **Channels** | Web UI, Telegram bot, CLI, background daemon |
+| **Infra** | Docker Compose, multi-stage builds, volume-mounted source for hot reload |
 
 ---
 
-## API
+## API Reference
 
-13 route groups under `/api`:
+18 endpoint groups:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/chat` | POST | SSE streaming chat (standard) |
-| `/chat/smart` | POST | **Auto-routed** chat (chat/task/background/project) |
-| `/chat/agent/{name}` | POST | Direct agent chat (bypass JINXUS_CORE) |
-| `/chat/sync` | POST | Synchronous chat (no streaming) |
+| `/chat` | POST | SSE streaming chat (standard orchestration) |
+| `/chat/smart` | POST | Auto-routed chat — Smart Router classifies and executes |
+| `/chat/agent/{name}` | POST | Direct agent chat (bypasses JINXUS_CORE) |
+| `/chat/sync` | POST | Synchronous chat (blocks until complete) |
 | `/task` | POST | Background task submission (autonomous mode) |
-| `/task/{id}/stream` | GET | Task progress SSE |
-| `/projects` | POST | Multi-phase project creation (LLM decomposition) |
+| `/task/{id}/stream` | GET | Task progress SSE stream |
+| `/task/{id}/pause` | POST | Pause a running background task |
+| `/task/{id}/resume` | POST | Resume a paused task |
+| `/projects` | POST | Create multi-phase project (LLM decomposes into phases) |
 | `/projects/{id}/start` | POST | Start project execution |
-| `/projects/{id}/stream` | GET | Project progress SSE |
-| `/projects/{id}/artifacts` | GET | Phase artifact retrieval |
+| `/projects/{id}/stream` | GET | Project progress SSE stream |
+| `/projects/{id}/artifacts` | GET | Retrieve phase artifacts |
 | `/processes` | POST/GET | Long-running process management |
-| `/processes/{id}/health` | GET | Process health check |
-| `/agents` | GET | Agent status, teams, capabilities |
-| `/status` | GET | System status, tool policies, MCP servers |
-| `/status/mcp/servers` | POST/DELETE | Runtime MCP server management |
-| `/memory/search` | POST | Semantic memory search |
-| `/feedback` | POST | Task feedback for self-improvement |
-| `/logs` | GET | Tool call and task logs |
+| `/processes/{id}/health` | GET | Process health check (uptime, HTTP status) |
+| `/agents` | GET | Agent status, teams, capabilities, tool counts |
+| `/status` | GET | System health, tool policies, MCP server status |
+| `/status/mcp/servers` | POST/DELETE | Add or remove MCP servers at runtime |
+| `/memory/search` | POST | Semantic search across long-term memory |
+| `/feedback` | POST | Submit task feedback for self-improvement |
+| `/logs` | GET | Tool call logs, task history, metrics |
 
-Full Swagger docs at `http://localhost:19000/docs`.
+Interactive Swagger docs available at `http://localhost:19000/docs`.
 
 ---
 
@@ -193,24 +243,28 @@ Full Swagger docs at `http://localhost:19000/docs`.
 
 ```bash
 cd backend
-cp .env.example .env   # Add your ANTHROPIC_API_KEY + other keys
-docker compose up -d   # Starts backend + Redis + Qdrant
+cp .env.example .env   # Add ANTHROPIC_API_KEY and other service keys
+docker compose up -d   # Starts backend (FastAPI) + Redis + Qdrant
 ```
+
+The backend uses **volume-mounted source code** — edit files and `docker compose restart jinxus` to apply changes. No rebuild needed unless `Dockerfile` changes. The `entrypoint.sh` automatically detects `requirements.txt` changes and runs `pip install` on restart.
 
 ### Frontend
 
 ```bash
 cd frontend
-bash dev.sh            # Auto-installs deps + starts Next.js dev server
+bash dev.sh   # Detects package changes, installs deps, starts Next.js dev server via pm2
 ```
+
+HMR (Hot Module Replacement) is enabled — save a file and the browser updates instantly.
 
 ### Access
 
 | Service | URL |
 |---------|-----|
-| Web UI | http://localhost:5000 |
-| Backend API | http://localhost:19000 |
-| Swagger Docs | http://localhost:19000/docs |
+| Web UI | `http://localhost:5000` |
+| Backend API | `http://localhost:19000` |
+| Swagger Docs | `http://localhost:19000/docs` |
 | Telegram | Configure `TELEGRAM_BOT_TOKEN` in `.env` |
 
 ---
@@ -220,13 +274,15 @@ bash dev.sh            # Auto-installs deps + starts Next.js dev server
 | Command | Action |
 |---------|--------|
 | `/start` | Begin conversation |
-| `/status` | System status |
-| `/agents` | Agent list and states |
-| `/auto <task>` | Autonomous multi-step execution |
-| `/bg <task>` | Background task |
-| `/pause` | Pause running task |
-| `/resume` | Resume paused task |
-| `/cancel` | Cancel running task |
+| `/status` | System status overview |
+| `/agents` | List all agents and their states |
+| `/auto <task>` | Run autonomous multi-step execution |
+| `/bg <task>` | Submit background task |
+| `/pause` | Pause the running task |
+| `/resume` | Resume a paused task |
+| `/cancel` | Cancel the running task |
+
+Background tasks send progress reports via Telegram every 15 minutes and notify immediately on completion or failure.
 
 ---
 
@@ -234,25 +290,25 @@ bash dev.sh            # Auto-installs deps + starts Next.js dev server
 
 ```
 backend/jinxus/
-  agents/              # JINXUS_CORE + 6 sub-agents + specialist teams
-    coding/            #   JX_CODER team (5 specialists)
-    research/          #   JX_RESEARCHER team (3 specialists)
-  api/routers/         # 13 FastAPI route groups
+  agents/              # JINXUS_CORE orchestrator + 6 sub-agents
+    coding/            #   JX_CODER specialist team (5 agents)
+    research/          #   JX_RESEARCHER specialist team (3 agents)
+  api/routers/         # FastAPI route groups (chat, tasks, projects, processes, agents, status, logs)
   core/                # Orchestrator, background worker, autonomous runner,
                        # project manager, smart router, artifact store,
-                       # review loop, subprocess manager, tool policy/graph,
-                       # model router, context guard, session freshness
-  memory/              # 3-tier: Redis short-term, Qdrant long-term, SQLite meta
-  tools/               # 19 native tools + dynamic executor + MCP client
-  hr/                  # Agent hiring/firing/team management
+                       # review loop, subprocess manager, tool policy,
+                       # tool graph, model router, context guard, session freshness
+  memory/              # 3-tier memory: Redis (short) + Qdrant (long) + SQLite (meta)
+  tools/               # 19 native tools + DynamicToolExecutor + MCP client
+  hr/                  # Agent hiring/firing, team management, factory
   config/              # Settings (env-driven), MCP server definitions
-  channels/            # Telegram bot, CLI, daemon
+  channels/            # Telegram bot, CLI, daemon (24h background service)
 
 frontend/src/
-  components/tabs/     # 10 UI tabs: Chat, Dashboard, Agents, Graph,
+  components/tabs/     # UI tabs: Chat, Dashboard, Agents, Graph,
                        # Tools, Memory, Settings, Logs, Notes, Projects
-  lib/                 # API client, SSE parser, smooth streaming
-  store/               # Zustand state management
+  lib/                 # Centralized API client, SSE parser, smooth streaming utilities
+  store/               # Zustand global state management
 ```
 
 ---
@@ -261,15 +317,15 @@ frontend/src/
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| **v2.3.0** | 2026-03-16 | Smart Router, Artifact Store, Review-Fix Loop, Subprocess Manager |
-| v2.2.0 | 2026-03-14 | Performance patches, memory leak fixes, MCP dynamic loader |
-| v2.1.0 | 2026-03-13 | JX_RESEARCHER specialist team, SSE event buffer |
-| v1.7.0 | 2026-03-12 | Background work: checkpoints, progress, pause/resume, task chaining |
-| v1.6.0 | 2026-03-11 | JX_CODER specialist team, continuation, progressive disclosure |
-| v1.5.0 | 2026-03-09 | Docker multi-stage, Tool Policy API, real-time tool logs |
-| v1.4.0 | 2026-03-08 | Frontend overhaul, model fallback, session freshness |
+| **v2.3.0** | 2026-03-16 | Smart Router, Artifact Store, Review-Fix Loop, Subprocess Manager, ProjectManager |
+| v2.2.0 | 2026-03-14 | Performance patches, memory leak fixes, MCP dynamic loader with auto-annotation |
+| v2.1.0 | 2026-03-13 | JX_RESEARCHER specialist team (3 experts), SSE event buffer replay |
+| v1.7.0 | 2026-03-12 | Background work: Redis checkpoints, real progress, pause/resume, task chaining |
+| v1.6.0 | 2026-03-11 | JX_CODER specialist team (5 experts), continuation, progressive disclosure |
+| v1.5.0 | 2026-03-09 | Docker multi-stage build, Tool Policy API, real-time tool call logs |
+| v1.4.0 | 2026-03-08 | Frontend overhaul, model fallback runner, session freshness policy |
 
-See [docs/03_DEVELOP_STATUS.md](docs/03_DEVELOP_STATUS.md) for full changelog.
+See [docs/03_DEVELOP_STATUS.md](docs/03_DEVELOP_STATUS.md) for the full changelog.
 
 ---
 
