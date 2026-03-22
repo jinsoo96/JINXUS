@@ -127,7 +127,7 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
 
   // 서브탭: 직원현황 vs 플레이그라운드
-  const [subTab, setSubTab] = useState<'status' | 'playground'>('status');
+  const [subTab, setSubTab] = useState<'status' | 'playground'>('playground');
 
   // 직접 채팅
   const [chatAgent, setChatAgent] = useState<string | null>(null);
@@ -563,17 +563,6 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
             <div className="flex items-center justify-between px-4 py-2 border-b border-dark-border bg-zinc-900/60 flex-shrink-0">
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setSubTab('status')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    subTab === 'status'
-                      ? 'bg-zinc-700/60 text-white'
-                      : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
-                  }`}
-                >
-                  <Building2 size={13} />
-                  직원 현황
-                </button>
-                <button
                   onClick={() => setSubTab('playground')}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                     subTab === 'playground'
@@ -583,6 +572,17 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
                 >
                   <span style={{ fontSize: 13 }}>🏢</span>
                   플레이그라운드
+                </button>
+                <button
+                  onClick={() => setSubTab('status')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    subTab === 'status'
+                      ? 'bg-zinc-700/60 text-white'
+                      : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+                  }`}
+                >
+                  <Building2 size={13} />
+                  직원 현황
                 </button>
               </div>
               <div className="flex items-center gap-2">
