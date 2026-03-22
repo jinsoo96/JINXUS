@@ -291,7 +291,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
     MCPServerConfig(
         name="cloudflare",
         command="npx",
-        args=["-y", "@cloudflare/mcp-server-cloudflare", "run"],
+        args=["-y", "@cloudflare/mcp-server-cloudflare", "run", "9ec1684eb068949d9176806c0cac6b8b"],
         env={"CLOUDFLARE_API_TOKEN": os.getenv("CLOUDFLARE_API_TOKEN", "")},
         allowed_agents=["JX_INFRA", "JX_OPS"],
         enabled=bool(os.getenv("CLOUDFLARE_API_TOKEN")),
