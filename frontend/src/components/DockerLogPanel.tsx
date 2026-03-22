@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { dockerApi, type DockerContainer } from '@/lib/api';
 import {
-  Terminal, X, ChevronDown, Pause, Play, Trash2,
+  ChevronDown, Pause, Play, Trash2,
 } from 'lucide-react';
 
 interface LogEntry {
@@ -14,7 +14,7 @@ interface LogEntry {
 
 const MAX_LOG_LINES = 500;
 
-export default function DockerLogPanel({ onClose }: { onClose: () => void }) {
+export default function DockerLogPanel({ onClose }: { onClose?: () => void }) {
   const [containers, setContainers] = useState<DockerContainer[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -79,41 +79,10 @@ export default function DockerLogPanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   return (
-    <div className="w-96 border-l border-dark-border bg-dark-card flex flex-col h-full">
-      {/* 헤더 */}
-      <div className="flex items-center justify-between p-3 border-b border-dark-border">
-        <div className="flex items-center gap-2">
-          <Terminal size={18} className={isConnected ? 'text-green-400' : 'text-zinc-400'} />
-          <span className="font-medium text-sm">Docker 로그</span>
-          {isConnected && <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setIsFollowing(!isFollowing)}
-            className={`p-1 rounded transition-colors ${isFollowing ? 'text-green-400 hover:bg-green-400/10' : 'text-zinc-500 hover:bg-zinc-700'}`}
-            title={isFollowing ? '자동 스크롤 끄기' : '자동 스크롤 켜기'}
-          >
-            {isFollowing ? <Play size={14} /> : <Pause size={14} />}
-          </button>
-          <button
-            onClick={() => setLogs([])}
-            className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 transition-colors"
-            title="로그 지우기"
-          >
-            <Trash2 size={14} />
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* 컨테이너 선택 */}
-      <div className="px-3 py-2 border-b border-dark-border">
-        <div className="relative">
+    <div className="w-full bg-dark-card flex flex-col h-full">
+      {/* 컨테이너 선택 + 컨트롤 (인라인) */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-dark-border">
+        <div className="relative flex-1 max-w-[220px]">
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
@@ -127,7 +96,22 @@ export default function DockerLogPanel({ onClose }: { onClose: () => void }) {
           </select>
           <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
         </div>
-        <div className="text-[10px] text-zinc-500 mt-1">{logs.length}줄</div>
+        <span className="text-[10px] text-zinc-500">{logs.length}줄</span>
+        {isConnected && <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />}
+        <button
+          onClick={() => setIsFollowing(!isFollowing)}
+          className={`p-1 rounded transition-colors ${isFollowing ? 'text-green-400 hover:bg-green-400/10' : 'text-zinc-500 hover:bg-zinc-700'}`}
+          title={isFollowing ? '자동 스크롤 끄기' : '자동 스크롤 켜기'}
+        >
+          {isFollowing ? <Play size={12} /> : <Pause size={12} />}
+        </button>
+        <button
+          onClick={() => setLogs([])}
+          className="p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 transition-colors"
+          title="로그 지우기"
+        >
+          <Trash2 size={12} />
+        </button>
       </div>
 
       {/* 로그 출력 — 실시간 스트리밍 */}

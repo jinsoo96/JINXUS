@@ -1,5 +1,381 @@
 # JINXUS 개발 현황
 
+## 버전 v2.9.0 (2026-03-22) — 가상 오피스 플레이그라운드 & UI 대개편
+
+### 플레이그라운드 (Pixel Office)
+
+| # | 항목 | 설명 |
+|---|------|------|
+| PG-1 | 에이전트 탭 '플레이그라운드' 서브탭 | Canvas 기반 가상 오피스 |
+| PG-2 | 12x16 픽셀 스프라이트 캐릭터 | 4방향, 걷기 3프레임 사이클 |
+| PG-3 | BFS 경로 탐색 | 부드러운 보간 이동 (48px/s) |
+| PG-4 | 에이전트별 고유 외형 | 팀 유니폼, 12종 머리색 |
+| PG-5 | 도구별 애니메이션 6종 | idle/walk/type/read/think/search |
+| PG-6 | 도구 사용 5x5 픽셀 아이콘 | 터미널/돋보기/연필/뇌/지구 |
+| PG-7 | 작업 시작 시 말풍선 | 3초 페이드아웃 |
+| PG-8 | SSE 실시간 상태 스트림 | 폴링 → 즉시 반응 |
+| PG-9 | 50x30 타일 오피스 | 6개 팀 방 + 복도, 2x 스케일 |
+
+### UI 대개편
+
+| # | 항목 | 설명 |
+|---|------|------|
+| UI-1 | 대시보드 → 설정 탭 통합 | 4개 접이식 섹션, 사이드바 대시보드 제거 |
+| UI-2 | 채팅/프로젝트 탭 시스템 로그 하단 패널 | VSCode 스타일, 드래그 리사이즈 |
+| UI-3 | 전체 에이전트 이름 한국어 표시 통일 | JX_ 코드 제거 |
+
+### 백엔드
+
+| # | 항목 | 설명 |
+|---|------|------|
+| BE-1 | GET /agents/runtime/stream SSE 엔드포인트 | 실시간 상태 변경 스트림 |
+| BE-2 | StateTracker 이벤트 버스 | subscribe/notify 패턴 |
+
+### 정리
+
+| # | 항목 | 설명 |
+|---|------|------|
+| CLN-1 | start.sh, stop.sh 삭제 | 구버전 tmux 방식 |
+| CLN-2 | daemon.sh uvicorn 호출 버그 수정 | — |
+
+---
+
+## 버전 v2.6.1 (2026-03-19) — Matrix 연결 수정 + 프롬프트 엔지니어 채용
+
+### 핵심 변경
+- **Matrix URL 고정**: `getMatrixHS()` `window.hostname` 기반 → `NEXT_PUBLIC_MATRIX_HS` env var 우선 사용 (`100.75.83.105:8008` 고정) → Cloudflare 접속 시 오작동 제거
+- **fetch 타임아웃**: whoami(6s), 룸조회(5s), 메시지전송(10s), sync long-poll 30s→10s
+- **marketing Matrix 룸**: `CHANNEL_TO_ALIAS_LOCALPART` 누락 추가, Synapse에 방 생성 + 에이전트 참가
+- **Matrix AS 토큰**: `docker compose restart` → `docker compose up -d` 변경 필요 (restart는 env_file 재로드 안 함)
+- **Matrix 에러 메시지 개선**: "Synapse 서버 상태 확인" → "메시지 전송은 계속 가능" + 재연결 버튼
+- **프롬프트 엔지니어(지호) 채용**: 에이전트 총 28명, 개발팀 12명
+- **channel.py AGENT_CHANNEL_MAP**: 신규 에이전트 6명 + 기존 누락분 추가
+
+| # | 항목 | 파일 |
+|---|------|------|
+| MTX-1 | Matrix HS env var 고정 | `matrix.ts`, `.env.local`, `NEXT_PUBLIC_MATRIX_HS` |
+| MTX-2 | fetch 타임아웃 추가 | `matrix.ts` (`fetchWithTimeout`) |
+| MTX-3 | sync 30s→10s | `matrix.ts` |
+| MTX-4 | marketing 채널 Matrix 룸 | `matrix.ts`, `matrix_channel.py` |
+| MTX-5 | 에러 배너 + 재연결 버튼 | `CompanyChat.tsx` |
+| MTX-6 | AS 토큰 로드 수정 | `docker compose up -d` (env_file 재로드) |
+| HIRE-6 | 프롬프트 엔지니어(이지호) 채용 | `personas.py`, `personas.ts` |
+| HIRE-7 | channel.py 신규 에이전트 등록 | `channel.py` |
+
+---
+
+## 버전 v2.6.0 (2026-03-19) — 에이전트 대규모 채용 + 카운트 단일화 + 이미지 최적화
+
+### 핵심 변경
+- **개발팀 에이전트 5명 신규 채용**: JX_AI_ENG(승우), JX_SECURITY(정민), JX_DATA_ENG(서준), JX_MOBILE(은지), JX_ARCHITECT(민성)
+- **에이전트 총원 27명** (22→27, 개발팀 6→11명)
+- **에이전트 수 단일 소스**: `hrAgents` 기반으로 통일. Sidebar/Dashboard/AgentsTab/GraphTab/CompanyChat 모두 `hrAgents.length` 사용, 하드코딩 +1 제거
+- **마스코트 이미지 로딩 최적화**: layout.tsx preload 링크 추가 + 웰컴 스크린 `fetchPriority="high"` 적용
+
+| # | 항목 | 파일 |
+|---|------|------|
+| HIRE-1 | AI/ML 엔지니어(승우) 채용 | `personas.py`, `personas.ts` |
+| HIRE-2 | 보안 엔지니어(정민) 채용 | `personas.py`, `personas.ts` |
+| HIRE-3 | 데이터 엔지니어(서준) 채용 | `personas.py`, `personas.ts` |
+| HIRE-4 | 모바일 개발자(은지) 채용 | `personas.py`, `personas.ts` |
+| HIRE-5 | 시스템 아키텍트(민성) 채용 | `personas.py`, `personas.ts` |
+| FIX-A | 에이전트 수 단일 소스(hrAgents) | `Sidebar.tsx`, `DashboardTab.tsx`, `AgentsTab.tsx`, `GraphTab.tsx`, `CompanyChat.tsx` |
+| FIX-B | 마스코트 이미지 preload | `layout.tsx`, `ChatTab.tsx` |
+
+---
+
+## 버전 v2.5.0 (2026-03-19) — 프론트엔드 구조 수정 + 성능 최적화
+
+### 핵심 변경
+- **Next.js 구조 수정**: `output: 'standalone'` 제거 (`next start` 충돌 원인), `layout.tsx` 서버/클라이언트 경계 위반 수정 (`ClientProviders` 분리)
+- **번들 최적화**: `react-syntax-highlighter` dynamic import → 초기 JS 316KB → 76.8KB (**76% 감소**)
+- **308 redirect 수정**: `getInfo()` trailing slash 제거 → `/api/`→308→`/api` 체인 제거
+- **정적 캐시 최적화**: `_next/static/` 해시 파일 `immutable` 캐시 적용 (기존 `no-cache` → 매번 재다운로드 낭비)
+- **`sharp` 설치**: 프로덕션 이미지 최적화 활성화
+- **dev.sh 개선**: production(기본)/dev/rebuild 모드 분리
+
+| # | 항목 | 파일 |
+|---|------|------|
+| ARCH-1 | output:standalone 제거 | `next.config.js` |
+| ARCH-2 | ClientProviders 분리 | `ClientProviders.tsx` (신규), `layout.tsx` |
+| ARCH-3 | SyntaxHighlighter dynamic import | `MarkdownRenderer.tsx` |
+| ARCH-4 | getInfo trailing slash 제거 | `api.ts` |
+| ARCH-5 | 정적 캐시 immutable 설정 | `next.config.js` |
+| ARCH-6 | sharp 설치 | `package.json` |
+| ARCH-7 | dev.sh prod/dev/rebuild 분리 | `dev.sh` |
+
+---
+
+## 버전 v2.4.0 (2026-03-19) — 인격 시스템 + HR·채널 연동 수정 + 프론트엔드 성능 개선
+
+### 프론트엔드 로딩 성능 개선 (2026-03-19 추가)
+- **production 모드로 전환**: `next dev` → `next start` (JS 번들 14MB → 409KB, **35배 감소**)
+- **HMR WebSocket 수정**: `allowedDevOrigins` 미설정으로 `jinxus.js-96.com`에서 WebSocket 400 차단 → 추가 후 101 정상
+- **TTFB 개선**: 7초(cold) → 105ms (로컬), 330ms (Cloudflare 경유)
+- **dev.sh 개선**: `--dev` 플래그로 개발/production 모드 선택, 빌드 실패 시 자동 fallback
+
+| # | 항목 | 파일 |
+|---|------|------|
+| PERF-1 | production 빌드 서빙 | `dev.sh` (`next start` 기본) |
+| PERF-2 | allowedDevOrigins 추가 | `next.config.js` |
+| PERF-3 | SSE 직접 연결 URL | `.env.local` `NEXT_PUBLIC_STREAM_URL` |
+
+---
+
+## 버전 v2.4.0 (2026-03-19) — 인격 시스템 + HR·채널 연동 수정
+
+### 핵심 변경
+- **인격 아키타입 시스템**: 20개 인격 풀(개척자·전략가·반골·장인 등). 기존 에이전트 전원 personality_id 할당. 신규 고용 시 랜덤 배정 + 시스템 프롬프트 자동 주입
+- **CompanyChat 채널 멤버**: HR 고용 목록 기반으로 필터링. 미고용 에이전트 노출 제거
+- **에이전트 카운트 통일**: AgentsTab `(N)` = hiredSet.size (JINXUS_CORE 포함) = 채널 멤버 수 동일 소스
+- **버전 수정**: settings.py 하드코딩 오류 2.7.0 → 2.4.0
+
+| # | 항목 | 파일 |
+|---|------|------|
+| PERS-1 | 인격 아키타입 풀 | `agents/personality.py` (신규, 20개) |
+| PERS-2 | 에이전트 personality_id 전원 매핑 | `agents/personas.py` |
+| PERS-3 | 고용 시 랜덤 인격 선택 | `hr/agent_factory.py`, `hr/models.py` |
+| PERS-4 | 시스템 프롬프트 인격 주입 | `hr/agent_factory.py` `<personality>` 블록 |
+| PERS-5 | API personality 필드 노출 | `api/routers/agents.py` |
+| PERS-6 | EmployeeCard 인격 뱃지·MBTI | `AgentsTab.tsx` |
+| FIX-1 | 채널 멤버 HR 고용 연동 | `CompanyChat.tsx` hiredCodes 필터 |
+| FIX-2 | 에이전트 카운트 통일 | `AgentsTab.tsx` hiredSet.size |
+| FIX-3 | 버전 수정 | `settings.py` |
+
+---
+
+## 버전 v2.11.0 (2026-03-19) — C-Suite 임원팀 완성 + 백엔드↔프론트 단일 소스 아키텍처
+
+### 핵심 변경
+- **`personas.py` 단일 소스**: 백엔드에서 에이전트를 추가/수정하면 프론트엔드 전체(AgentsTab·채널·프로젝트 등)에 자동 반영
+- **C-Suite 4인 완성**: CEO(JINXUS), CTO(채영), COO(세준), CFO(미래)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| ORG-6 | JX_COO 추가 | `personas.py`, `personas.ts` | COO 오세준(⚡). 임원팀. 팀간 병목 해결·운영 조율·스케줄 관리 |
+| ORG-7 | JX_CFO 추가 | `personas.py`, `personas.ts` | CFO 윤미래(💰). 임원팀. ROI 분석·재무·투자 의사결정 |
+| ARCH-1 | Backend→Front 단일 소스 | `personas.py`, `agents.py`, `personas.ts`, `api.ts`, `useAppStore.ts` | `GET /agents/personas` 엔드포인트 추가. 앱 시작 시 `loadPersonas()` 호출 → `setDynamicPersonaMap()` → 동적 Proxy 맵 덮어쓰기 |
+| ARCH-2 | personas.ts 동적화 | `personas.ts` | `_dynamicMap` + Proxy 패턴. 정적 fallback 유지. `setDynamicPersonaMap()` export |
+| ARCH-3 | personasVersion 트리거 | `useAppStore.ts`, `AgentsTab.tsx` | personas 로드 완료 시 버전 카운터 증가 → useMemo deps 트리거로 컴포넌트 리렌더링 |
+| ARCH-4 | AgentsTab 동적 팀그룹 | `AgentsTab.tsx` | 모듈 레벨 `TEAM_AGENTS` 상수 제거 → 컴포넌트 내 `useMemo([personasVersion])` 로 교체 |
+| POLICY-1 | Tool Policy 신규 에이전트 | `tool_policy.py` | JX_CTO·JX_COO·JX_CFO·JX_MARKETING·JS_PERSONA·JX_SNS·JX_PRODUCT·JX_STRATEGY 도구 정책 등록 |
+| POLICY-2 | MCP 접근 권한 확장 | `mcp_servers.py` | filesystem(CTO), playwright(SNS), postgres(CFO·COO·STRATEGY), notion/slack(COO·CFO·MARKETING 등) |
+
+### 최종 팀 구조 (v2.11.0)
+| 팀 | 역할 | 멤버 |
+|---|---|---|
+| 임원 | C-Suite 의사결정 | JINXUS(CEO), 채영(CTO), 세준(COO), 미래(CFO) |
+| 엔지니어링 | 개발·QA·인프라 | 민준(팀장), 예린, 재원, 도현, 수빈, 하은 |
+| 리서치 | 조사·팩트체크 | 지은(팀장), 유진, 시우, 나연 |
+| 운영 | 시스템·데이터 | 태양(시스템운영), 현수(데이터분석) |
+| 마케팅 | 브랜딩·콘텐츠·SNS | 지훈(팀장), 소희(라이터), 아름(퍼소나), 다현(SNS) |
+| 기획 | 전략·제품·기획 | 서연(PM), 준혁(전략가) |
+
+---
+
+## 버전 v2.10.0 (2026-03-19) — 조직 구조 전면 재설계 + 스크롤 수정
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| ORG-1 | 임원팀 분리 | `personas.ts`, `personas.py` | `전사` 팀 폐지 → `임원` 팀 신설. CEO(JINXUS_CORE), CTO(이채영)만 임원 |
+| ORG-2 | JX_WRITER 마케팅 이동 | `personas.ts`, `personas.py` | `전사`→`마케팅` 팀, channel `general`→`marketing`. 지훈 팀장 아래 배치 |
+| ORG-3 | JX_ANALYST 운영 이동 | `personas.ts`, `personas.py` | `전사`→`운영` 팀, channel `general`→`ops`. 태양과 협업 |
+| ORG-4 | JS_PERSONA 백엔드 팀 수정 | `personas.py` | `전사`→`마케팅` (프론트는 이미 올바름) |
+| ORG-5 | 전략기획 멤버 수정 | `personas.ts` | planning 채널 = planning 소속 + 임원팀만. 기존엔 라이터·분석가·퍼소나도 포함돼 오류 |
+| NEW-1 | JX_SNS 추가 | `personas.ts`, `personas.py` | SNS 매니저 남다현(📱). 마케팅팀. 바이럴·인스타·틱톡·커뮤니티 관리 |
+| NEW-2 | JX_STRATEGY 추가 | `personas.ts`, `personas.py` | 비즈니스 전략가 신준혁(🎯). 기획팀. 시장분석·OKR·투자자보고서 |
+| UI-1 | AgentsTab 임원팀 색상 | `AgentsTab.tsx` | '전사' amber→'임원' amber (🏅 임원 구분) |
+| UI-2 | AgentsTab 왼쪽 패널 스크롤 | `AgentsTab.tsx` | `overflow-y-auto min-h-0` 추가. 에이전트 목록 잘림 해결 |
+
+### 최종 팀 구조 (v2.10.0)
+| 팀 | 역할 | 멤버 |
+|---|---|---|
+| 임원 | C-Suite 의사결정 | JINXUS(CEO), 채영(CTO) |
+| 엔지니어링 | 개발·QA·인프라 | 민준(팀장), 예린, 재원, 도현, 수빈, 하은 |
+| 리서치 | 조사·팩트체크 | 지은(팀장), 유진, 시우, 나연 |
+| 운영 | 시스템·데이터 | 태양(시스템운영), 현수(데이터분석) |
+| 마케팅 | 브랜딩·콘텐츠·SNS | 지훈(팀장), 소희(라이터), 아름(퍼소나), 다현(SNS) |
+| 기획 | 전략·제품·기획 | 서연(PM), 준혁(전략가) |
+
+---
+
+## 버전 v2.9.0 (2026-03-19) — 채널/팀 동적 연동 완성 (personas.ts 단일 소스)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| FE-1 | CompanyChat 채널 멤버 동적화 | `tabs/CompanyChat.tsx` | 하드코딩 `getChannelMembers()` 제거. `getChannelAgents()` 사용 — general=전체, planning=planning+전사팀, 나머지=채널 소속 |
+| FE-2 | ChannelMembers 패널 개선 | `tabs/CompanyChat.tsx` | 이모지+이름+직함 표시. `FIRST_NAME_EMOJI`/`PERSONA_MAP` 직접 참조 제거 |
+| FE-3 | AgentsTab 코더/리서치팀 API 제거 | `tabs/AgentsTab.tsx` | `coderTeam`/`researcherTeam` 상태·API폴링·하드코딩 섹션 전부 삭제. 직원현황 그리드는 이미 `getTeamGroups()`+`TEAM_ORDER` 기반 |
+| FE-4 | 불필요한 아이콘/타입 제거 | `tabs/AgentsTab.tsx` | `Code2`, `Search` lucide 아이콘, `CodingSpecialist` 타입 임포트 제거 |
+
+---
+
+## 버전 v2.8.0 (2026-03-19) — 텔레그램↔Matrix↔팀 업무 완전 연동
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| TG-1 | 텔레그램 task 분류 | `channels/telegram_bot.py` | `_classify_as_task()` 키워드 패턴 분류. 업무 지시면 AgentReactor 경로, 대화면 JINXUS_CORE 경로 |
+| TG-2 | 텔레그램→Matrix 전사 공지 | `channels/telegram_bot.py` | task 분류 시 Matrix general 채널에 `📢 [CEO 진수님 지시] {message}` 즉시 게시 |
+| TG-3 | 즉시 확인 응답 | `channels/telegram_bot.py` | task 접수 즉시 "전사 공지됐습니다. 팀장들이 배분하고 진행할게요." 응답 (논블로킹) |
+| TG-4 | AgentReactor telegram_callback | `hr/agent_reactor.py` | `react()` / `_execute_task()`에 `telegram_callback` 파라미터 추가. 작업 완료 후 콜백 호출 |
+| TG-5 | 텔레그램 완료 보고 | `hr/agent_reactor.py` | 업무 노트 작성 후 "✅ 업무 완료 보고 / 담당 / 결과 / 📒 노트 작성됨" 형식으로 자동 발송 |
+
+### 전체 흐름 (v2.8.0)
+```
+진수 텔레그램 메시지
+  ├─ task 분류 (키워드 패턴)
+  │   ├─ Matrix general에 CEO 공지 게시
+  │   ├─ 텔레그램: "전사 공지됐습니다" 즉시 응답
+  │   └─ 백그라운드:
+  │       ├─ 팀장들 general 채널에서 반응 (존댓말)
+  │       ├─ 팀장 → 팀 채널 브리핑 → 팀원 배분
+  │       ├─ 팀원들 실제 업무 실행
+  │       ├─ general에 최종 보고
+  │       ├─ 업무 노트 자동 작성
+  │       └─ 텔레그램으로 완료 보고
+  └─ chat 분류 → JINXUS_CORE 처리 후 텔레그램 응답
+```
+
+---
+
+## 버전 v2.7.0 (2026-03-19) — 탭 통합 + Matrix .env 연동 + UI 정비
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| INT-1 | 직원 현황 + 에이전트 탭 통합 | `components/tabs/AgentsTab.tsx` | GraphTab 부서별 그리드(EmployeeCard)를 AgentsTab 오른쪽 패널 기본 뷰로 통합. 카드 클릭 → 직접 채팅 전환. 채팅 헤더에 "현황" 버튼으로 복귀 |
+| INT-2 | GraphTab 제거 | `Sidebar.tsx`, `app/page.tsx`, `store/useAppStore.ts` | '직원 현황' 탭 항목 삭제. `graph` import/라우팅/타입 전부 제거 |
+| INT-3 | Matrix 계정 .env 연동 | `frontend/.env.local` (신규), `CompanyChat.tsx` | `NEXT_PUBLIC_MATRIX_USER` / `NEXT_PUBLIC_MATRIX_PASSWORD` 환경변수 도입. 하드코딩된 `'jinsu'`/`'jinxus2026!'` 제거 |
+| INT-4 | MatrixAS 하드코딩 토큰 제거 | `channels/matrix_channel.py`, `config/settings.py` | `getattr(..., fallback_token)` 패턴 제거 → `settings.matrix_as_token` 직접 참조. settings 기본값도 빈 문자열로 변경 (실제값은 .env) |
+| INT-5 | 사이드바 "업무 노트" 레이블 수정 | `Sidebar.tsx` | '개발 노트' → '업무 노트' 로 변경 |
+| INT-6 | 마케팅/기획팀 색상 추가 | `AgentsTab.tsx` | TEAM_COLOR/TEAM_LABEL_COLOR에 '마케팅'(pink), '기획'(cyan) 추가 |
+
+---
+
+## 버전 v2.6.0 (2026-03-19) — 팀채팅 Matrix 프론트엔드 전환 + 조직 확장 + 대화형 AgentReactor
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| ORG-1 | CompanyChat Matrix 전환 | `components/tabs/CompanyChat.tsx` | SSE 기반 → Matrix Client-Server API 기반으로 교체. auto-login(`jinsu`), `/sync` long-polling, 채널↔룸 매핑, 자동 재연결 |
+| ORG-2 | Matrix 경량 클라이언트 | `lib/matrix.ts` (신규) | login/sync/send/resolveRoomAlias 구현. matrix-js-sdk 의존성 없이 직접 fetch. LOCALPART→이름 PERSONA_MAP 자동 파생 |
+| ORG-3 | 마케팅팀 채널 추가 | `hr/channel.py`, `CompanyChat.tsx` | `marketing` 채널 신설. ChannelName enum 추가. 채널 display명 한국 기업 방식으로 정비 (전사 공지/개발팀/마케팅팀 등) |
+| ORG-4 | JX_MARKETING 채용 | `agents/jx_marketing.py` (신규), `agents/personas.py` | 박지훈 마케팅 팀장. ENFJ. 브랜딩·그로스해킹·SNS·캠페인. marketing 채널 소속 |
+| ORG-5 | JX_PRODUCT 채용 | `agents/jx_product.py` (신규), `agents/personas.py` | 김서연 제품 기획 PM. INFJ. 유저리서치·로드맵·OKR·스프린트. planning 채널 소속 |
+| ORG-6 | 에이전트 존댓말 강제 | `hr/agent_reactor.py`, `agents/personas.py` | 진수(오너)에게 반드시 존댓말 사용 규칙 system prompt에 명시. 반말 절대 금지 |
+| ORG-7 | 대화형 AgentReactor | `hr/agent_reactor.py` | 병렬 반응 → 순차 반응으로 전환. 이전 직원 발언을 컨텍스트로 주입해 실제 대화처럼 연결. 0.6초 간격 타이핑 시뮬레이션 |
+| ORG-8 | 팀 내부 논의 플로우 | `hr/agent_reactor.py` _execute_task | task 실행 시: 팀장이 팀 채널에서 내부 브리핑 → 작업 실행 → 결과를 general 채널에 CEO 보고 방식으로 최종 정리 |
+| ORG-9 | 프론트엔드 페르소나 확장 | `lib/personas.ts` | JX_MARKETING(지훈), JX_PRODUCT(서연) 추가. JS_PERSONA 소속팀 marketing으로 이동 |
+
+**Matrix 접속**: Element → 홈서버 `http://100.75.83.105:8008` / `jinsu` / `jinxus2026!`
+
+---
+
+## 버전 v2.5.0 (2026-03-19) — Matrix(matrix.org) 팀채팅 통합 + claude-opus-4-6 업그레이드
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| MX-1 | Synapse 홈서버 | `docker-compose.yml`, `synapse/` | matrixdotorg/synapse:latest 컨테이너 추가. PostgreSQL 백엔드. AS 등록 (`synapse/appservices/jinxus_agents.yaml`) |
+| MX-2 | Matrix AS 클라이언트 | `channels/matrix_channel.py` (신규) | MatrixAS 클래스: 에이전트 가상 계정 등록/display_name/룸 생성/참가/메시지 전송. aiohttp + yarl.URL(encoded=True)로 URL 이중 인코딩 방지 |
+| MX-3 | AS 이벤트 수신 라우터 | `api/routers/matrix.py` | `PUT /_matrix/app/v1/transactions/{txnId}` → AgentReactor. `GET /_matrix/app/v1/users/{userId}` 가상 유저 확인. room_id→channel 역방향 매핑 |
+| MX-4 | 서버 자동 셋업 | `api/server.py` | lifespan 시작 시 `setup_all_agents()` 백그라운드 실행. 16개 에이전트 등록 + 5개 룸 생성/참가 + room_id→channel 매핑 |
+| MX-5 | AgentReactor Matrix 연동 | `hr/agent_reactor.py` | 에이전트 반응 생성 후 Matrix 룸에도 동시 포스팅. `@jx_coder`, `@jx_researcher` 등 독립 계정으로 메시지 전송 |
+| MX-6 | 다중 에이전트 페르소나 | `agents/personas.py` | mbti/background/quirks/catchphrase/conflict_style/collaboration_note 필드 추가. 16명 풍부한 한국 직장인 캐릭터 설정 |
+| MX-7 | API 키/모델 업그레이드 | `.env` | ANTHROPIC_API_KEY 교체. CLAUDE_MODEL=claude-opus-4-6 (최신). CLAUDE_FALLBACK_MODEL=claude-sonnet-4-6 |
+| MX-8 | 앱 로깅 설정 | `main.py` | logging.basicConfig(INFO) 추가. 앱 로거 출력 정상화 |
+| MX-9 | scheduler 콜백 수정 | `api/server.py` | get_jinxus_core 존재하지 않음 → get_orchestrator().process() 사용 |
+
+**Element 연결**: 홈서버 `http://100.75.83.105:8008`, 계정 `@jinsu:100.75.83.105` / `jinxus2026!`
+
+---
+
+## 버전 v2.4.4 (2026-03-19) — 이채영 CTO 실제 고용 + 팀채팅 SSE 수정
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| CO-32 | JX_CTO 에이전트 구현 | `agents/jx_cto.py` (신규) | 이채영 CTO/QA총괄 실제 에이전트 파일 생성. 코드 리뷰/QA/아키텍처/장애 분류 후 CTO 관점 분석. 백엔드 레지스트리 등록 확인 |
+| CO-33 | SSE 자동 재연결 | `lib/api.ts` streamChannel | 연결 끊김 시 지수 백오프(1s→2s→…→15s) 자동 재연결. 서버 재시작 후 새로고침 불필요 |
+| CO-34 | SSE 채널 전환 최적화 | `components/tabs/CompanyChat.tsx` | activeChannel → ref로 변경. 부서 채널 전환 시 SSE 재연결 제거. 연결 1개 유지 |
+
+---
+
+## 버전 v2.4.3 (2026-03-19) — 하드코딩 제거 + 에이전트 병렬 직접 실행
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| CO-24 | personas 단일 소스 (BE) | `agents/personas.py` | AgentPersona에 skills/team/channels 필드 추가. CHANNEL_AGENT_MAP 자동 생성. 하드코딩 에이전트 목록 전체 제거 |
+| CO-25 | AgentReactor 파생화 | `hr/agent_reactor.py` | CHANNEL_DEFAULT_AGENTS·AGENT_SKILLS 하드코딩 제거 → personas.py에서 자동 파생. `__init__`에서 `CHANNEL_AGENT_MAP` 직접 사용 |
+| CO-26 | HR Manager 파생화 | `hr/manager.py` | 하드코딩 existing_agents 제거 → PERSONAS 순회 자동 등록. 순환 임포트 방지를 위해 지연 임포트 적용 |
+| CO-27 | personas 단일 소스 (FE) | `lib/personas.ts` | FIRST_NAME_EMOJI(firstName→emoji 파생), getTeamGroups() 추가. 16개 에이전트 전체 정의 |
+| CO-28 | CompanyChat 부서 채널 | `components/tabs/CompanyChat.tsx` | AGENT_EMOJI 하드코딩 제거 → FIRST_NAME_EMOJI 사용. 채널 🏢전체/💻개발부서/🔬리서치부서/🖥️운영부서/📋플래닝으로 재구성. ChannelMembers 컴포넌트 추가 |
+| CO-29 | GraphTab 파생화 | `components/tabs/GraphTab.tsx` | TEAM_AGENTS 하드코딩 제거 → getTeamGroups() 사용 |
+| CO-30 | 병렬 에이전트 실행 | `hr/agent_reactor.py` | `_execute_task`: JINXUS_CORE 단독 처리 제거 → 분류된 에이전트들이 병렬로 직접 실행(asyncio.gather). 각 에이전트 결과를 소속 채널에 게시. JINXUS_CORE는 타 채널 작업 시 원래 채널에 요약만 |
+| CO-31 | 순환 임포트 해결 | `hr/manager.py` | jinxus.agents.personas 모듈 레벨 임포트 제거 → `_register_existing_agents()` 내부 지연 임포트로 변경. 백엔드 정상 기동 확인 |
+
+---
+
+## 버전 v2.4.2 (2026-03-19) — CEO명 JINXUS + 이채영 CTO 고용 + UI 정리
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| CO-19 | CEO 이름 통일 | `agents/personas.py`, `lib/personas.ts`, `CompanyChat.tsx` | JINXUS_CORE korean_name: 진우 → JINXUS. 채널/직원현황/에이전트탭 전체 JINXUS로 표시 |
+| CO-20 | 이채영 (JX_CTO) 고용 | `agents/personas.py`, `hr/manager.py`, `hr/agent_reactor.py`, `lib/personas.ts`, `GraphTab.tsx` | 이채영(채영) CTO/QA총괄 신규 에이전트. general/engineering/ops/planning 채널 참석. 직원 현황 전사팀에 표시 |
+| CO-21 | 채팅 인사말 수정 | `components/tabs/ChatTab.tsx` | "안녕하세요, 주인님" → "안녕하세요," |
+| CO-22 | 브라우저 탭 타이틀 | `app/layout.tsx`, `app/page.tsx` | 정적: "JINXUS". 동적: systemApi.getInfo() 후 "JINXUS - v{버전}"으로 업데이트 |
+| CO-23 | 연결 검증 | 채널 API | POST /channel/message → 진수 메시지 → JINXUS(CORE) 반응 확인. 팀 채널 정상 동작 확인 |
+
+---
+
+## 버전 v2.4.1 (2026-03-19) — 직원 이름 통일 + GraphTab → 직원 현황
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| CO-14 | 페르소나 상수 (FE) | `lib/personas.ts` | PERSONA_MAP — 에이전트 코드 → {성+이름, 이름, 직함, 팀, 채널, 이모지}. getDisplayName/getFirstName/getRole/getPersona 헬퍼. 프론트엔드 전체에서 단일 참조 |
+| CO-15 | GraphTab → 직원 현황 | `components/tabs/GraphTab.tsx` | 워크플로우 그래프 제거 → 부서별 직원 카드 레이아웃. 전사/엔지니어링/리서치/운영 4개 팀. 실시간 상태 + 현재 작업 + 팀 채널 이동 버튼 |
+| CO-16 | 사이드바 탭 레이블 | `components/Sidebar.tsx` | '그래프' (GitBranch) → '직원 현황' (Users). 사이드바 에이전트 이름도 한국 이름(이름만)으로 변경 |
+| CO-17 | AgentCard 한국화 | `components/AgentCard.tsx` | 에이전트 코드 → 성+이름 + 직함 + 이모지 아바타 표시. useAppStore 의존성 제거 |
+| CO-18 | AgentsTab 한국화 | `components/tabs/AgentsTab.tsx` | shortName() 제거. 에이전트 목록/전문가팀/채팅헤더 전부 한국 이름+직함+이모지로 통일 |
+
+---
+
+## 버전 v2.4.0 (2026-03-19) — Company OS: 에이전트 직원화 + 팀 채널 + 승인 게이트
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| CO-1 | CompanyChannel | `hr/channel.py` | Redis 기반 에이전트 팀 채널. #general/#engineering/#research/#ops/#planning 5개 채널. asyncio.Queue로 SSE 구독자에게 실시간 전달. general 채널에 전체 미러링 |
+| CO-2 | ApprovalGate | `core/approval_gate.py` | 작업 실행 전 진수 승인 게이트. asyncio.Event 대기 + 5분 타임아웃 자동 승인. approved/modified/cancelled 3가지 응답. Redis 영속화 |
+| CO-3 | AgentPersonas | `agents/personas.py` | 에이전트별 직원 페르소나. 한국 이름 15명: 진우(CORE)/민준(CODER)/예린(FRONTEND)/재원(BACKEND)/도현(INFRA)/수빈(REVIEWER)/하은(TESTER)/지은(RESEARCHER)/유진(WEB_SEARCHER)/시우(DEEP_READER)/나연(FACT_CHECKER)/소희(WRITER)/현수(ANALYST)/태양(OPS)/아름(PERSONA). get_persona_system_addon() system prompt 자동 주입 |
+| CO-4 | 채널 통합 (CORE) | `agents/jinxus_core.py` | decompose 후 → 채널 계획 공지 → 에이전트별 LLM 반응 병렬 생성(fast model) → 승인 게이트 → 실행. 취소 시 early return, 수정 시 feedback 주입 |
+| CO-5 | 채널 통합 (agents) | `agents/base_agent.py` | `post_to_channel()` 메서드 추가. 에이전트가 작업 중 팀 채널에 의견 공유 가능 |
+| CO-6 | 실행 중 채널 포스팅 | `agents/jinxus_core.py` `_run_agent()` | 에이전트 실행 시작/완료 시 소속 채널에 상태 자동 게시 |
+| CO-7 | Channel API | `api/routers/channel.py` | GET /channel/history/{ch}, GET /channel/stream (SSE), POST /channel/message (reactor 트리거), POST /channel/approve, GET /channel/approvals/pending |
+| CO-8 | 설정 추가 | `config/settings.py` | `approval_gate_enabled` (기본 True). 환경변수로 게이트 on/off 가능 |
+| CO-9 | CompanyChat 탭 | `components/tabs/CompanyChat.tsx` | Slack 스타일 팀 채팅 UI. 한국 이름 표시. 왼쪽 채널 목록 + 오른쪽 메시지 + 승인 카드. approval_request 메시지에 승인/수정/취소 버튼 인라인 표시 |
+| CO-10 | 프론트엔드 API | `lib/api.ts` | channelApi 추가 (getHistory/getAllHistory/postMessage/approve/getPendingApprovals/streamChannel) |
+| CO-11 | 탭 등록 | `app/page.tsx`, `Sidebar.tsx`, `store/useAppStore.ts` | '팀 채널' 탭 추가 (Building2 아이콘). 타입에 'channel' 추가 |
+| CO-12 | 서버 종료 정리 | `api/server.py` | lifespan 종료 시 CompanyChannel + ApprovalGate Redis 연결 정리 |
+| CO-13 | AgentReactor | `hr/agent_reactor.py` | 진수 채널 메시지 → 자동 에이전트 반응 엔진. 메시지 분류(casual/question/task) → 담당 에이전트 1~3명 결정 → in-character 반응 병렬 생성 → 채널 게시 → task면 JINXUS_CORE로 실제 실행. fire-and-forget. POST /channel/message에 연동 |
+
+---
+
+## 버전 v2.3.1 (2026-03-16) — 안정화 패치 (리소스 누수 수정 + 동시성 보호 + 종료 처리)
+
+| # | 항목 | 파일 | 설명 |
+|---|------|------|------|
+| STAB-1 | Redis 커넥션 try-finally | `core/autonomous_runner.py` | `_save_checkpoint`, `_load_checkpoint`, `_delete_checkpoint`에서 예외 발생 시에도 `aclose()` 보장. 커넥션 누수 수정 |
+| STAB-2 | 이벤트 버퍼 asyncio.Lock | `core/background_worker.py` | `_event_buffer`/`_event_subscribers` 동시 접근 보호. `subscribe_events`/`unsubscribe_events` async 전환 |
+| STAB-3 | 이벤트 구독 await 적용 | `api/routers/chat.py`, `api/routers/task.py` | `subscribe_events`/`unsubscribe_events` 호출부에 `await` 추가 |
+| STAB-4 | LLM API 타임아웃 | `core/autonomous_runner.py` | `_create_plan` 120초, `_evaluate_progress` 90초 `asyncio.wait_for` 적용. 네트워크 장애 시 무한 대기 방지 |
+| STAB-5 | StateTracker Redis 종료 | `agents/state_tracker.py`, `api/server.py` | `close()` 메서드 추가, lifespan 종료 시 호출 |
+| STAB-6 | ArtifactStore Redis 종료 | `core/artifact_store.py`, `api/server.py` | `close()` 메서드 추가, lifespan 종료 시 호출 |
+| STAB-7 | ShortTermMemory 종료 | `api/server.py` | lifespan 종료 시 `disconnect()` 호출 |
+| STAB-8 | SubprocessManager 방어 강화 | `core/subprocess_manager.py` | `os.killpg` ProcessLookupError 개별 처리, TCP 헬스체크 writer finally 정리 |
+| FE-1 | ChatTab 폴링 interval 정리 | `components/tabs/ChatTab.tsx` | 백그라운드 에러 시 setInterval을 ref에 저장, 언마운트 시 cleanup |
+| FE-2 | LogsTab clearTimeout 통일 | `components/tabs/LogsTab.tsx` | `clearInterval` → `clearTimeout` (setTimeout ID에 대한 잘못된 호출 수정) |
+| FE-3 | Sidebar 비활성 탭 폴링 스킵 | `components/Sidebar.tsx` | `document.visibilityState` 체크 추가 |
+| FE-4 | SSE 파서 디버그 로깅 | `lib/sse-parser.ts` | JSON 파싱 실패 시 개발 모드에서 `console.debug` 출력 |
+| FE-5 | 폴링 간격 상수 통일 | `lib/constants.ts`, `Sidebar.tsx`, `LogsTab.tsx` | `SIDEBAR_POLLING_MS`, `LOGS_ACTIVE_POLLING_MS`, `LOGS_IDLE_POLLING_MS` 상수화 |
+
+---
+
 ## 버전 v2.3.0 (2026-03-15) — 자율 프로젝트 실행 강화 (자동 라우팅 + 아티팩트 + 리뷰 루프 + 프로세스 관리)
 
 | # | 항목 | 파일 | 설명 |

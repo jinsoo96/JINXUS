@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ChatMessage, SystemStatus, AgentInfo } from '@/types';
 import { systemApi, agentApi, hrApi, type HRAgentRecord } from '@/lib/api';
+import { setDynamicPersonaMap } from '@/lib/personas';
 
 interface AppState {
   // 채팅 상태
@@ -13,9 +14,10 @@ interface AppState {
   agents: AgentInfo[];
   hrAgents: HRAgentRecord[];
   _agentsLoading: boolean;
+  personasVersion: number;  // loadPersonas 완료 시 증가 → 구독 컴포넌트 리렌더링 트리거
 
   // 현재 탭
-  activeTab: 'dashboard' | 'chat' | 'projects' | 'graph' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
+  activeTab: 'chat' | 'projects' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes' | 'channel';
 
   // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
   logsAgentFilter: string;
@@ -31,6 +33,8 @@ interface AppState {
   // 데이터 로드
   loadSystemStatus: () => Promise<void>;
   loadAgents: () => Promise<void>;
+  /** 백엔드 personas.py → 동적 PERSONA_MAP 덮어쓰기. 앱 시작 시 1회 호출 */
+  loadPersonas: () => Promise<void>;
 
   // HR 헬퍼
   getAgentRole: (name: string) => string;
@@ -45,7 +49,8 @@ export const useAppStore = create<AppState>((set) => ({
   agents: [],
   hrAgents: [],
   _agentsLoading: false,
-  activeTab: 'dashboard',
+  personasVersion: 0,
+  activeTab: 'chat',
   logsAgentFilter: 'all',
 
   // 채팅 액션
@@ -97,6 +102,17 @@ export const useAppStore = create<AppState>((set) => ({
       console.error('Failed to load agents:', error);
     } finally {
       set({ _agentsLoading: false });
+    }
+  },
+
+  loadPersonas: async () => {
+    try {
+      const data = await agentApi.getPersonas();
+      setDynamicPersonaMap(data.personas);
+      // 버전 증가 → 구독 컴포넌트가 리렌더링되어 최신 맵 반영
+      useAppStore.setState(s => ({ personasVersion: s.personasVersion + 1 }));
+    } catch (error) {
+      console.warn('[personas] 백엔드 로드 실패, 정적 fallback 사용:', error);
     }
   },
 

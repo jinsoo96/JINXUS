@@ -8,8 +8,8 @@ from pathlib import Path
 class Settings(BaseSettings):
     """JINXUS 설정 - Pydantic BaseSettings로 환경변수 자동 로드"""
 
-    # 버전
-    jinxus_version: str = Field(default="2.3.0")
+    # 버전 — jinxus/__init__.py의 __version__에서 자동 로드
+    jinxus_version: str = Field(default="2.9.0")
 
     # 서버
     jinxus_host: str = Field(default="0.0.0.0")
@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(default="")
     telegram_authorized_user_id: int = Field(default=0)  # 허용된 사용자 ID
 
+    # Matrix
+    matrix_hs_url: str = Field(default="http://synapse:8008")
+    matrix_server_name: str = Field(default="100.75.83.105")
+    matrix_as_token: str = Field(default="")
+    matrix_hs_token: str = Field(default="")
+
     # 자가 강화
     auto_improve_threshold: float = Field(default=0.6)
     reflect_every_n_tasks: int = Field(default=10)
@@ -64,6 +70,7 @@ class Settings(BaseSettings):
     notion_api_key: str = Field(default="")    # Notion MCP용
     mcp_enabled: bool = Field(default=True)  # MCP 활성화 여부
     use_dynamic_tools: bool = Field(default=True)  # 에이전트 동적 도구 실행 (Claude tool_use)
+    approval_gate_enabled: bool = Field(default=True)  # 작업 실행 전 진수 승인 요청
 
     # Claude Code
     claude_code_storage: str = Field(default="./data/claude_sessions")
@@ -93,6 +100,12 @@ class Settings(BaseSettings):
     step_timeout_seconds: int = Field(default=900)         # 개별 step 타임아웃 (기본 15분)
     guardrail_max_retries: int = Field(default=2)         # step 실패 시 최대 재시도 횟수
     checkpoint_ttl_hours: int = Field(default=24)         # 체크포인트 Redis TTL
+
+    # 메모리 최적화 (Qdrant)
+    memory_prune_min_score: float = Field(default=0.1, description="시간감쇠 적용 후 최소 점수 기준 (미만 삭제)")
+    memory_prune_halflife_days: int = Field(default=30, description="시간 감쇠 반감기 (일)")
+    memory_inject_max_chars: int = Field(default=8000, description="컨텍스트 주입 최대 글자수")
+    memory_dedup_threshold: float = Field(default=0.95, description="중복 판정 코사인 유사도 임계값")
 
     # 프로젝트 경로
     @property

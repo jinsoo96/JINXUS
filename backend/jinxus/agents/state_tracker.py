@@ -2,7 +2,9 @@
 
 에이전트의 실시간 상태를 추적하고 UI에 제공한다.
 도구 호출 로그는 Redis에 영속화 (재시작 시에도 유지).
+SSE 구독자에게 상태 변경을 실시간 푸시한다.
 """
+import asyncio
 import json
 import logging
 from collections import deque
@@ -71,6 +73,28 @@ class AgentStateTracker:
         self._tool_call_logs: deque[dict] = deque(maxlen=100)
         self._redis = None
         self._redis_ready = False
+        self._subscribers: list[asyncio.Queue] = []
+
+    # ── SSE 구독 ──
+
+    def subscribe(self) -> asyncio.Queue:
+        """실시간 상태 변경 이벤트 구독."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        """구독 해제."""
+        if q in self._subscribers:
+            self._subscribers.remove(q)
+
+    def _notify(self, event: dict) -> None:
+        """모든 구독자에게 이벤트 푸시 (논블로킹)."""
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # 느린 구독자는 이벤트 드롭
 
     @classmethod
     def get_instance(cls) -> "AgentStateTracker":
@@ -113,21 +137,27 @@ class AgentStateTracker:
         state.current_node = GraphNode.RECEIVE
         state.current_tools = []
         state.error_message = None
-        state.last_update = datetime.now()
+        now = datetime.now()
+        state.last_update = now
+        self._notify({"type": "state_change", "agent": agent_name, "status": "working", "task": state.current_task, "ts": now.isoformat()})
 
     def update_node(self, agent_name: str, node: GraphNode) -> None:
         """현재 노드 업데이트"""
         if agent_name in self._states:
             state = self._states[agent_name]
             state.current_node = node
-            state.last_update = datetime.now()
+            now = datetime.now()
+            state.last_update = now
+            self._notify({"type": "node_change", "agent": agent_name, "node": node.value, "ts": now.isoformat()})
 
     def update_tools(self, agent_name: str, tools: List[str]) -> None:
         """사용 중인 도구 업데이트"""
         if agent_name in self._states:
             state = self._states[agent_name]
             state.current_tools = tools
-            state.last_update = datetime.now()
+            now = datetime.now()
+            state.last_update = now
+            self._notify({"type": "tools_change", "agent": agent_name, "tools": tools, "ts": now.isoformat()})
 
     def complete_task(self, agent_name: str) -> None:
         """작업 완료"""
@@ -137,7 +167,9 @@ class AgentStateTracker:
             state.current_node = None
             state.current_task = None
             state.current_tools = []
-            state.last_update = datetime.now()
+            now = datetime.now()
+            state.last_update = now
+            self._notify({"type": "state_change", "agent": agent_name, "status": "idle", "ts": now.isoformat()})
 
     def set_error(self, agent_name: str, error: str) -> None:
         """에러 상태 설정"""
@@ -145,7 +177,9 @@ class AgentStateTracker:
             state = self._states[agent_name]
             state.status = AgentStatus.ERROR
             state.error_message = error[:200]
-            state.last_update = datetime.now()
+            now = datetime.now()
+            state.last_update = now
+            self._notify({"type": "state_change", "agent": agent_name, "status": "error", "error": state.error_message, "ts": now.isoformat()})
 
     def get_state(self, agent_name: str) -> Optional[AgentRuntimeState]:
         """에이전트 상태 조회"""
@@ -181,8 +215,9 @@ class AgentStateTracker:
             duration_ms: 실행 시간 (ms)
             error: 에러 메시지 (실패 시)
         """
+        now = datetime.now(KST)
         entry = {
-            "timestamp": datetime.now(KST).isoformat(),
+            "timestamp": now.isoformat(),
             "agent": agent_name,
             "tool": tool_name,
             "status": status,
@@ -190,10 +225,17 @@ class AgentStateTracker:
             "error": error[:200] if error else None,
         }
         self._tool_call_logs.append(entry)
+        self._notify({
+            "type": "tool_call",
+            "agent": agent_name,
+            "tool": tool_name,
+            "status": status,
+            "duration_ms": entry["duration_ms"],
+            "ts": now.isoformat(),
+        })
         # Redis 영속화 (비동기, 실패해도 인메모리에는 남음)
         if self._redis_ready and self._redis:
             try:
-                import asyncio
                 asyncio.get_running_loop().create_task(self._persist_log(entry))
             except Exception as e:
                 logger.debug(f"[StateTracker] Redis 도구 호출 로그 영속화 실패 (인메모리에는 보존): {e}")
@@ -219,6 +261,16 @@ class AgentStateTracker:
             await self._redis.ltrim(self._REDIS_KEY, 0, self._REDIS_MAX_LOGS - 1)
         except Exception as e:
             logger.debug(f"[StateTracker] Redis 로그 저장 실패: {e}")
+
+    async def close(self) -> None:
+        """Redis 연결 종료 (서버 종료 시 호출)"""
+        if self._redis:
+            try:
+                await self._redis.close()
+            except Exception as e:
+                logger.debug(f"[StateTracker] Redis 종료 중 오류: {e}")
+            self._redis = None
+            self._redis_ready = False
 
     async def get_tool_call_logs_persistent(self, limit: int = 50) -> List[dict]:
         """Redis에서 영속 도구 로그 조회 (재시작 후에도 유지)"""

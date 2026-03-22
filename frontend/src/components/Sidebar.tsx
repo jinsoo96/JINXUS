@@ -1,41 +1,83 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { systemApi, agentApi, type AgentRuntimeStatus } from '@/lib/api';
-import { LayoutDashboard, MessageSquare, GitBranch, Bot, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban } from 'lucide-react';
-import { MAX_SIDEBAR_AGENTS } from '@/lib/constants';
+import { MessageSquare, Bot, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban, Building2 } from 'lucide-react';
+import { getDisplayName, sortByRank } from '@/lib/personas';
+import { SIDEBAR_POLLING_MS } from '@/lib/constants';
 
 const tabs = [
-  { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
   { id: 'chat', label: '채팅', icon: MessageSquare },
+  { id: 'channel', label: '팀 채널', icon: Building2 },
   { id: 'projects', label: '프로젝트', icon: FolderKanban },
-  { id: 'graph', label: '그래프', icon: GitBranch },
   { id: 'agents', label: '에이전트', icon: Bot },
   { id: 'memory', label: '메모리', icon: Brain },
   { id: 'logs', label: '로그', icon: ScrollText },
   { id: 'tools', label: '도구', icon: Wrench },
-  { id: 'notes', label: '개발 노트', icon: BookOpen },
+  { id: 'notes', label: '업무 노트', icon: BookOpen },
   { id: 'settings', label: '설정', icon: Settings },
 ] as const;
 
 export default function Sidebar() {
-  const { activeTab, setActiveTab, setLogsAgentFilter, agents } = useAppStore();
+  const { activeTab, setActiveTab, setLogsAgentFilter, agents, hrAgents } = useAppStore();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [version, setVersion] = useState('');
   const [runtimeMap, setRuntimeMap] = useState<Record<string, AgentRuntimeStatus>>({});
 
-  useEffect(() => {
-    systemApi.getInfo().then(info => setVersion(info.version)).catch(() => {});
-    const saved = localStorage.getItem('sidebar-collapsed');
-    if (saved === 'true') setCollapsed(true);
+  // 에이전트 패널 드래그 리사이즈
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('sidebar-panel-height') : null;
+      return saved ? Number(saved) : 240;
+    } catch { return 240; }
+  });
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const panelContainerRef = useRef<HTMLDivElement>(null);
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = panelContainerRef.current;
+    if (!container) return;
+    dragRef.current = { startY: e.clientY, startH: container.offsetHeight };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      // 위로 드래그하면 높이 증가 (핸들이 패널 위에 있으므로)
+      const delta = dragRef.current.startY - ev.clientY;
+      const newH = Math.max(80, Math.min(600, dragRef.current.startH + delta));
+      setPanelHeight(newH);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // 저장
+      const container = panelContainerRef.current;
+      try { if (container) localStorage.setItem('sidebar-panel-height', String(container.offsetHeight)); } catch { /* private browsing */ }
+      dragRef.current = null;
+    };
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }, []);
 
-  // 에이전트 런타임 상태 폴링 (5초)
+  useEffect(() => {
+    systemApi.getInfo().then(info => { if (info?.version) setVersion(info.version); }).catch(e => console.warn('[Sidebar] 버전 로드 실패:', e));
+    try {
+      const saved = localStorage.getItem('sidebar-collapsed');
+      if (saved === 'true') setCollapsed(true);
+    } catch { /* private browsing */ }
+  }, []);
+
+  // 에이전트 런타임 상태 폴링 (20초, 비활성 탭 시 스킵)
   useEffect(() => {
     const poll = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const res = await agentApi.getAllRuntimeStatus();
         const map: Record<string, AgentRuntimeStatus> = {};
@@ -44,13 +86,13 @@ export default function Sidebar() {
       } catch { /* 무시 */ }
     };
     poll();
-    const iv = setInterval(poll, 20000);  // 20초 간격 (불필요한 API 호출 절감)
+    const iv = setInterval(poll, SIDEBAR_POLLING_MS);
     return () => clearInterval(iv);
   }, []);
 
   const toggleCollapsed = () => {
     setCollapsed(prev => {
-      localStorage.setItem('sidebar-collapsed', String(!prev));
+      try { localStorage.setItem('sidebar-collapsed', String(!prev)); } catch { /* private browsing */ }
       return !prev;
     });
   };
@@ -82,7 +124,7 @@ export default function Sidebar() {
       {/* 사이드바 */}
       <aside className={`
         bg-dark-card border-r border-dark-border flex flex-col
-        fixed inset-y-0 left-0 z-50 transition-all duration-200
+        fixed inset-y-0 left-0 z-50 transition-all duration-200 will-change-[width]
         md:relative md:translate-x-0
         ${mobileOpen ? 'translate-x-0 w-64' : '-translate-x-full'}
         ${collapsed ? 'md:w-16' : 'md:w-64'}
@@ -141,53 +183,62 @@ export default function Sidebar() {
           </ul>
         </nav>
 
-        {/* 에이전트 상태 패널 */}
+        {/* 에이전트 상태 패널 (드래그 리사이즈) */}
         {!collapsed && agents.length > 0 && (
-          <div className="px-3 pb-3 border-t border-dark-border pt-2">
-            {/* 통계 요약 (Geny 패턴) */}
-            {(() => {
-              const workingCount = Object.values(runtimeMap).filter(r => r.status === 'working').length;
-              const errorCount = Object.values(runtimeMap).filter(r => r.status === 'error').length;
-              return (
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="flex-1 text-center">
-                    <p className="text-base font-bold text-white leading-none">{agents.length}</p>
-                    <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Total</p>
-                  </div>
-                  <div className="flex-1 text-center">
-                    <p className="text-base font-bold text-green-400 leading-none">{workingCount}</p>
-                    <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Running</p>
-                  </div>
-                  <div className="flex-1 text-center">
-                    <p className={`text-base font-bold leading-none ${errorCount > 0 ? 'text-red-400' : 'text-zinc-600'}`}>{errorCount}</p>
-                    <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Errors</p>
-                  </div>
-                </div>
-              );
-            })()}
-            {/* 에이전트 목록 — 클릭 시 로그탭으로 이동 */}
-            <div className="space-y-0.5">
-              {agents.slice(0, MAX_SIDEBAR_AGENTS).map((agent) => {
-                const runtime = runtimeMap[agent.name];
-                const isWorking = runtime?.status === 'working';
-                const isError = runtime?.status === 'error';
-                return (
-                  <button
-                    key={agent.name}
-                    onClick={() => { setLogsAgentFilter(agent.name); setActiveTab('logs'); setMobileOpen(false); }}
-                    className="w-full flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-300 py-0.5 rounded transition-colors"
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                      isWorking ? 'bg-blue-400 shadow-[0_0_4px_rgba(96,165,250,0.8)]' :
-                      isError ? 'bg-red-400' : 'bg-zinc-600'
-                    }`} />
-                    <span className="truncate">{agent.name.replace('JX_', '').replace('JINXUS_', '')}</span>
-                    {isWorking && <span className="ml-auto text-[9px] text-blue-400/70">실행중</span>}
-                  </button>
-                );
-              })}
+          <>
+            {/* 드래그 핸들 */}
+            <div
+              onMouseDown={onDragStart}
+              className="h-1.5 flex-shrink-0 cursor-row-resize group border-t border-dark-border hover:border-blue-500/50 transition-colors"
+            >
+              <div className="mx-auto mt-0.5 w-8 h-0.5 rounded-full bg-zinc-700 group-hover:bg-blue-500/60 transition-colors" />
             </div>
-          </div>
+            <div ref={panelContainerRef} className="px-3 pb-3 pt-1 flex flex-col min-h-0 overflow-hidden" style={{ height: panelHeight }}>
+              {/* 통계 요약 */}
+              {(() => {
+                const workingCount = Object.values(runtimeMap).filter(r => r.status === 'working').length;
+                const errorCount = Object.values(runtimeMap).filter(r => r.status === 'error').length;
+                return (
+                  <div className="flex items-center gap-3 mb-2 flex-shrink-0">
+                    <div className="flex-1 text-center">
+                      <p className="text-base font-bold text-white leading-none">{hrAgents.length}</p>
+                      <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Total</p>
+                    </div>
+                    <div className="flex-1 text-center">
+                      <p className="text-base font-bold text-green-400 leading-none">{workingCount}</p>
+                      <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Running</p>
+                    </div>
+                    <div className="flex-1 text-center">
+                      <p className={`text-base font-bold leading-none ${errorCount > 0 ? 'text-red-400' : 'text-zinc-600'}`}>{errorCount}</p>
+                      <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Errors</p>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* 에이전트 목록 — 클릭 시 로그탭으로 이동 */}
+              <div className="space-y-0.5 overflow-y-auto flex-1 min-h-0 pr-0.5">
+                {[...hrAgents].sort((a, b) => sortByRank(a.name, b.name)).map((agent) => {
+                  const runtime = runtimeMap[agent.name];
+                  const isWorking = runtime?.status === 'working';
+                  const isError = runtime?.status === 'error';
+                  return (
+                    <button
+                      key={agent.name}
+                      onClick={() => { setLogsAgentFilter(agent.name); setActiveTab('logs'); setMobileOpen(false); }}
+                      className="w-full flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 py-0.5 rounded transition-colors"
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                        isWorking ? 'bg-green-400 animate-pulse shadow-[0_0_6px_rgba(74,222,128,0.9)]' :
+                        isError ? 'bg-red-400' : 'bg-zinc-600'
+                      }`} />
+                      <span className="truncate">{getDisplayName(agent.name)}</span>
+                      {isWorking && <span className="ml-auto text-[9px] text-green-400/70 flex-shrink-0">실행중</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
         )}
 
         {/* 접기/펼치기 버튼 (데스크톱만) */}

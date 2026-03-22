@@ -6,7 +6,8 @@ import { chatApi, feedbackApi, taskApi, type ChatSession, type SSEEvent } from '
 import { createSmoothStreamer } from '@/lib/smooth-streaming';
 import {
   Send, ThumbsUp, ThumbsDown, User, Loader2, Trash2,
-  MessageSquare, RefreshCw, ChevronDown, Brain, Terminal
+  MessageSquare, RefreshCw, ChevronDown, Brain, Terminal,
+  PanelBottomClose, PanelBottomOpen,
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import ThinkingPanel, { type ThinkingLog } from '@/components/ThinkingPanel';
@@ -34,7 +35,7 @@ const ChatMessageItem = memo(function ChatMessageItem({
       ) : (
         <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
           <img
-            src="/jinxus-mascot.png"
+            src="/jinxus-mascot.webp"
             alt="JINXUS"
             width={40}
             height={40}
@@ -44,7 +45,7 @@ const ChatMessageItem = memo(function ChatMessageItem({
       )}
 
       {/* 메시지 내용 */}
-      <div className={`flex-1 ${isUser ? 'max-w-[75%] text-right' : 'max-w-[92%]'}`}>
+      <div className={`flex-1 ${isUser ? 'max-w-[90%] sm:max-w-[80%] lg:max-w-[70%] text-right' : 'max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]'}`}>
         <div
           className={`inline-block p-4 rounded-2xl ${
             isUser
@@ -53,9 +54,11 @@ const ChatMessageItem = memo(function ChatMessageItem({
           }`}
         >
           {isUser ? (
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            <div className="whitespace-pre-wrap break-words">{message.content}</div>
           ) : (
-            <MarkdownRenderer content={message.content} />
+            <div className="break-words">
+              <MarkdownRenderer content={message.content} />
+            </div>
           )}
         </div>
 
@@ -110,6 +113,9 @@ export default function ChatTab() {
   // AbortController for SSE cancellation on unmount
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamerRef = useRef<ReturnType<typeof createSmoothStreamer> | null>(null);
+  // 백그라운드 태스크 에러 시 폴링 interval 정리용
+  const bgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const bgPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // SSE abort 유틸 (5곳 중복 제거)
   const abortSSE = useCallback(() => {
@@ -126,6 +132,41 @@ export default function ChatTab() {
   const [isBackgroundTask, setIsBackgroundTask] = useState(false);
   const [showDockerLogs, setShowDockerLogs] = useState(false);
 
+  // 하단 패널 상태
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(220);
+  const [bottomPanelTab, setBottomPanelTab] = useState<'system' | 'thinking'>('system');
+  const isDraggingRef = useRef(false);
+  const dragStartYRef = useRef(0);
+  const dragStartHeightRef = useRef(0);
+
+  // 하단 패널 리사이즈 핸들러
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartYRef.current = e.clientY;
+    dragStartHeightRef.current = bottomPanelHeight;
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const delta = dragStartYRef.current - ev.clientY;
+      const newHeight = Math.max(120, Math.min(600, dragStartHeightRef.current + delta));
+      setBottomPanelHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [bottomPanelHeight]);
 
   // Thinking 로그 추가 헬퍼
   const addThinkingLog = (step: string, detail?: string, agent?: string, status?: 'running' | 'done' | 'error') => {
@@ -280,8 +321,12 @@ export default function ChatTab() {
       setCurrentAgent(null);
     }
 
-    // 컴포넌트 언마운트 시 SSE 연결 정리
-    return () => { abortSSE(); };
+    // 컴포넌트 언마운트 시 SSE 연결 + 폴링 정리
+    return () => {
+      abortSSE();
+      if (bgPollRef.current) { clearInterval(bgPollRef.current); bgPollRef.current = null; }
+      if (bgPollTimeoutRef.current) { clearTimeout(bgPollTimeoutRef.current); bgPollTimeoutRef.current = null; }
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -431,6 +476,25 @@ export default function ChatTab() {
               addThinkingLog('error', event.data.error, undefined, 'error');
               throw new Error(event.data.error || 'Unknown error');
 
+            case 'routed': {
+              // SmartRouter → background/project 라우팅: 즉시 UI 해제
+              const route = event.data.route as string;
+              if (route === 'background' || route === 'project') {
+                const tid = event.data.task_id || event.data.project_id || '';
+                addMessage({
+                  id: Date.now().toString(),
+                  role: 'assistant',
+                  content: route === 'project'
+                    ? `프로젝트가 시작됐습니다. 백그라운드에서 실행 중이에요. (ID: ${tid.slice(0, 8)})`
+                    : `백그라운드에서 작업을 처리하고 있어요. (ID: ${tid.slice(0, 8)})`,
+                  timestamp: new Date(),
+                  success: true,
+                });
+                setLoading(false);
+                setCurrentTaskId(null);
+              }
+              break;
+            }
             case 'cancelled':
               addThinkingLog('cancelled', event.data.message || '작업 취소됨', undefined, 'error');
               // 취소 시 스트리밍 중지
@@ -533,7 +597,11 @@ export default function ChatTab() {
       setCurrentTaskId(bgTaskId);
       addThinkingLog('start', `백그라운드 작업 시작: ${bgTaskId.slice(0, 8)}`, undefined, 'running');
 
-      // SSE로 진행 상황 구독
+      // 백그라운드 작업은 제출 즉시 UI 해제 — 팀채널·다른 작업 계속 가능
+      setLoading(false);
+      setIsBackgroundTask(false);
+
+      // SSE로 진행 상황 구독 (UI 블로킹 없이 백그라운드에서 계속)
       const streamController = taskApi.streamTaskProgress(
         bgTaskId,
         (event) => {
@@ -605,11 +673,17 @@ export default function ChatTab() {
         (error) => {
           addThinkingLog('error', error.message, undefined, 'error');
           // 에러 시에도 폴링으로 결과 확인 시도
+          // 이전 폴링 정리
+          if (bgPollRef.current) clearInterval(bgPollRef.current);
+          if (bgPollTimeoutRef.current) clearTimeout(bgPollTimeoutRef.current);
+
           const poll = setInterval(async () => {
             try {
               const detail = await taskApi.getTaskStatus(bgTaskId);
               if (detail.status === 'completed' || detail.status === 'failed') {
                 clearInterval(poll);
+                bgPollRef.current = null;
+                if (bgPollTimeoutRef.current) { clearTimeout(bgPollTimeoutRef.current); bgPollTimeoutRef.current = null; }
                 addMessage({
                   id: bgTaskId,
                   role: 'assistant',
@@ -622,8 +696,13 @@ export default function ChatTab() {
               }
             } catch { /* ignore */ }
           }, 5000);
+          bgPollRef.current = poll;
           // 최대 30분 폴링
-          setTimeout(() => clearInterval(poll), 30 * 60 * 1000);
+          bgPollTimeoutRef.current = setTimeout(() => {
+            clearInterval(poll);
+            bgPollRef.current = null;
+            bgPollTimeoutRef.current = null;
+          }, 30 * 60 * 1000);
         },
         () => {
           // onDone - 스트림 종료
@@ -721,7 +800,7 @@ export default function ChatTab() {
                   }}
                   className="w-full px-3 py-2 text-left hover:bg-zinc-800 flex items-center gap-2 text-sm"
                 >
-                  <span>➕</span>
+                  <span>+</span>
                   <span>새 대화 시작</span>
                 </button>
 
@@ -792,168 +871,209 @@ export default function ChatTab() {
             </button>
           )}
 
-          {/* 오른쪽 패널 탭 전환: 실행 로그 / Docker */}
+          {/* 하단 패널 토글 */}
           <button
-            onClick={() => { setShowThinking(true); setShowDockerLogs(false); }}
+            onClick={() => setBottomPanelOpen(!bottomPanelOpen)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-              showThinking && !showDockerLogs
-                ? 'bg-primary/20 text-primary'
+              bottomPanelOpen
+                ? 'bg-zinc-700 text-zinc-200'
                 : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
             }`}
-            title="실행 로그"
+            title={bottomPanelOpen ? '패널 닫기' : '패널 열기'}
           >
-            <Brain size={14} className={isLoading ? 'animate-pulse' : ''} />
-            로그
-          </button>
-          <button
-            onClick={() => {
-              if (showDockerLogs) {
-                setShowDockerLogs(false);
-                setShowThinking(true);
-              } else {
-                setShowDockerLogs(true);
-                setShowThinking(false);
-              }
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-              showDockerLogs
-                ? 'bg-green-500/20 text-green-400'
-                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-            }`}
-            title="Docker 로그"
-          >
-            <Terminal size={14} />
-            Docker
+            {bottomPanelOpen ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}
           </button>
         </div>
       </div>
 
-      {/* 채팅 + 오른쪽 패널 래퍼 */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* 채팅 영역 */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* 메시지 목록 */}
-          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto space-y-6 pb-4 pr-2">
-        {messages.length === 0 && !streamingContent ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center">
-              <img
-                src="/jinxus-mascot.png"
-                alt="JINXUS"
-                width={150}
-                height={150}
-                className="mx-auto mb-4 rounded-2xl"
-              />
-              <h2 className="text-xl font-semibold text-zinc-400 mb-2">
-                안녕하세요, 주인님
-              </h2>
-              <p className="text-zinc-500">
-                무엇을 도와드릴까요?
-              </p>
-            </div>
-          </div>
-        ) : (
-          <>
-            {messages.map(msg => (
-              <ChatMessageItem key={msg.id} message={msg} onFeedback={handleFeedbackCb} />
-            ))}
-
-            {/* 스트리밍 중인 메시지 */}
-            {streamingContent && (
-              <div className="flex gap-4">
-                <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
-                  <img
-                    src="/jinxus-mascot.png"
-                    alt="JINXUS"
-                    width={40}
-                    height={40}
-                    className="w-full h-full object-cover object-top scale-150"
-                  />
-                </div>
-                <div className="flex-1 max-w-[80%]">
-                  <div className="inline-block p-4 rounded-2xl bg-dark-card border border-dark-border rounded-tl-none">
-                    <MarkdownRenderer content={streamingContent} />
-                    <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
-                  </div>
-                  {currentAgent && (
-                    <div className="mt-2 text-xs text-primary">
-                      {currentAgent} 작업 중...
-                    </div>
-                  )}
-                </div>
+      {/* 채팅 영역 (수직 레이아웃) */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* 메시지 목록 */}
+        <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto space-y-6 pb-4 pr-2">
+          {messages.length === 0 && !streamingContent && !isLoading ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center">
+                <img
+                  src="/jinxus-mascot.webp"
+                  alt="JINXUS"
+                  width={150}
+                  height={150}
+                  className="mx-auto mb-4 rounded-2xl"
+                  loading="eager"
+                  fetchPriority="high"
+                />
+                <h2 className="text-xl font-semibold text-zinc-400 mb-2">
+                  안녕하세요,
+                </h2>
+                <p className="text-zinc-500">
+                  무엇을 도와드릴까요?
+                </p>
               </div>
-            )}
-          </>
-        )}
-
-        {isLoading && !streamingContent && (
-          <div className="flex gap-4">
-            <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
-              <img
-                src="/jinxus-mascot.png"
-                alt="JINXUS"
-                width={40}
-                height={40}
-                className="w-full h-full object-cover object-top scale-150"
-              />
             </div>
-            <div className="flex items-center gap-2 text-zinc-400">
-              <Loader2 size={20} className="animate-spin" />
-              <span>{currentAgent ? `${currentAgent} 작업 중...` : '생각 중...'}</span>
+          ) : (
+            <>
+              {messages.map(msg => (
+                <ChatMessageItem key={msg.id} message={msg} onFeedback={handleFeedbackCb} />
+              ))}
+
+              {/* 스트리밍 중인 메시지 */}
+              {streamingContent && (
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
+                    <img
+                      src="/jinxus-mascot.webp"
+                      alt="JINXUS"
+                      width={40}
+                      height={40}
+                      className="w-full h-full object-cover object-top scale-150"
+                    />
+                  </div>
+                  <div className="flex-1 max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]">
+                    <div className="inline-block p-4 rounded-2xl bg-dark-card border border-dark-border rounded-tl-none">
+                      <div className="break-words">
+                        <MarkdownRenderer content={streamingContent} />
+                      </div>
+                      <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
+                    </div>
+                    {currentAgent && (
+                      <div className="mt-2 text-xs text-primary">
+                        {currentAgent} 작업 중...
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 로딩 표시 (스트리밍 시작 전) */}
+              {isLoading && !streamingContent && (
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 rounded-full flex-shrink-0 overflow-hidden bg-zinc-700">
+                    <img
+                      src="/jinxus-mascot.webp"
+                      alt="JINXUS"
+                      width={40}
+                      height={40}
+                      className="w-full h-full object-cover object-top scale-150"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 text-zinc-400">
+                    <Loader2 size={20} className="animate-spin" />
+                    <span>{currentAgent ? `${currentAgent} 작업 중...` : '생각 중...'}</span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* 입력 폼 */}
+        <form onSubmit={handleSubmit} className="mt-4 flex-shrink-0">
+          <div className="flex gap-3">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="메시지를 입력하세요... (Enter 전송 / Shift+Enter 줄바꿈)"
+              aria-label="메시지 입력"
+              disabled={isLoading}
+              rows={1}
+              className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50 resize-none overflow-hidden min-h-[48px] max-h-[160px]"
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e as unknown as React.FormEvent);
+                }
+              }}
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || isLoading}
+              className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
+              title="전송 (Enter)"
+              aria-label="메시지 전송"
+            >
+              <Send size={20} />
+            </button>
+          </div>
+        </form>
+
+        {/* 하단 패널 (VSCode 터미널 스타일) */}
+        {bottomPanelOpen && (
+          <div className="flex-shrink-0 flex flex-col" style={{ height: bottomPanelHeight }}>
+            {/* 리사이즈 핸들 */}
+            <div
+              className="h-1 bg-dark-border cursor-row-resize hover:bg-primary/40 active:bg-primary/60 transition-colors flex-shrink-0"
+              onMouseDown={handleDragStart}
+            />
+
+            {/* 탭 바 */}
+            <div className="flex items-center justify-between bg-dark-card border-b border-dark-border flex-shrink-0">
+              <div className="flex">
+                <button
+                  onClick={() => {
+                    setBottomPanelTab('system');
+                    setShowDockerLogs(true);
+                    setShowThinking(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                    bottomPanelTab === 'system'
+                      ? 'border-primary text-zinc-200 bg-dark-bg/50'
+                      : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  <Terminal size={12} />
+                  시스템 로그
+                </button>
+                <button
+                  onClick={() => {
+                    setBottomPanelTab('thinking');
+                    setShowThinking(true);
+                    setShowDockerLogs(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                    bottomPanelTab === 'thinking'
+                      ? 'border-primary text-zinc-200 bg-dark-bg/50'
+                      : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  <Brain size={12} />
+                  실행 흐름
+                  {isLoading && (
+                    <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+                  )}
+                </button>
+              </div>
+              <button
+                onClick={() => setBottomPanelOpen(false)}
+                className="p-1.5 mr-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors"
+                title="패널 닫기"
+              >
+                <ChevronDown size={14} />
+              </button>
+            </div>
+
+            {/* 패널 콘텐츠 */}
+            <div className="flex-1 overflow-hidden">
+              {bottomPanelTab === 'system' && (
+                <DockerLogPanel />
+              )}
+              {bottomPanelTab === 'thinking' && (
+                <ThinkingPanel
+                  logs={thinkingLogs}
+                  isActive={isLoading}
+                  taskId={currentTaskId}
+                  onStop={handleStopTask}
+                  messages={messages}
+                  embedded
+                />
+              )}
             </div>
           </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* 입력 폼 */}
-      <form onSubmit={handleSubmit} className="mt-4">
-        <div className="flex gap-3">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="메시지를 입력하세요... (Enter 전송 / Shift+Enter 줄바꿈)"
-            disabled={isLoading}
-            rows={1}
-            className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50 resize-none overflow-hidden"
-            style={{ minHeight: '48px', maxHeight: '160px' }}
-            onInput={(e) => {
-              const el = e.currentTarget;
-              el.style.height = 'auto';
-              el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit(e as unknown as React.FormEvent);
-              }
-            }}
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
-            title="전송 (Enter)"
-          >
-            <Send size={20} />
-          </button>
-        </div>
-      </form>
-        </div>
-
-        {/* 오른쪽 패널: 실행 로그 또는 Docker 로그 */}
-        {showThinking && !showDockerLogs && (
-          <ThinkingPanel
-            logs={thinkingLogs}
-            isActive={isLoading}
-            taskId={currentTaskId}
-            onStop={handleStopTask}
-            onClose={() => setShowThinking(false)}
-            messages={messages}
-          />
-        )}
-        {showDockerLogs && (
-          <DockerLogPanel onClose={() => setShowDockerLogs(false)} />
         )}
       </div>
     </div>

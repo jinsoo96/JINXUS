@@ -3,6 +3,15 @@
 /** 폴링 간격 (밀리초) - 비활성 탭에서는 사용하지 않음 */
 export const POLLING_INTERVAL_MS = 15000;
 
+/** 사이드바 에이전트 상태 폴링 간격 (밀리초) */
+export const SIDEBAR_POLLING_MS = 20000;
+
+/** 로그 탭 활성 폴링 간격 (밀리초) */
+export const LOGS_ACTIVE_POLLING_MS = 2000;
+
+/** 로그 탭 유휴 폴링 간격 (밀리초) */
+export const LOGS_IDLE_POLLING_MS = 5000;
+
 /** 사이드바에 표시할 최대 에이전트 수 */
 export const MAX_SIDEBAR_AGENTS = 5;
 
@@ -11,7 +20,7 @@ export const MAX_MESSAGES = 300;
 
 /** 메인 탭 목록 */
 export const MAIN_TABS = [
-  'dashboard', 'chat', 'graph', 'agents', 'memory', 'logs', 'tools', 'settings',
+  'chat', 'graph', 'agents', 'memory', 'logs', 'tools', 'settings',
 ] as const;
 
 export type TabId = typeof MAIN_TABS[number];

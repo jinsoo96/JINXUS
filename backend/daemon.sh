@@ -207,7 +207,7 @@ After=network.target docker.service
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$PYTHON_BIN -m uvicorn jinxus.api.server:app --host 0.0.0.0 --port 19000
+ExecStart=$PYTHON_BIN -m uvicorn jinxus.api.server:create_app --factory --host 0.0.0.0 --port 19000
 Restart=always
 RestartSec=5
 StandardOutput=journal
