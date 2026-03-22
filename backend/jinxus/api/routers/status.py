@@ -112,6 +112,45 @@ async def get_tool_graph_info():
     return graph.to_dict()
 
 
+@router.get("/tool-graph/visualization")
+async def get_tool_graph_visualization():
+    """도구 그래프 시각화 데이터 — Canvas 렌더링용 노드/엣지 + 메타데이터"""
+    from jinxus.core.tool_graph import get_tool_graph
+    graph = get_tool_graph()
+
+    nodes = []
+    for node in graph.get_all_nodes():
+        node_data = {
+            "id": node.name,
+            "label": node.name,
+            "description": node.description,
+            "category": node.category,
+            "weight": node.weight,
+            "source": "mcp" if node.name.startswith("mcp:") else "native",
+            "keywords": node.keywords[:5],  # 시각화에는 상위 5개만
+        }
+        if node.annotations is not None:
+            node_data["annotations"] = node.annotations.to_dict()
+        nodes.append(node_data)
+
+    edges = []
+    for edge in graph.get_all_edges():
+        edges.append({
+            "source": edge.source,
+            "target": edge.target,
+            "type": edge.edge_type.value,
+            "weight": edge.weight,
+            "description": edge.description,
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+    }
+
+
 @router.post("/tool-graph/retrieve")
 async def retrieve_tool_workflow(query: str, top_k: int = 5, agent_name: str = None):
     """쿼리에서 도구 워크플로우 탐색"""

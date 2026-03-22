@@ -292,6 +292,35 @@ class ToolGraph:
     _WEIGHT_ANNOTATION = 0.15  # 어노테이션 정렬 점수 (신규)
     _WRRF_K = 60  # RRF 상수
 
+    # 쿼리 확장 매핑 — 한국어 키워드 → 관련 영어 키워드 추가
+    _QUERY_EXPANSIONS: dict[str, str] = {
+        '파일': 'file read write filesystem directory',
+        '검색': 'search web brave google find query',
+        '코드': 'code execute bash terminal python script',
+        '이미지': 'image screenshot playwright analyze vision',
+        '메모리': 'memory store save cache redis qdrant',
+        '깃': 'git github commit push pull branch',
+        '깃허브': 'git github commit push pull branch repo',
+        '문서': 'document pdf read docx write generate',
+        '브라우저': 'browser playwright navigate click screenshot',
+        '데이터': 'data sqlite database query csv excel json',
+        '웹': 'web fetch crawl scrape firecrawl url',
+        '암호화폐': 'crypto price bitcoin ethereum coingecko',
+        '코인': 'crypto price bitcoin ethereum coingecko',
+        '도커': 'docker container image deploy',
+        '날씨': 'weather forecast temperature rain',
+        '뉴스': 'news rss feed article headline',
+        '주식': 'stock price market ticker yahoo',
+        '스크린샷': 'screenshot playwright browser capture',
+        '노션': 'notion page database block',
+        '슬랙': 'slack message channel send',
+        '분석': 'analyze analysis data process statistics',
+        '크롤링': 'crawl scrape firecrawl playwright web',
+        '스케줄': 'schedule cron recurring timer job',
+        '에이전트': 'agent hire fire spawn hr manage',
+        '프롬프트': 'prompt version rollback sync',
+    }
+
     def __init__(self):
         self._nodes: dict[str, ToolNode] = {}
         self._edges: list[ToolEdge] = []
@@ -331,6 +360,18 @@ class ToolGraph:
                 self._adj[edge.target] = []
             self._adj[edge.target].append(reverse)
 
+    def _expand_query(self, query: str) -> str:
+        """쿼리 확장 — 한국어 키워드에 대응하는 영어 동의어/관련어 추가.
+
+        BM25 검색 전 호출하여 한국어 쿼리의 영어 도구명 매칭률을 높인다.
+        원본 쿼리를 변경하지 않고 뒤에 확장 키워드만 추가한다.
+        """
+        expanded = query
+        for ko, en in self._QUERY_EXPANSIONS.items():
+            if ko in query:
+                expanded += ' ' + en
+        return expanded
+
     def _ensure_bm25_index(self) -> None:
         """BM25 인덱스가 최신인지 확인하고 필요시 재빌드"""
         if self._bm25_dirty:
@@ -356,8 +397,9 @@ class ToolGraph:
         """
         self._ensure_bm25_index()
 
-        # ── 1단계: BM25 점수 ──
-        bm25_scores = self._bm25.score(query)
+        # ── 1단계: BM25 점수 (쿼리 확장 적용) ──
+        expanded_query = self._expand_query(query)
+        bm25_scores = self._bm25.score(expanded_query)
 
         # 에이전트 권한 필터
         if agent_name:

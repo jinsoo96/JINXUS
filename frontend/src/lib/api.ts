@@ -1,6 +1,8 @@
 import type { ChatResponse, SystemStatus, MemorySearchResult, AgentInfo } from '@/types';
 
 const API_BASE = '/api';
+// SSE 스트리밍도 Next.js rewrite 프록시 경유 (브라우저→Next.js→백엔드)
+const STREAM_BASE = '/api';
 
 // 재시도 설정
 const RETRY_CONFIG = {
@@ -76,7 +78,7 @@ export interface StoredMessage {
 
 // SSE 이벤트 타입
 export interface SSEEvent {
-  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log' | 'team_progress' | 'tool_call';
+  event: 'start' | 'manager_thinking' | 'decompose_done' | 'agent_started' | 'agent_done' | 'message' | 'done' | 'error' | 'cancelled' | 'log' | 'team_progress' | 'tool_call' | 'routed';
   data: {
     task_id?: string;
     session_id?: string;
@@ -98,6 +100,8 @@ export interface SSEEvent {
     specialist?: string;     // team_progress - 전문가 이름
     status?: string;         // team_progress - 'running' | 'done' | 'error'
     tool?: string;           // tool_call - 도구 이름
+    route?: string;          // routed - SmartRouter 라우팅 결과 (background/project/chat/task)
+    project_id?: string;     // routed - project 라우팅 시 프로젝트 ID
   };
 }
 
@@ -271,6 +275,32 @@ export interface ToolGraphData {
   edges: ToolGraphEdge[];
 }
 
+export interface ToolGraphVizNode {
+  id: string;
+  label: string;
+  description: string;
+  category: string;
+  weight: number;
+  source: 'native' | 'mcp';
+  keywords: string[];
+  annotations?: Record<string, boolean>;
+}
+
+export interface ToolGraphVizEdge {
+  source: string;
+  target: string;
+  type: string;
+  weight: number;
+  description: string;
+}
+
+export interface ToolGraphVisualization {
+  nodes: ToolGraphVizNode[];
+  edges: ToolGraphVizEdge[];
+  total_nodes: number;
+  total_edges: number;
+}
+
 export interface ToolGraphWorkflow {
   query: string;
   score: number;
@@ -346,9 +376,13 @@ export const systemApi = {
     return apiCall<SystemStatus>('/status');
   },
 
-  // 시스템 정보 (버전 포함)
+  clearCompletedTasks: async (): Promise<{ success: boolean; deleted: number }> => {
+    return apiCall<{ success: boolean; deleted: number }>('/status/tasks/completed', { method: 'DELETE' });
+  },
+
+  // 시스템 정보 (버전 포함) — trailing slash 없이 /api 직접 호출 (308 redirect 방지)
   getInfo: async (): Promise<{ name: string; version: string; status: string }> => {
-    return apiCall('/');
+    return apiCall('');
   },
 
   // MCP 상태 조회
@@ -366,6 +400,11 @@ export const systemApi = {
   // ToolGraph 조회
   getToolGraph: async (): Promise<ToolGraphData> => {
     return apiCall<ToolGraphData>('/status/tool-graph');
+  },
+
+  // ToolGraph 시각화 데이터
+  getToolGraphVisualization: async (): Promise<ToolGraphVisualization> => {
+    return apiCall<ToolGraphVisualization>('/status/tool-graph/visualization');
   },
 
   // ToolGraph 워크플로우 탐색
@@ -509,6 +548,11 @@ export interface CodingSpecialist {
 }
 
 export const agentApi = {
+  /** 백엔드 personas.py → 프론트 동기화용. 앱 시작 시 1회 호출. */
+  getPersonas: async (): Promise<{ personas: Record<string, import('@/lib/personas').PersonaInfo> }> => {
+    return apiCall('/agents/personas');
+  },
+
   getAll: async (): Promise<{ agents: AgentInfo[] }> => {
     return apiCall<{ agents: AgentInfo[] }>('/agents');
   },
@@ -572,6 +616,8 @@ export interface HRAgentRecord {
   hired_at: string;
   fired_at: string | null;
   fire_reason: string | null;
+  total_tasks: number;
+  success_rate: number;
 }
 
 export const hrApi = {
@@ -792,7 +838,7 @@ export const taskApi = {
   ): AbortController => {
     const controller = new AbortController();
 
-    fetch(`${API_BASE}/task/${taskId}/stream`, {
+    fetch(`${STREAM_BASE}/task/${taskId}/stream`, {
       signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -983,7 +1029,7 @@ export const dockerApi = {
   ): AbortController => {
     const controller = new AbortController();
 
-    fetch(`${API_BASE}/docker/containers/${containerId}/logs?tail=${tail}`, {
+    fetch(`${STREAM_BASE}/docker/containers/${containerId}/logs?tail=${tail}`, {
       signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1119,7 +1165,7 @@ export const projectApi = {
   ): AbortController => {
     const controller = new AbortController();
 
-    fetch(`${API_BASE}/projects/${projectId}/stream`, {
+    fetch(`${STREAM_BASE}/projects/${projectId}/stream`, {
       signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1133,6 +1179,103 @@ export const projectApi = {
     });
 
     return controller;
+  },
+};
+
+// ===== Company Channel API =====
+
+export interface ChannelMessage {
+  id: string;
+  channel: string;
+  role: 'agent' | 'user' | 'system';
+  from_name: string;
+  content: string;
+  message_type: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PendingApproval {
+  id: string;
+  plan_summary: string;
+  subtasks_count: number;
+  session_id: string;
+  created_at: string;
+}
+
+export const channelApi = {
+  getHistory: (channel: string, limit = 50) =>
+    apiCall<{ channel: string; messages: ChannelMessage[] }>(`/channel/history/${channel}?limit=${limit}`),
+
+  clearHistory: (channel: string) =>
+    apiCall<{ success: boolean; channel: string; deleted: number }>(`/channel/history/${channel}`, {
+      method: 'DELETE',
+    }),
+
+  getAllHistory: (limit = 50) =>
+    apiCall<{ channels: Record<string, ChannelMessage[]> }>(`/channel/history?limit=${limit}`),
+
+  postMessage: (content: string, channel?: string, messageType = 'chat') =>
+    apiCall<{ success: boolean; message: ChannelMessage }>('/channel/message', {
+      method: 'POST',
+      body: JSON.stringify({ content, channel, message_type: messageType }),
+    }),
+
+  approve: (requestId: string, status: 'approved' | 'modified' | 'cancelled', feedback = '') =>
+    apiCall<{ success: boolean }>('/channel/approve', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId, status, feedback }),
+    }),
+
+  getPendingApprovals: () =>
+    apiCall<{ pending: PendingApproval[]; count: number }>('/channel/approvals/pending'),
+
+  streamChannel: (
+    onData: (data: { type: string; message?: ChannelMessage }) => void,
+    signal?: AbortSignal,
+    channels?: string,
+  ): void => {
+    // STREAM_BASE: Next.js rewrite 프록시 경유
+    const url = channels
+      ? `${STREAM_BASE}/channel/stream?channels=${channels}`
+      : `${STREAM_BASE}/channel/stream`;
+
+    let retryDelay = 1000;
+    const MAX_RETRY_DELAY = 15000;
+
+    async function connect(): Promise<void> {
+      if (signal?.aborted) return;
+      try {
+        const response = await fetch(url, { signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body?.getReader();
+        if (!reader) return;
+        retryDelay = 1000; // 연결 성공 시 리셋
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { onData(JSON.parse(line.slice(6))); } catch { /* ignore */ }
+            }
+          }
+        }
+      } catch (e: unknown) {
+        if ((e as { name?: string })?.name === 'AbortError' || signal?.aborted) return;
+      }
+      // 연결 끊김 → 지수 백오프로 자동 재연결
+      if (!signal?.aborted) {
+        await new Promise(r => setTimeout(r, retryDelay));
+        retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+        connect();
+      }
+    }
+    connect();
   },
 };
 

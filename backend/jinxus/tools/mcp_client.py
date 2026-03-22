@@ -39,6 +39,7 @@ class MCPClient:
     _ALWAYS_CONNECTED: set[str] = {
         "filesystem", "fetch", "github", "brave-search", "memory", "git",
         "sequential-thinking", "playwright", "firecrawl", "sqlite", "notion",
+        "context7", "docker", "crypto-price",
     }
 
     # 유휴 서버 자동 종료 시간 (30분)

@@ -148,6 +148,42 @@ class DynamicToolExecutor:
 - GitHub 레포 내용 읽기 → `github_agent` 또는 `github_graphql` 또는 `mcp__fetch__*` 사용. `mcp__filesystem__*` 사용 금지.
 """
 
+    def _build_workflow_hints(self, instruction: str) -> str:
+        """ToolGraph에서 도구 간 관계 힌트를 생성하여 실행 순서를 안내.
+
+        instruction을 기반으로 ToolGraph를 탐색하고, 선택된 도구 간 엣지 관계를
+        자연어 힌트로 변환한다. LLM이 도구를 올바른 순서로 호출하도록 유도.
+        """
+        try:
+            from jinxus.core.tool_graph import get_tool_graph
+            graph = get_tool_graph()
+            workflow = graph.retrieve(instruction, top_k=5, agent_name=self._agent_name)
+
+            if not workflow.edges:
+                return ""
+
+            hints = []
+            for edge in workflow.edges:
+                edge_type = edge.edge_type.value
+                if edge_type == "requires":
+                    hints.append(f"- `{edge.source}` 실행 시 `{edge.target}`의 결과가 필요함")
+                elif edge_type == "precedes":
+                    hints.append(f"- `{edge.source}` → `{edge.target}` 순서로 실행 권장")
+                elif edge_type == "complementary":
+                    hints.append(f"- `{edge.source}`와 `{edge.target}`는 함께 사용하면 효과적")
+                elif edge_type == "similar_to":
+                    hints.append(f"- `{edge.source}`와 `{edge.target}`는 유사 기능 (하나만 선택)")
+                elif edge_type == "conflicts":
+                    hints.append(f"- `{edge.source}`와 `{edge.target}`는 동시 사용 주의")
+
+            if not hints:
+                return ""
+
+            return "\n\n### 도구 실행 순서 힌트 (ToolGraph)\n" + "\n".join(hints)
+        except Exception as e:
+            logger.debug(f"[DynamicToolExecutor] 워크플로우 힌트 생성 실패 (무시): {e}")
+            return ""
+
     def __init__(
         self,
         agent_name: str,
@@ -272,14 +308,18 @@ class DynamicToolExecutor:
             self._schemas_cache = self._build_tool_schemas()
         tool_schemas = self._schemas_cache
 
-        # 시스템 프롬프트 + 도구 가이드 캐시 (보유 도구 기반 동적 생성, 최대 _PROMPT_CACHE_MAX개)
-        if system_prompt not in self._enhanced_system_prompt_cache:
+        # 시스템 프롬프트 + 도구 가이드 (보유 도구 기반 동적 생성)
+        # instruction별 워크플로우 힌트가 달라지므로 캐시 키에 instruction 해시 포함
+        _cache_key = f"{system_prompt}|{hash(instruction)}"
+        if _cache_key not in self._enhanced_system_prompt_cache:
             if len(self._enhanced_system_prompt_cache) >= self._PROMPT_CACHE_MAX:
-                # 가장 오래된 항목 제거 (dict는 삽입 순서 유지)
                 oldest_key = next(iter(self._enhanced_system_prompt_cache))
                 del self._enhanced_system_prompt_cache[oldest_key]
-            self._enhanced_system_prompt_cache[system_prompt] = system_prompt + self._build_tool_guide()
-        enhanced_system_prompt = self._enhanced_system_prompt_cache[system_prompt]
+            workflow_hints = self._build_workflow_hints(instruction)
+            self._enhanced_system_prompt_cache[_cache_key] = (
+                system_prompt + self._build_tool_guide() + workflow_hints
+            )
+        enhanced_system_prompt = self._enhanced_system_prompt_cache[_cache_key]
 
         # 도구가 없으면 일반 대화
         if not tool_schemas:

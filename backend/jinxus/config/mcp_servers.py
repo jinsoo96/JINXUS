@@ -55,6 +55,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         allowed_agents=[
             "JX_OPS", "JX_CODER", "JX_WRITER", "JX_ANALYST",
             "JX_FRONTEND", "JX_BACKEND", "JX_INFRA", "JX_REVIEWER", "JX_TESTER",
+            "JX_CTO",  # 코드 리뷰·아키텍처 검토용 읽기
         ],
         enabled=True,
         description="파일 시스템 읽기/쓰기 (/home/jinsookim 전체 접근)",
@@ -136,7 +137,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         name="playwright",
         command="npx",
         args=["-y", "@playwright/mcp", "--headless"],  # headless 모드 추가
-        allowed_agents=["JX_RESEARCHER", "JX_CODER", "JX_OPS"],
+        allowed_agents=["JX_RESEARCHER", "JX_CODER", "JX_OPS", "JX_SNS"],
         enabled=True,
         description="Playwright 브라우저 자동화 (크롬/파이어폭스/사파리)",
     ),
@@ -150,7 +151,10 @@ MCP_SERVERS: list[MCPServerConfig] = [
         command="npx",
         args=["-y", "firecrawl-mcp"],
         env={"FIRECRAWL_API_KEY": os.getenv("FIRECRAWL_API_KEY", "")},
-        allowed_agents=["JX_RESEARCHER", "JX_WRITER", "JX_ANALYST", "JX_WEB_SEARCHER"],
+        allowed_agents=[
+            "JX_RESEARCHER", "JX_WRITER", "JX_ANALYST", "JX_WEB_SEARCHER",
+            "JX_MARKETING", "JX_SNS", "JX_STRATEGY", "JX_PRODUCT",
+        ],
         enabled=bool(os.getenv("FIRECRAWL_API_KEY")),
         description="Firecrawl 웹 크롤링 (JS 렌더링, 사이트 전체 크롤)",
         requires_api_key="FIRECRAWL_API_KEY",
@@ -172,7 +176,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         name="postgres",
         command="npx",
         args=["-y", "@modelcontextprotocol/server-postgres", os.getenv("DATABASE_URL", "")],
-        allowed_agents=["JX_ANALYST", "JX_OPS", "JX_BACKEND"],
+        allowed_agents=["JX_ANALYST", "JX_OPS", "JX_BACKEND", "JX_CFO", "JX_STRATEGY", "JX_COO"],
         enabled=bool(os.getenv("DATABASE_URL")),
         description="PostgreSQL 데이터베이스 쿼리",
         requires_api_key="DATABASE_URL",
@@ -201,7 +205,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         command="npx",
         args=["-y", "mcp-todoist"],
         env={"TODOIST_API_TOKEN": os.getenv("TODOIST_API_TOKEN", "")},
-        allowed_agents=["JX_OPS", "JX_WRITER", "JS_PERSONA"],
+        allowed_agents=["JX_OPS", "JX_WRITER", "JS_PERSONA", "JX_COO"],
         enabled=bool(os.getenv("TODOIST_API_TOKEN")),
         description="Todoist 할일/프로젝트 관리",
         requires_api_key="TODOIST_API_TOKEN",
@@ -225,6 +229,77 @@ MCP_SERVERS: list[MCPServerConfig] = [
     ),
 
     # ----------------------------------------------------------
+    # Context7 - 라이브러리 최신 문서 조회
+    # 코드 작성 시 최신 API/패턴 참고용
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="context7",
+        command="npx",
+        args=["-y", "@upstash/context7-mcp"],
+        allowed_agents=["JX_CODER", "JX_FRONTEND", "JX_BACKEND", "JX_RESEARCHER"],
+        enabled=True,
+        description="라이브러리 최신 문서 조회 (Context7)",
+    ),
+
+    # ----------------------------------------------------------
+    # Docker - 컨테이너 관리
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="docker",
+        command="npx",
+        args=["-y", "mcp-server-docker"],
+        allowed_agents=["JX_OPS", "JX_INFRA"],
+        enabled=True,
+        description="Docker 컨테이너 관리",
+    ),
+
+    # ----------------------------------------------------------
+    # Google Workspace - Gmail/Calendar/Sheets/Drive
+    # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN 필요
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="google-workspace",
+        command="npx",
+        args=["-y", "@anthropic-ai/google-workspace-mcp"],
+        env={
+            "GOOGLE_CLIENT_ID": os.getenv("GOOGLE_CLIENT_ID", ""),
+            "GOOGLE_CLIENT_SECRET": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+            "GOOGLE_REFRESH_TOKEN": os.getenv("GOOGLE_REFRESH_TOKEN", ""),
+        },
+        allowed_agents=["JX_OPS"],  # JINXUS_CORE는 정책 미등록 = 전체 허용
+        enabled=bool(os.getenv("GOOGLE_CLIENT_ID")),
+        description="Google Workspace (Gmail/Calendar/Sheets/Drive)",
+        requires_api_key="GOOGLE_CLIENT_ID",
+    ),
+
+    # ----------------------------------------------------------
+    # Crypto Price - 암호화폐 가격 조회
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="crypto-price",
+        command="npx",
+        args=["-y", "mcp-crypto-price"],
+        allowed_agents=["JX_ANALYST", "JX_CFO"],
+        enabled=True,
+        description="암호화폐 실시간 가격 조회",
+    ),
+
+    # ----------------------------------------------------------
+    # Cloudflare - Workers/DNS/CDN 관리
+    # CLOUDFLARE_API_TOKEN 필요
+    # ----------------------------------------------------------
+    MCPServerConfig(
+        name="cloudflare",
+        command="npx",
+        args=["-y", "@cloudflare/mcp-server-cloudflare", "run"],
+        env={"CLOUDFLARE_API_TOKEN": os.getenv("CLOUDFLARE_API_TOKEN", "")},
+        allowed_agents=["JX_INFRA", "JX_OPS"],
+        enabled=bool(os.getenv("CLOUDFLARE_API_TOKEN")),
+        description="Cloudflare Workers/DNS/CDN 관리",
+        requires_api_key="CLOUDFLARE_API_TOKEN",
+    ),
+
+    # ----------------------------------------------------------
     # Slack - 슬랙 메시지 읽기/쓰기
     # SLACK_BOT_TOKEN, SLACK_TEAM_ID 환경변수 필요
     # 채널 메시지 조회, 전송, 사용자 목록 등
@@ -237,7 +312,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
             "SLACK_BOT_TOKEN": os.getenv("SLACK_BOT_TOKEN", ""),
             "SLACK_TEAM_ID": os.getenv("SLACK_TEAM_ID", ""),
         },
-        allowed_agents=["JX_OPS", "JX_WRITER"],  # 운영/문서 에이전트만
+        allowed_agents=["JX_OPS", "JX_WRITER", "JX_MARKETING", "JX_COO"],
         enabled=bool(os.getenv("SLACK_BOT_TOKEN")),  # 토큰 있을 때만 활성화
         description="Slack 채널 메시지 읽기/쓰기",
         requires_api_key="SLACK_BOT_TOKEN",
@@ -255,7 +330,10 @@ MCP_SERVERS: list[MCPServerConfig] = [
         env={
             "OPENAPI_MCP_HEADERS": '{"Authorization": "Bearer ' + os.getenv("NOTION_API_KEY", "") + '", "Notion-Version": "2022-06-28"}',
         },
-        allowed_agents=["JX_WRITER", "JX_ANALYST", "JX_OPS"],
+        allowed_agents=[
+            "JX_WRITER", "JX_ANALYST", "JX_OPS",
+            "JX_MARKETING", "JX_COO", "JX_CFO", "JS_PERSONA", "JX_STRATEGY", "JX_PRODUCT",
+        ],
         enabled=bool(os.getenv("NOTION_API_KEY")),  # 키 있을 때만 활성화
         description="Notion 페이지/데이터베이스 읽기/쓰기",
         requires_api_key="NOTION_API_KEY",

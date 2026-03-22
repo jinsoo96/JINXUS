@@ -4,7 +4,9 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   systemApi, pluginsApi, PluginInfo, MCPStatus, ToolGraphData, ToolsListResponse, NativeTool,
   ToolCallLog, ToolPoliciesResponse, ToolAnalyticsResponse,
+  ToolGraphVisualization,
 } from '@/lib/api';
+import ToolGraphViz from '@/components/ToolGraphViz';
 import toast from 'react-hot-toast';
 import {
   Plug, Wrench, RefreshCw, CheckCircle, AlertCircle,
@@ -55,6 +57,9 @@ export default function ToolsTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResult, setSearchResult] = useState<{ query: string; tools: { name: string; description: string; category: string }[] } | null>(null);
   const [searching, setSearching] = useState(false);
+  const [graphVizData, setGraphVizData] = useState<ToolGraphVisualization | null>(null);
+  const [graphVizLoading, setGraphVizLoading] = useState(false);
+  const [graphViewMode, setGraphViewMode] = useState<'canvas' | 'svg'>('canvas');
 
   // 도구 호출 로그
   const [toolLogs, setToolLogs] = useState<ToolCallLog[]>([]);
@@ -239,6 +244,19 @@ export default function ToolsTab() {
     }
   };
 
+  const loadGraphViz = async () => {
+    setGraphVizLoading(true);
+    try {
+      const data = await systemApi.getToolGraphVisualization();
+      setGraphVizData(data);
+    } catch (error) {
+      console.error('그래프 시각화 데이터 로드 실패:', error);
+      toast.error('그래프 시각화 데이터 로드 실패');
+    } finally {
+      setGraphVizLoading(false);
+    }
+  };
+
   const handleGraphSearch = async () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
@@ -349,7 +367,10 @@ export default function ToolsTab() {
 
   useEffect(() => {
     if (activeTab === 'native' && !toolsList) loadTools();
-    if (activeTab === 'graph' && !toolGraph) loadToolGraph();
+    if (activeTab === 'graph') {
+      if (!toolGraph) loadToolGraph();
+      if (!graphVizData) loadGraphViz();
+    }
     if (activeTab === 'tool-logs') loadToolLogs();
     if (activeTab === 'policies' && !toolPolicies) loadToolPolicies();
     if (activeTab === 'analytics') loadAnalytics();
@@ -757,7 +778,59 @@ export default function ToolsTab() {
           {/* 그래프 시각화 */}
           {toolGraph ? (
             <div>
-              {/* SVG 그래프 */}
+              {/* 뷰 모드 전환 */}
+              <div className="flex items-center gap-2 mb-3">
+                <button
+                  onClick={() => setGraphViewMode('canvas')}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    graphViewMode === 'canvas' ? 'bg-primary text-white' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Force Graph
+                </button>
+                <button
+                  onClick={() => setGraphViewMode('svg')}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    graphViewMode === 'svg' ? 'bg-primary text-white' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Static Layout
+                </button>
+              </div>
+
+              {/* Canvas 기반 Force-Directed Graph */}
+              {graphViewMode === 'canvas' && (
+                <div className="bg-zinc-900/50 border border-dark-border rounded-xl overflow-hidden mb-4">
+                  <div className="px-4 py-2 border-b border-dark-border flex items-center justify-between">
+                    <span className="text-xs text-zinc-500">
+                      {graphVizData ? `${graphVizData.total_nodes}개 노드 · ${graphVizData.total_edges}개 엣지` : '로딩 중...'}
+                      {' — 드래그로 이동, 클릭으로 선택, 스크롤로 줌'}
+                    </span>
+                    <button
+                      onClick={loadGraphViz}
+                      disabled={graphVizLoading}
+                      className="p-1.5 rounded hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                    >
+                      {graphVizLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    </button>
+                  </div>
+                  {graphVizData ? (
+                    <ToolGraphViz
+                      nodes={graphVizData.nodes}
+                      edges={graphVizData.edges}
+                      width={900}
+                      height={600}
+                    />
+                  ) : graphVizLoading ? (
+                    <div className="h-[600px] flex items-center justify-center">
+                      <Loader2 size={24} className="animate-spin text-zinc-500" />
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* SVG 기반 Static Layout */}
+              {graphViewMode === 'svg' && (
               <div className="bg-zinc-900/50 border border-dark-border rounded-xl overflow-hidden mb-4">
                 <div className="px-4 py-2 border-b border-dark-border flex items-center justify-between">
                   <span className="text-xs text-zinc-500">
@@ -856,6 +929,7 @@ export default function ToolsTab() {
                     ))}
                 </div>
               </div>
+              )}
 
               {/* 엣지 상세 */}
               <h4 className="text-sm font-semibold text-zinc-400 mb-3">

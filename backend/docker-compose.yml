@@ -15,6 +15,7 @@ services:
       - QDRANT_PORT=6333
       - JINXUS_PORT=19000
       - JINXUS_DEBUG=false
+      - CLOUDFLARE_API_TOKEN=cfut_E1osrgpP5jYX773ypfHpwpPbAs5yMIATJ7cmHot2b2b51529
       - WORKSPACE_ROOT=/home/jinsookim
       - PROJECT_ROOT=/home/jinsookim/jinxus
     depends_on:
@@ -22,7 +23,7 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:19000/"]
       interval: 10s
@@ -40,6 +41,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "16379:6379"
     volumes:
@@ -52,6 +54,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant
+    restart: unless-stopped
     ports:
       - "16333:6333"
     volumes:
@@ -63,6 +66,46 @@ services:
       retries: 5
       start_period: 10s
 
+  # ── Matrix Synapse (팀 채팅 플랫폼) ──────────────────────────────
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: jinxus-synapse
+    restart: unless-stopped
+    environment:
+      - SYNAPSE_CONFIG_PATH=/data/homeserver.yaml
+    volumes:
+      - ./synapse/data:/data
+      - ./synapse/appservices:/data/appservices
+    ports:
+      - "8008:8008"
+    depends_on:
+      synapse_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  synapse_db:
+    image: postgres:15-alpine
+    container_name: jinxus-synapse-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=synapse
+      - POSTGRES_PASSWORD=jinxus_matrix_2026
+      - POSTGRES_DB=synapse
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    volumes:
+      - jinxus_synapse_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   jinxus_redis_data:
   jinxus_qdrant_data:
+  jinxus_synapse_db:
