@@ -198,7 +198,7 @@ export default function HireAgentModal({ isOpen, onClose, onHired }: HireAgentMo
                       type="text"
                       value={customName}
                       onChange={(e) => setCustomName(e.target.value)}
-                      placeholder="JX_CUSTOM_NAME"
+                      placeholder="에이전트_이름"
                       className="w-full bg-zinc-900 border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary placeholder:text-zinc-600"
                     />
                     <p className="text-xs text-zinc-500 mt-1">비워두면 자동으로 생성됩니다.</p>

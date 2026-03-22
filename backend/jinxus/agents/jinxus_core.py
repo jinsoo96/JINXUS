@@ -23,6 +23,9 @@ from jinxus.agents.state_tracker import get_state_tracker, GraphNode, AgentStatu
 from jinxus.core.tool_graph import get_tool_graph
 from jinxus.core.workflow_executor import WorkflowExecutor
 from jinxus.core.delegation_logger import get_delegation_logger
+from jinxus.hr.channel import get_company_channel
+from jinxus.core.approval_gate import get_approval_gate, ApprovalStatus
+from jinxus.agents.personas import get_persona
 
 
 async def _async_llm(client, **kwargs):
@@ -196,10 +199,9 @@ class JinxusCore:
         if not text:
             return text
 
-        # 서브에이전트 자기 언급 제거
-        agent_names = [
-            "JX_RESEARCHER", "JX_CODER", "JX_WRITER", "JX_ANALYST",
-            "JX_OPS", "JS_PERSONA", "JxResearcher", "JxCoder",
+        # 서브에이전트 자기 언급 제거 (동적 조회)
+        agent_names = list(self._agents.keys()) + [
+            name.replace("_", "").title() for name in self._agents.keys()
         ]
         result = text
         for name in agent_names:
@@ -684,6 +686,17 @@ class JinxusCore:
         "JX_ANALYST": ["JX_RESEARCHER", "JX_WRITER"],
         "JX_OPS": ["JX_CODER"],
         "JS_PERSONA": ["JX_WRITER"],
+        "JX_MARKETING": ["JX_WRITER", "JS_PERSONA"],
+        "JX_PRODUCT": ["JX_STRATEGY", "JX_MARKETING"],
+        "JX_CTO": ["JX_CODER", "JX_ARCHITECT"],
+        "JX_FRONTEND": ["JX_BACKEND", "JX_CODER"],
+        "JX_BACKEND": ["JX_FRONTEND", "JX_CODER"],
+        "JX_INFRA": ["JX_OPS", "JX_BACKEND"],
+        "JX_REVIEWER": ["JX_CODER", "JX_TESTER"],
+        "JX_TESTER": ["JX_REVIEWER", "JX_CODER"],
+        "JX_WEB_SEARCHER": ["JX_DEEP_READER", "JX_RESEARCHER"],
+        "JX_DEEP_READER": ["JX_WEB_SEARCHER", "JX_RESEARCHER"],
+        "JX_FACT_CHECKER": ["JX_DEEP_READER", "JX_RESEARCHER"],
     }
 
     async def _reassign_failed_tasks(
@@ -758,6 +771,18 @@ class JinxusCore:
         except Exception as e:
             logger.warning(f"[JINXUS_CORE] 위임 이벤트 기록 실패: {e}")
 
+        # 채널에 작업 시작 알림
+        try:
+            persona = get_persona(agent.name)
+            channel = get_company_channel()
+            await channel.post(
+                from_name=agent.name,
+                content=persona.channel_intro,
+                message_type="system",
+            )
+        except Exception as e:
+            logger.debug(f"[JINXUS_CORE] 채널 작업 시작 알림 실패: {e}")
+
         try:
             # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
             agent._progress_callback = progress_callback
@@ -769,6 +794,13 @@ class JinxusCore:
                 result = await agent.run(instruction, context or [], memory_context=memory_context)
             else:
                 result = await agent.run(instruction, context or [])
+            # 채널에 완료 알림
+            try:
+                channel = get_company_channel()
+                status_msg = "✓ 완료했습니다." if result["success"] else "✗ 실패했습니다."
+                await channel.post(from_name=agent.name, content=status_msg, message_type="system")
+            except Exception as e:
+                logger.debug(f"[JINXUS_CORE] 채널 완료 알림 실패: {e}")
             agent_result = {
                 "task_id": task_id,
                 "agent_name": agent.name,
@@ -1140,8 +1172,6 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
 
     def _parse_decomposition(self, response_text: str) -> dict:
         """더 강건한 JSON 파싱 (여러 패턴 시도)"""
-        import re
-
         # 1차: ```json 블록
         m = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
         if m:
@@ -1404,8 +1434,6 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         if input_type == "chat_search" or self._is_simple_search(user_input):
             await self._memory.save_short_term(session_id, "user", user_input, {"task_id": task_id})
             if "JX_RESEARCHER" in self._agents:
-                import time as _t
-                _start = _t.time()
                 result = await self._run_agent(task_id, self._agents["JX_RESEARCHER"], user_input)
                 response = result.get("output", "")
                 await self._memory.save_short_term(session_id, "assistant", response[:500], {"task_id": task_id})
@@ -1630,6 +1658,100 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             logger.warning(f"[JINXUS_CORE] ToolGraph 워크플로우 조회 실패: {e}")
 
         yield {"event": "decompose_done", "data": {"subtasks_count": len(subtasks), "mode": execution_mode, "tool_workflow": tool_workflow}}
+
+        # === 2.5. 채널 공지 + 승인 게이트 ===
+        settings = get_settings()
+        real_agents = [t for t in subtasks if t["assigned_agent"] not in ("DIRECT", "JINXUS_CORE")]
+        if real_agents and getattr(settings, 'approval_gate_enabled', True):
+            try:
+                channel = get_company_channel()
+                # CORE가 작업 계획 공지
+                agent_names = [t["assigned_agent"] for t in real_agents]
+                plan_lines = "\n".join(
+                    f"- **{t['assigned_agent']}**: {t['instruction'][:80]}..."
+                    for t in real_agents
+                )
+                plan_summary = (
+                    f"📋 **작업 계획** ({execution_mode} 모드)\n\n"
+                    f"{plan_lines}\n\n"
+                    f"진수님, 위 계획대로 진행할까요?"
+                )
+                await channel.post(
+                    from_name="JINXUS_CORE",
+                    content=plan_summary,
+                    channel="planning",
+                    message_type="planning",
+                )
+
+                # 각 에이전트의 LLM 반응 병렬 생성 (fast model)
+                async def _agent_react(agent_name: str, instr: str) -> tuple:
+                    persona = get_persona(agent_name)
+                    prompt = (
+                        f"너는 JINXUS 팀의 {persona.role}({persona.display_name})이다.\n"
+                        f"성격: {persona.personality}\n"
+                        f"말투: {persona.speech_style}\n\n"
+                        f"방금 받은 작업: {instr[:150]}\n\n"
+                        f"채널에 짧게 (1-2문장) 반응해라. 자기 개성 있게. 한국어로."
+                    )
+                    try:
+                        resp = await _async_llm(
+                            self._client,
+                            model=self._fast_model,
+                            max_tokens=80,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                        return agent_name, resp.content[0].text.strip()
+                    except Exception:
+                        return agent_name, persona.channel_intro
+
+                reactions = await asyncio.gather(
+                    *[_agent_react(t["assigned_agent"], t["instruction"]) for t in real_agents],
+                    return_exceptions=True,
+                )
+                for item in reactions:
+                    if isinstance(item, tuple):
+                        agent_name, reaction = item
+                        await channel.post(from_name=agent_name, content=reaction, channel="planning", message_type="chat")
+
+                # 승인 게이트 요청 (SSE로 프론트엔드에 알림)
+                gate = get_approval_gate()
+                approval_id = None
+
+                async def _wait_for_approval():
+                    nonlocal approval_id
+                    req = await gate.request(
+                        task_description=user_input,
+                        plan_summary=plan_summary,
+                        subtasks=real_agents,
+                        session_id=session_id,
+                        timeout=300.0,
+                    )
+                    approval_id = req.id
+                    return req
+
+                yield {"event": "approval_required", "data": {
+                    "message": "작업 계획을 확인해 주세요",
+                    "subtasks_count": len(real_agents),
+                    "agents": [t["assigned_agent"] for t in real_agents],
+                }}
+
+                approval = await _wait_for_approval()
+
+                if approval.status == ApprovalStatus.CANCELLED:
+                    yield {"event": "message", "data": {"content": "작업이 취소되었습니다.", "chunk": False}}
+                    yield {"event": "done", "data": {"success": False, "cancelled": True}}
+                    return
+
+                if approval.status == ApprovalStatus.MODIFIED and approval.user_feedback:
+                    # 수정 피드백을 각 서브태스크 instruction에 주입
+                    for task in subtasks:
+                        task["instruction"] = f"[진수 피드백: {approval.user_feedback}]\n\n{task['instruction']}"
+                    yield {"event": "manager_thinking", "data": {"step": "approval", "detail": f"수정 요청 반영: {approval.user_feedback[:60]}"}}
+                else:
+                    yield {"event": "manager_thinking", "data": {"step": "approval", "detail": "승인 완료 — 실행 시작"}}
+
+            except Exception as e:
+                logger.warning(f"[JINXUS_CORE] 채널/승인 처리 실패, 그냥 진행: {e}")
 
         # === 3. dispatch (에이전트 실행) ===
         results = []

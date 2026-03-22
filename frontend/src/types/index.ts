@@ -8,22 +8,13 @@ export interface ChatMessage {
   success?: boolean;
 }
 
-// 에이전트 상태
-export interface AgentStatus {
-  name: string;
-  description: string;
-  status: 'idle' | 'running' | 'error';
-  lastUsed?: Date;
-  tasksCompleted: number;
-  successRate: number;
-}
-
 // 시스템 상태
 export interface SystemStatus {
   status: string;
   uptime_seconds: number;
   redis_connected: boolean;
   qdrant_connected: boolean;
+  synapse_connected: boolean;
   total_tasks_processed: number;
   active_agents: string[];
 }

@@ -1,7 +1,14 @@
-"""Qdrant 기반 장기기억 시스템 - 에이전트별 컬렉션 분리"""
+"""Qdrant 기반 장기기억 시스템 - 에이전트별 컬렉션 분리
+
+v2.8.0: 메모리 최적화
+- 시간 감쇠 기반 자동 정리 (prune_with_time_decay)
+- 중복 메모리 제거 (deduplicate_memories)
+- 컨텍스트 주입 예산 제한 (search with budget)
+"""
+import logging
 import uuid
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -16,21 +23,25 @@ from openai import OpenAI
 
 from jinxus.config import get_settings
 
+logger = logging.getLogger(__name__)
 
-# 에이전트별 컬렉션 이름
-AGENT_COLLECTIONS = {
-    "JINXUS_CORE": "jinxus_core_memory",
-    "JX_CODER": "jinxus_coder_memory",
-    "JX_RESEARCHER": "jinxus_researcher_memory",
-    "JX_WRITER": "jinxus_writer_memory",
-    "JX_ANALYST": "jinxus_analyst_memory",
-    "JX_OPS": "jinxus_ops_memory",
-}
 
-from jinxus.config import get_settings as _get_settings
+def _get_collection_name(agent_name: str) -> str:
+    """에이전트 이름으로 컬렉션 이름 동적 생성"""
+    return f"jinxus_{agent_name.lower()}_memory"
+
+
+# 기본 에이전트 목록 (ensure_collections / search_all / optimize_all 용)
+_DEFAULT_AGENTS = [
+    "JINXUS_CORE", "JX_CODER", "JX_RESEARCHER", "JX_WRITER",
+    "JX_ANALYST", "JX_OPS", "JS_PERSONA", "JX_MARKETING",
+    "JX_PRODUCT", "JX_CTO", "JX_FRONTEND", "JX_BACKEND",
+    "JX_INFRA", "JX_REVIEWER", "JX_TESTER",
+    "JX_WEB_SEARCHER", "JX_DEEP_READER", "JX_FACT_CHECKER",
+]
 
 # settings에서 임베딩 차원 가져오기
-VECTOR_SIZE = _get_settings().embedding_dimensions
+VECTOR_SIZE = get_settings().embedding_dimensions
 
 
 class LongTermMemory:
@@ -67,7 +78,8 @@ class LongTermMemory:
 
         existing = {c.name for c in self._client.get_collections().collections}
 
-        for agent_name, collection_name in AGENT_COLLECTIONS.items():
+        for agent_name in _DEFAULT_AGENTS:
+            collection_name = _get_collection_name(agent_name)
             if collection_name not in existing:
                 self._client.create_collection(
                     collection_name=collection_name,
@@ -81,7 +93,7 @@ class LongTermMemory:
         if not self._openai:
             raise RuntimeError("OpenAI client not initialized. Check OPENAI_API_KEY.")
 
-        settings = _get_settings()
+        settings = get_settings()
         response = self._openai.embeddings.create(
             model=settings.embedding_model, input=text
         )
@@ -89,7 +101,7 @@ class LongTermMemory:
 
     def _collection_for_agent(self, agent_name: str) -> str:
         """에이전트 이름으로 컬렉션 이름 반환"""
-        return AGENT_COLLECTIONS.get(agent_name, "jinxus_core_memory")
+        return _get_collection_name(agent_name)
 
     def save(
         self,
@@ -156,7 +168,7 @@ class LongTermMemory:
 
         embedding = self._get_embedding(query)
 
-        for collection in AGENT_COLLECTIONS.values():
+        for collection in [_get_collection_name(a) for a in _DEFAULT_AGENTS]:
             try:
                 results = self._client.search(
                     collection_name=collection, query_vector=embedding, limit=limit
@@ -348,6 +360,271 @@ class LongTermMemory:
             }
         except Exception:
             return {"collection": collection, "points_count": 0, "vectors_count": 0}
+
+    # ===== 메모리 최적화 (v2.8.0) =====
+
+    def prune_with_time_decay(
+        self,
+        agent_name: str,
+        min_score: float = 0.1,
+        halflife_days: int = 30,
+        pin_threshold: float = 0.8,
+    ) -> int:
+        """시간 감쇠 기반 메모리 정리
+
+        Geny 패턴 참고: final_score = importance * 0.5^(days/halflife)
+        final_score < min_score 이고 importance < pin_threshold 인 메모리 삭제.
+
+        Args:
+            agent_name: 에이전트 이름
+            min_score: 감쇠 적용 후 최소 점수 임계값
+            halflife_days: 반감기 (일)
+            pin_threshold: 이 이상의 importance는 삭제 면제 (고정)
+
+        Returns:
+            삭제된 포인트 수
+        """
+        self.connect()
+        collection = self._collection_for_agent(agent_name)
+        now = datetime.now()
+        points_to_delete = []
+
+        try:
+            offset = None
+            while True:
+                result = self._client.scroll(
+                    collection_name=collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                points, next_offset = result
+
+                if not points:
+                    break
+
+                for point in points:
+                    payload = point.payload
+                    importance = payload.get("importance_score", 0.5)
+
+                    # 고정 메모리는 삭제 면제
+                    if importance >= pin_threshold:
+                        continue
+
+                    # 생성일 파싱
+                    created_str = payload.get("created_at", "")
+                    if not created_str:
+                        continue
+
+                    try:
+                        created_at = datetime.fromisoformat(created_str)
+                    except (ValueError, TypeError):
+                        continue
+
+                    days_old = (now - created_at).total_seconds() / 86400
+                    time_decay = 0.5 ** (days_old / halflife_days)
+                    final_score = importance * time_decay
+
+                    if final_score < min_score:
+                        points_to_delete.append(point.id)
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            # 일괄 삭제
+            if points_to_delete:
+                self._client.delete(
+                    collection_name=collection,
+                    points_selector=points_to_delete,
+                )
+
+            logger.info(
+                f"[MemoryOptim] prune_with_time_decay: {collection} — "
+                f"{len(points_to_delete)}개 삭제 (halflife={halflife_days}일, min_score={min_score})"
+            )
+
+        except Exception as e:
+            logger.error(f"[MemoryOptim] prune_with_time_decay 실패 ({collection}): {e}")
+
+        return len(points_to_delete)
+
+    def deduplicate_memories(
+        self,
+        agent_name: str,
+        similarity_threshold: float = 0.95,
+    ) -> int:
+        """중복 메모리 제거
+
+        각 메모리에 대해 유사도 검색 수행, 임계값 이상이면 중복으로 판정.
+        importance_score가 낮은 쪽을 삭제.
+
+        Args:
+            agent_name: 에이전트 이름
+            similarity_threshold: 코사인 유사도 임계값
+
+        Returns:
+            삭제된 포인트 수
+        """
+        self.connect()
+        collection = self._collection_for_agent(agent_name)
+        deleted_ids: set[str] = set()
+
+        try:
+            # 모든 포인트를 벡터 포함해서 조회
+            all_points = []
+            offset = None
+            while True:
+                result = self._client.scroll(
+                    collection_name=collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                points, next_offset = result
+
+                if not points:
+                    break
+
+                all_points.extend(points)
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            if len(all_points) < 2:
+                return 0
+
+            # 각 포인트에 대해 유사한 것 찾기
+            for point in all_points:
+                if point.id in deleted_ids:
+                    continue
+
+                # 해당 포인트의 벡터로 유사 검색
+                vector = point.vector
+                if not vector:
+                    continue
+
+                results = self._client.search(
+                    collection_name=collection,
+                    query_vector=vector,
+                    limit=10,  # 상위 10개만 확인
+                    score_threshold=similarity_threshold,
+                )
+
+                for hit in results:
+                    # 자기 자신은 스킵
+                    if hit.id == point.id:
+                        continue
+                    # 이미 삭제 예정이면 스킵
+                    if hit.id in deleted_ids:
+                        continue
+
+                    # importance 비교: 낮은 쪽 삭제
+                    point_importance = point.payload.get("importance_score", 0.5)
+                    hit_importance = hit.payload.get("importance_score", 0.5)
+
+                    if hit_importance <= point_importance:
+                        deleted_ids.add(hit.id)
+                    else:
+                        deleted_ids.add(point.id)
+                        break  # 자신이 삭제 대상이면 더 이상 비교 불필요
+
+            # 일괄 삭제
+            if deleted_ids:
+                self._client.delete(
+                    collection_name=collection,
+                    points_selector=list(deleted_ids),
+                )
+
+            logger.info(
+                f"[MemoryOptim] deduplicate_memories: {collection} — "
+                f"{len(deleted_ids)}개 중복 삭제 (threshold={similarity_threshold})"
+            )
+
+        except Exception as e:
+            logger.error(f"[MemoryOptim] deduplicate_memories 실패 ({collection}): {e}")
+
+        return len(deleted_ids)
+
+    def search_with_budget(
+        self, agent_name: str, query: str, limit: int = 5, max_chars: int = 8000
+    ) -> list[dict]:
+        """컨텍스트 예산 제한 검색
+
+        유사도 검색 후 max_chars까지만 결과를 반환.
+        예산 초과 시 나머지는 잘림.
+
+        Args:
+            agent_name: 에이전트 이름
+            query: 검색 쿼리
+            limit: 최대 검색 결과 수
+            max_chars: 컨텍스트 최대 글자수
+
+        Returns:
+            예산 내 결과 리스트
+        """
+        results = self.search(agent_name, query, limit)
+        budgeted = []
+        total_chars = 0
+
+        for r in results:
+            # 각 결과의 주요 텍스트 길이 계산
+            entry_chars = len(r.get("summary", "")) + len(r.get("key_learnings", ""))
+            if total_chars + entry_chars > max_chars and budgeted:
+                break
+            budgeted.append(r)
+            total_chars += entry_chars
+
+        return budgeted
+
+    def search_all_with_budget(
+        self, query: str, limit: int = 5, max_chars: int = 8000
+    ) -> list[dict]:
+        """모든 컬렉션에서 예산 제한 검색"""
+        results = self.search_all(query, limit)
+        budgeted = []
+        total_chars = 0
+
+        for r in results:
+            entry_chars = len(r.get("summary", "")) + len(r.get("key_learnings", ""))
+            if total_chars + entry_chars > max_chars and budgeted:
+                break
+            budgeted.append(r)
+            total_chars += entry_chars
+
+        return budgeted
+
+    def optimize_all_collections(self) -> dict:
+        """모든 컬렉션에 대해 정리 + 중복 제거 실행
+
+        Returns:
+            {agent_name: {"pruned": N, "deduped": M}} 형태의 결과
+        """
+        settings = get_settings()
+        results = {}
+
+        for agent_name in _DEFAULT_AGENTS:
+            pruned = self.prune_with_time_decay(
+                agent_name=agent_name,
+                min_score=settings.memory_prune_min_score,
+                halflife_days=settings.memory_prune_halflife_days,
+            )
+            deduped = self.deduplicate_memories(
+                agent_name=agent_name,
+                similarity_threshold=settings.memory_dedup_threshold,
+            )
+            results[agent_name] = {"pruned": pruned, "deduped": deduped}
+
+        total_pruned = sum(r["pruned"] for r in results.values())
+        total_deduped = sum(r["deduped"] for r in results.values())
+        logger.info(
+            f"[MemoryOptim] 전체 최적화 완료: {total_pruned}개 정리, {total_deduped}개 중복 제거"
+        )
+
+        return results
 
 
 # 싱글톤 인스턴스

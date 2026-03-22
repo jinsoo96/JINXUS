@@ -413,18 +413,18 @@ export default function ToolsTab() {
   };
 
   const tabs: { id: TabId; label: string; icon: typeof Plug; count?: number }[] = [
-    { id: 'mcp', label: 'MCP 서버', icon: Plug, count: mcpStatus?.connected_count },
-    { id: 'native', label: '네이티브 도구', icon: Wrench, count: toolsList?.native_count },
+    { id: 'mcp', label: 'MCP Servers', icon: Plug, count: mcpStatus?.connected_count },
+    { id: 'native', label: 'Native Tools', icon: Wrench, count: toolsList?.native_count },
     { id: 'graph', label: 'ToolGraph', icon: Network, count: toolGraph?.nodes.length },
-    { id: 'tool-logs', label: '도구 로그', icon: ScrollText, count: toolLogs.length || undefined },
-    { id: 'analytics', label: '통계', icon: BarChart2, count: analytics?.total_tools },
-    { id: 'plugins', label: '플러그인', icon: Package, count: plugins.length || undefined },
-    { id: 'policies', label: '정책', icon: Shield },
+    { id: 'tool-logs', label: 'Tool Logs', icon: ScrollText, count: toolLogs.length || undefined },
+    { id: 'analytics', label: 'Analytics', icon: BarChart2, count: analytics?.total_tools },
+    { id: 'plugins', label: 'Plugins', icon: Package, count: plugins.length || undefined },
+    { id: 'policies', label: 'Policies', icon: Shield },
   ];
 
   return (
     <div>
-      <h2 className="text-2xl font-bold mb-6">도구</h2>
+      <h2 className="text-2xl font-bold mb-6">Tools</h2>
 
       {/* 탭 네비게이션 */}
       <div className="flex gap-2 mb-6 border-b border-dark-border pb-3">
@@ -511,7 +511,7 @@ export default function ToolsTab() {
                 <div>
                   <label className="text-zinc-500 block mb-1">허용 에이전트 (쉼표 구분, 비우면 전체)</label>
                   <input value={newMCP.allowed_agents} onChange={e => setNewMCP(p => ({...p, allowed_agents: e.target.value}))}
-                    placeholder="예: JX_RESEARCHER,JX_OPS" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                    placeholder="예: 김지은, 배태양" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
                 </div>
                 <div className="col-span-2">
                   <label className="text-zinc-500 block mb-1">설명</label>

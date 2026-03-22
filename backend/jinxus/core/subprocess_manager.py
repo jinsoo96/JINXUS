@@ -200,7 +200,11 @@ class SubprocessManager:
 
         try:
             # SIGTERM으로 정상 종료 시도
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                # 이미 종료됨 — wait만 수행
+                pass
 
             try:
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
@@ -209,7 +213,10 @@ class SubprocessManager:
                 logger.warning(
                     f"[SubprocessManager] SIGTERM 타임아웃, SIGKILL: {managed.name}"
                 )
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
                 await proc.wait()
 
             managed.status = ProcessStatus.STOPPED
@@ -318,16 +325,24 @@ class SubprocessManager:
                         result["http_healthy"] = resp.status < 500
             except ImportError:
                 # aiohttp 없으면 TCP 연결만 확인
+                writer = None
                 try:
                     _, writer = await asyncio.wait_for(
                         asyncio.open_connection("localhost", managed.port),
                         timeout=3,
                     )
-                    writer.close()
-                    await writer.wait_closed()
                     result["http_healthy"] = True
                 except (ConnectionRefusedError, asyncio.TimeoutError, OSError):
                     result["http_healthy"] = False
+                except Exception:
+                    result["http_healthy"] = False
+                finally:
+                    if writer:
+                        writer.close()
+                        try:
+                            await writer.wait_closed()
+                        except Exception as e:
+                            logger.debug(f"Writer close 실패: {e}")
             except Exception:
                 result["http_healthy"] = False
 

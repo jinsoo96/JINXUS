@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ChatMessage, SystemStatus, AgentInfo } from '@/types';
 import { systemApi, agentApi, hrApi, type HRAgentRecord } from '@/lib/api';
 import { setDynamicPersonaMap } from '@/lib/personas';
+import { MAX_MESSAGES } from '@/lib/constants';
 
 interface AppState {
   // 채팅 상태
@@ -56,9 +57,9 @@ export const useAppStore = create<AppState>((set) => ({
   // 채팅 액션
   addMessage: (message) =>
     set((state) => {
-      // 300개 초과 시 앞쪽 50개 제거 (매번 1개씩 자르지 않고 배치 트림)
-      if (state.messages.length >= 300) {
-        return { messages: [...state.messages.slice(-250), message] };
+      // MAX_MESSAGES 초과 시 앞쪽 50개 제거 (매번 1개씩 자르지 않고 배치 트림)
+      if (state.messages.length >= MAX_MESSAGES) {
+        return { messages: [...state.messages.slice(-(MAX_MESSAGES - 50)), message] };
       }
       return { messages: [...state.messages, message] };
     }),

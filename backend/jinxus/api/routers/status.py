@@ -1,9 +1,12 @@
 """Status API - 시스템 상태 조회"""
+import logging
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
 from jinxus.api.models import SystemStatusResponse
+
+logger = logging.getLogger(__name__)
 from jinxus.api.deps import get_ready_orchestrator
 from jinxus.core import get_orchestrator
 from jinxus.memory import get_jinx_memory
@@ -18,14 +21,35 @@ async def get_system_status():
 
     status = await orchestrator.get_system_status()
 
+    # Synapse 헬스체크
+    import aiohttp
+    synapse_ok = False
+    try:
+        from jinxus.config import get_settings
+        hs_url = get_settings().matrix_hs_url
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(f"{hs_url}/health", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                synapse_ok = resp.status == 200
+    except Exception as e:
+        logger.debug(f"Synapse 헬스체크 실패: {e}")
+
     return SystemStatusResponse(
         status=status.get("status", "unknown"),
         uptime_seconds=status.get("uptime_seconds", 0),
         redis_connected=status.get("redis_connected", False),
         qdrant_connected=status.get("qdrant_connected", False),
+        synapse_connected=synapse_ok,
         total_tasks_processed=status.get("total_tasks_processed", 0),
         active_agents=status.get("active_agents", []),
     )
+
+
+@router.delete("/tasks/completed")
+async def clear_completed_tasks():
+    """완료된 작업 로그 전체 삭제"""
+    memory = get_jinx_memory()
+    count = await memory.meta.clear_all_logs()
+    return {"success": True, "deleted": count}
 
 
 @router.get("/performance")

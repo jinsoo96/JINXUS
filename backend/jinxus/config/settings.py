@@ -5,11 +5,23 @@ from functools import lru_cache
 from pathlib import Path
 
 
+def _read_version() -> str:
+    """jinxus/__init__.py에서 __version__을 읽어오기 (순환 import 방지)"""
+    try:
+        init_path = Path(__file__).parent.parent / "__init__.py"
+        for line in init_path.read_text().splitlines():
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return "0.0.0"
+
+
 class Settings(BaseSettings):
     """JINXUS 설정 - Pydantic BaseSettings로 환경변수 자동 로드"""
 
     # 버전 — jinxus/__init__.py의 __version__에서 자동 로드
-    jinxus_version: str = Field(default="2.9.0")
+    jinxus_version: str = Field(default_factory=_read_version)
 
     # 서버
     jinxus_host: str = Field(default="0.0.0.0")

@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import time
 from typing import Any, Optional
 from dataclasses import dataclass
 from contextlib import AsyncExitStack
@@ -34,11 +35,21 @@ class MCPServerConfig:
 class MCPClient:
     """MCP 서버 연결 및 도구 호출 클라이언트"""
 
+    # 자주 사용되는 서버 — 항상 연결 유지 (idle timeout 미적용)
+    _ALWAYS_CONNECTED: set[str] = {
+        "filesystem", "fetch", "github", "brave-search", "memory", "git",
+        "sequential-thinking", "playwright", "firecrawl", "sqlite", "notion",
+    }
+
+    # 유휴 서버 자동 종료 시간 (30분)
+    _IDLE_TIMEOUT_SECONDS: int = 1800
+
     def __init__(self):
         self._sessions: dict[str, Any] = {}  # server_name -> ClientSession
         self._exit_stack = AsyncExitStack()
         self._tools_cache: dict[str, list[dict]] = {}  # server_name -> tools list
         self._initialized = False
+        self._last_used: dict[str, float] = {}  # server_name -> last call timestamp
 
     async def initialize(self):
         """MCP 클라이언트 초기화"""
@@ -99,6 +110,7 @@ class MCPClient:
             await session.initialize()
 
             self._sessions[config.name] = session
+            self._last_used[config.name] = time.time()
 
             # 사용 가능한 도구 목록 캐시
             tools_response = await session.list_tools()
@@ -178,9 +190,9 @@ class MCPClient:
         start_time = time.time()
 
         if server_name not in self._sessions:
-            # 자동 재연결 시도
+            # 자동 재연결 시도 (idle timeout 후 재접속 포함)
             if await self._auto_reconnect(server_name):
-                logger.info(f"MCP 서버 자동 재연결 성공: {server_name}")
+                logger.info(f"MCP 서버 재연결 성공 (idle timeout 후): {server_name}")
             else:
                 return ToolResult(
                     success=False,
@@ -188,6 +200,9 @@ class MCPClient:
                     error=f"MCP 서버 '{server_name}' 연결되지 않음",
                     duration_ms=0,
                 )
+
+        # 사용 시각 갱신
+        self._last_used[server_name] = time.time()
 
         try:
             session = self._sessions[server_name]
@@ -237,11 +252,51 @@ class MCPClient:
                 duration_ms=duration_ms,
             )
 
+    async def cleanup_idle_servers(self) -> list[str]:
+        """유휴 상태인 MCP 서버 연결 종료 (메모리 절감)
+
+        _ALWAYS_CONNECTED에 포함된 서버는 건너뛴다.
+        도구 메타데이터(_tools_cache)는 유지하여 tool discovery에 영향 없음.
+
+        Returns:
+            종료된 서버 이름 목록
+        """
+        now = time.time()
+        disconnected: list[str] = []
+
+        # dict 순회 중 변경 방지를 위해 키 복사
+        for server_name in list(self._sessions.keys()):
+            if server_name in self._ALWAYS_CONNECTED:
+                continue
+
+            last = self._last_used.get(server_name, 0)
+            idle_seconds = now - last
+
+            if idle_seconds > self._IDLE_TIMEOUT_SECONDS:
+                try:
+                    # 세션만 제거 — _tools_cache는 유지 (도구 등록 정보 보존)
+                    del self._sessions[server_name]
+                    disconnected.append(server_name)
+                    logger.info(
+                        f"MCP 서버 유휴 종료: {server_name} "
+                        f"(유휴 {int(idle_seconds)}초, 다음 호출 시 자동 재연결)"
+                    )
+                except Exception as e:
+                    logger.warning(f"MCP 서버 유휴 종료 실패 ({server_name}): {e}")
+
+        if disconnected:
+            logger.info(f"MCP 유휴 정리 완료: {len(disconnected)}개 서버 종료 — {disconnected}")
+        else:
+            logger.debug("MCP 유휴 정리: 종료 대상 없음")
+
+        return disconnected
+
     async def close(self):
         """모든 MCP 연결 종료"""
         await self._exit_stack.aclose()
         self._sessions.clear()
         self._tools_cache.clear()
+        self._last_used.clear()
         logger.info("MCP 클라이언트 연결 종료")
 
     @property

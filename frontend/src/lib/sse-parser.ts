@@ -31,7 +31,9 @@ export async function consumeSSE(
       try {
         const data = JSON.parse(dataChunks.join(''));
         onEvent(currentEvent, data);
-      } catch { /* JSON 파싱 실패 무시 */ }
+      } catch {
+        // JSON 파싱 실패 — 불완전한 청크는 무시
+      }
     }
     currentEvent = 'message';
     dataChunks = [];
