@@ -7,7 +7,9 @@ import {
   FolderKanban, Plus, Play, Square, Trash2, RefreshCw,
   CheckCircle, XCircle, Clock, Loader2, ChevronDown,
   ChevronRight, Pencil, ArrowRight, AlertCircle,
+  PanelBottomClose, PanelBottomOpen, Terminal,
 } from 'lucide-react';
+import DockerLogPanel from '@/components/DockerLogPanel';
 
 // 페이즈 상태 색상
 const PHASE_STATUS_CONFIG: Record<string, { color: string; bg: string; label: string }> = {
@@ -40,6 +42,40 @@ export default function ProjectsTab() {
   const [editInput, setEditInput] = useState('');
   const streamRef = useRef<AbortController | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 하단 Docker 로그 패널
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(true);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(220);
+  const isDraggingRef = useRef(false);
+  const dragStartYRef = useRef(0);
+  const dragStartHeightRef = useRef(0);
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartYRef.current = e.clientY;
+    dragStartHeightRef.current = bottomPanelHeight;
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const delta = dragStartYRef.current - ev.clientY;
+      const newHeight = Math.max(120, Math.min(600, dragStartHeightRef.current + delta));
+      setBottomPanelHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [bottomPanelHeight]);
 
   // 프로젝트 목록 로드
   const loadProjects = useCallback(async () => {
@@ -193,9 +229,22 @@ export default function ProjectsTab() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <FolderKanban className="w-5 h-5" />프로젝트
         </h1>
-        <button onClick={loadProjects} className="p-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors">
-          <RefreshCw size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={loadProjects} className="p-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors">
+            <RefreshCw size={16} />
+          </button>
+          <button
+            onClick={() => setBottomPanelOpen(!bottomPanelOpen)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              bottomPanelOpen
+                ? 'bg-zinc-700 text-zinc-200'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+            title={bottomPanelOpen ? '패널 닫기' : '패널 열기'}
+          >
+            {bottomPanelOpen ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}
+          </button>
+        </div>
       </div>
 
       {/* 프로젝트 생성 */}
@@ -224,7 +273,7 @@ export default function ProjectsTab() {
       </div>
 
       {/* 본문: 좌우 분할 */}
-      <div className="flex-1 flex gap-4 min-h-0">
+      <div className={`flex gap-4 min-h-0 ${bottomPanelOpen ? '' : 'flex-1'}`} style={bottomPanelOpen ? { flex: '1 1 0', minHeight: 0 } : undefined}>
         {/* 왼쪽: 프로젝트 목록 */}
         <div className="w-80 flex-shrink-0 bg-dark-card border border-dark-border rounded-xl overflow-hidden flex flex-col">
           <div className="px-4 py-3 border-b border-dark-border text-sm font-semibold text-zinc-400">
@@ -484,6 +533,39 @@ export default function ProjectsTab() {
           )}
         </div>
       </div>
+
+      {/* 하단 Docker 로그 패널 (VSCode 터미널 스타일) */}
+      {bottomPanelOpen && (
+        <div className="flex-shrink-0 flex flex-col" style={{ height: bottomPanelHeight }}>
+          {/* 리사이즈 핸들 */}
+          <div
+            className="h-1 bg-dark-border cursor-row-resize hover:bg-primary/40 active:bg-primary/60 transition-colors flex-shrink-0"
+            onMouseDown={handleDragStart}
+          />
+          {/* 탭 바 */}
+          <div className="flex items-center justify-between bg-dark-card border-b border-dark-border flex-shrink-0">
+            <div className="flex">
+              <button
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium border-b-2 border-primary text-zinc-200 bg-dark-bg/50"
+              >
+                <Terminal size={12} />
+                시스템 로그
+              </button>
+            </div>
+            <button
+              onClick={() => setBottomPanelOpen(false)}
+              className="p-1.5 mr-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors"
+              title="패널 닫기"
+            >
+              <ChevronDown size={14} />
+            </button>
+          </div>
+          {/* 패널 콘텐츠 */}
+          <div className="flex-1 overflow-hidden">
+            <DockerLogPanel />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

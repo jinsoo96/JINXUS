@@ -133,7 +133,7 @@ export default function ChatTab() {
   const [showDockerLogs, setShowDockerLogs] = useState(false);
 
   // 하단 패널 상태
-  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(true);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(220);
   const [bottomPanelTab, setBottomPanelTab] = useState<'system' | 'thinking'>('system');
   const isDraggingRef = useRef(false);
