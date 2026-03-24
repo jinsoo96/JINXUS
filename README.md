@@ -102,37 +102,30 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 
 ---
 
-## Organization
+## Organization & HR System
 
-```
-JINXUS CORP. (28 employees)
+JINXUS runs as a virtual Korean IT company with 28 default employees across 6 teams. Each agent has a unique persona defined in `personas.py` — name, MBTI, personality, speech style, work habits, and inter-agent relationships.
 
-Executive (4)
-  JINXUS    - Chief of Staff
-  CTO       - Lee Chaeyoung
-  COO       - Oh Sejun
-  CFO       - Yun Mirae
+**Default Teams:** Executive (4) · Development (6) · Platform (6) · Product (6) · Marketing (4) · Biz Support (2)
 
-Development (6)                Platform (6)
-  Team Lead  - Lee Minjun        Team Lead  - Park Minsung
-  Frontend   - Park Yerin        Infra      - Jung Dohyun
-  Backend    - Choi Jaewon       Security   - Kim Jungmin
-  Senior     - Han Subin         Data Eng   - Lee Seojun
-  QA         - Yun Haeun         ML Eng     - Jung Seungwoo
-  Mobile     - Choi Eunji        AI Eng     - Lee Jiho
+### Dynamic Hiring & Firing
 
-Product (6)                    Marketing (4)
-  Team Lead  - Kim Jieun          Team Lead  - Park Jihun
-  PM         - Kim Seoyeon        Content    - Kang Sohee
-  Strategy   - Shin Junhyuk       Brand      - Kwon Areum
-  Analyst    - Oh Yujin           Social     - Nam Dahyun
-  Researcher - Jang Siwoo
-  Research QA- Im Nayeon
+Agents are managed through a full HR lifecycle — hire, fire, and rehire at runtime without restart.
 
-Biz Support (2)
-  Analyst    - Seo Hyunsu
-  Ops        - Bae Taeyang
-```
+**Hire** (`POST /hr/hire`):
+- Specify specialty (coding, research, writing, etc.) and the system auto-provisions everything
+- Auto-assigns: persona (name, team, channel), tool policy (inherited from parent agent type), org chart placement, playground desk, team channel membership
+- Appears immediately in the Pixel Office and starts receiving tasks
+
+**Fire** (`POST /hr/fire/{id}`):
+- Soft-delete: record preserved for potential rehire, agent instance removed
+- Cascade: firing a team lead automatically fires all their subordinates
+- Auto-cleanup: persona unregistered, removed from playground and channels
+
+**Rehire** (`POST /hr/rehire/{id}`):
+- Reactivates a previously fired agent from the fired agents list
+
+All personas are defined as a single source of truth in `personas.py` (backend) and synced to the frontend via `/api/agents/personas`. The frontend `TEAM_CONFIG` in `personas.ts` drives all team-related UI (colors, channels, room layouts) from one central config.
 
 ---
 
