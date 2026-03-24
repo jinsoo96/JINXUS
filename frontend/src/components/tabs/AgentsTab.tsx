@@ -386,6 +386,19 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
     fetchFiredAgents();
   };
 
+  const handleFire = async (agentId: string, agentName: string) => {
+    if (!confirm(`${agentName}을(를) 해고하시겠습니까?`)) return;
+    try {
+      const res = await hrApi.fireAgent(agentId, '수동 해고');
+      toast.success(res.message || '해고 완료');
+      loadAgents(true);
+      loadPersonas();
+      fetchFiredAgents();
+    } catch {
+      toast.error('해고 실패');
+    }
+  };
+
   const handleRehire = async (agentId: string) => {
     try {
       const res = await hrApi.rehireAgent(agentId);
@@ -487,6 +500,15 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
                   }`}>
                     {(agent.success_rate * 100).toFixed(0)}%
                   </span>
+                  {agent.name !== 'JINXUS_CORE' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleFire(agent.id, getDisplayName(agent.name)); }}
+                      className="p-0.5 hover:text-red-400 text-zinc-700 transition-colors"
+                      title="해고"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => handleToggleLogs(agent.name, e)}
                     className="p-0.5 hover:text-zinc-300 text-zinc-600 transition-colors"

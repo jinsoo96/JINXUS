@@ -246,6 +246,24 @@ class HRManager:
             if agent_id not in parent.children_ids:
                 parent.children_ids.append(agent_id)
 
+        # 에이전트 인스턴스 재생성 + 페르소나 재등록
+        if agent_id not in self._agents:
+            try:
+                from jinxus.hr.agent_factory import AgentFactory
+                spec = HireSpec(
+                    specialty=record.specialty,
+                    role=record.role,
+                    name=record.name,
+                    description=record.description,
+                    personality_id=record.personality_id,
+                )
+                agent = AgentFactory.create(spec)
+                self._agents[agent_id] = agent
+                self._register_dynamic_persona(agent, spec)
+                logger.info(f"[HR] 에이전트 인스턴스 + 페르소나 복구 완료: {record.name}")
+            except Exception as e:
+                logger.warning(f"[HR] 에이전트 인스턴스 복구 실패 (record만 활성화): {e}")
+
         logger.info(f"[HR] 에이전트 재고용: {record.name}")
 
         return record

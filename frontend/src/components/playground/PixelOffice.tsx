@@ -292,6 +292,10 @@ const FURN_MAKERS: Record<string, () => HTMLCanvasElement> = {
 function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Record<string, AgentRuntimeStatus>, camera: Camera) {
   ctx.imageSmoothingEnabled = false;
 
+  // Clear entire canvas before camera transform (prevents zoom ghosting)
+  const canvas = ctx.canvas;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
   // Apply camera transform
   ctx.save();
   ctx.scale(camera.zoom, camera.zoom);
