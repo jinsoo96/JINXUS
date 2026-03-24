@@ -62,8 +62,7 @@ docs/
 shsprompt_ex.md
 
 # Claude Code internal
-.claude/worktrees/
-.claude/settings.local.json
+.claude/
 
 # Synapse config (contains secrets)
 backend/synapse/
