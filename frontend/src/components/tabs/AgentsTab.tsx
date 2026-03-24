@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  UserPlus, RotateCcw, Loader2, ChevronDown, ChevronUp,
+  UserPlus, RotateCcw, Loader2, ChevronDown, ChevronUp, ChevronLeft,
   CheckCircle, XCircle, Clock, Wrench, Send, MessageSquare, Trash2, Users,
   Building2, RefreshCw, Hash,
 } from 'lucide-react';
@@ -780,6 +780,13 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
             {/* 채팅 헤더 */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-dark-border bg-zinc-900/60">
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setChatAgent(null)}
+                  className="flex items-center gap-1 px-2 py-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors text-sm font-medium"
+                  title="뒤로가기"
+                >
+                  <ChevronLeft size={16} />
+                </button>
                 {getStatusDot(selectedRuntime?.status)}
                 <span className="text-lg">{getPersona(chatAgent)?.emoji ?? '🤖'}</span>
                 <span className="font-semibold text-white">{getDisplayName(chatAgent)}</span>
@@ -788,14 +795,6 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
                 <span className="text-xs text-zinc-500 ml-1">직접 대화</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setChatAgent(null)}
-                  className="flex items-center gap-1 px-2 py-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-zinc-300 transition-colors text-xs"
-                  title="직원 현황으로"
-                >
-                  <Building2 size={12} />
-                  현황
-                </button>
                 <button
                   onClick={() => setDirectMessages([])}
                   className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-zinc-300 transition-colors"
