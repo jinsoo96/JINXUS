@@ -572,12 +572,17 @@ export const agentApi = {
     return apiCall<AgentGraph>(`/agents/${agentName}/graph`);
   },
 
-  // JX_CODER 전문가 팀 조회
+  // 전문가 팀 조회 (범용)
+  getTeam: async (parentName: string): Promise<{ parent: string; team: CodingSpecialist[] }> => {
+    return apiCall<{ parent: string; team: CodingSpecialist[] }>(`/agents/${parentName}/team`);
+  },
+
+  /** @deprecated getTeam('JX_CODER') 사용 */
   getCoderTeam: async (): Promise<{ parent: string; team: CodingSpecialist[] }> => {
     return apiCall<{ parent: string; team: CodingSpecialist[] }>('/agents/JX_CODER/team');
   },
 
-  // JX_RESEARCHER 전문가 팀 조회
+  /** @deprecated getTeam('JX_RESEARCHER') 사용 */
   getResearcherTeam: async (): Promise<{ parent: string; team: CodingSpecialist[] }> => {
     return apiCall<{ parent: string; team: CodingSpecialist[] }>('/agents/JX_RESEARCHER/team');
   },
@@ -764,8 +769,8 @@ export const logsApi = {
 
   // 선택 로그 일괄 삭제
   deleteLogs: async (logIds: string[]): Promise<{ success: boolean }> => {
-    return apiCall<{ success: boolean }>('/logs', {
-      method: 'DELETE',
+    return apiCall<{ success: boolean }>('/logs/bulk-delete', {
+      method: 'POST',
       body: JSON.stringify({ log_ids: logIds }),
     });
   },
@@ -1276,6 +1281,132 @@ export const channelApi = {
       }
     }
     connect();
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mission API
+// ═══════════════════════════════════════════════════════════════════════════
+
+// 미션 SSE 이벤트 타입
+export interface MissionSSEEvent {
+  event:
+    | 'mission_created'
+    | 'mission_status'
+    | 'mission_huddle'
+    | 'mission_briefing_message'
+    | 'mission_agent_activity'
+    | 'mission_message'
+    | 'mission_thinking'
+    | 'mission_complete'
+    | 'mission_failed'
+    | 'mission_cancelled'
+    | 'mission_approval_required'
+    | 'mission_tool_calls'
+    | 'agent_dm'
+    | 'agent_report'
+    | 'agent_broadcast'
+    | 'huddle_start'
+    | 'huddle_message'
+    | 'huddle_end'
+    | 'keepalive';
+  data: Record<string, unknown>;
+}
+
+// 미션 데이터 타입
+export interface MissionData {
+  id: string;
+  title: string;
+  description: string;
+  type: 'quick' | 'standard' | 'epic' | 'raid';
+  status: 'briefing' | 'in_progress' | 'review' | 'complete' | 'failed' | 'cancelled';
+  assigned_agents: string[];
+  subtasks: Array<{
+    id: string;
+    instruction: string;
+    assigned_agent: string;
+    status: string;
+    result?: string;
+  }>;
+  result?: string;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  original_input: string;
+  agent_conversations: Array<{
+    from: string;
+    to?: string;
+    message: string;
+    type: string;
+    timestamp: string;
+  }>;
+}
+
+export const missionApi = {
+  // 미션 생성 + 실행 (SSE 스트리밍)
+  streamMission: async (
+    message: string,
+    sessionId: string | undefined,
+    onEvent: (event: MissionSSEEvent) => void,
+    onError: (error: Error) => void,
+    abortController?: AbortController,
+  ): Promise<void> => {
+    try {
+      const response = await fetch(`${API_BASE}/mission`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, session_id: sessionId }),
+        signal: abortController?.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const { consumeSSE } = await import('./sse-parser');
+      await consumeSSE(response, (event, data) => {
+        onEvent({ event: event as MissionSSEEvent['event'], data: data as MissionSSEEvent['data'] });
+      }, abortController?.signal);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      onError(error instanceof Error ? error : new Error('Mission stream error'));
+    }
+  },
+
+  // 미션 목록 조회
+  listMissions: async (status?: string, limit = 20): Promise<{ missions: MissionData[]; total: number }> => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    params.set('limit', String(limit));
+    return apiCall<{ missions: MissionData[]; total: number }>(`/mission/list?${params}`);
+  },
+
+  // 미션 상세 조회
+  getMission: async (missionId: string): Promise<MissionData> => {
+    return apiCall<MissionData>(`/mission/${missionId}`);
+  },
+
+  // 미션 취소
+  cancelMission: async (missionId: string): Promise<{ success: boolean; mission_id: string }> => {
+    return apiCall<{ success: boolean; mission_id: string }>(`/mission/${missionId}/cancel`, {
+      method: 'POST',
+    });
+  },
+
+  // 미션 삭제
+  deleteMission: async (missionId: string): Promise<{ success: boolean; mission_id: string }> => {
+    return apiCall<{ success: boolean; mission_id: string }>(`/mission/${missionId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // 미션 에이전트 대화 로그
+  getConversations: async (missionId: string): Promise<{
+    mission_id: string;
+    conversations: MissionData['agent_conversations'];
+    total: number;
+  }> => {
+    return apiCall<{ mission_id: string; conversations: MissionData['agent_conversations']; total: number }>(
+      `/mission/${missionId}/conversations`
+    );
   },
 };
 

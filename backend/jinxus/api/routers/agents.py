@@ -22,11 +22,11 @@ async def get_personas():
     personas.py가 변경되면 이 엔드포인트가 자동으로 반영한다.
     프론트엔드는 이 데이터를 받아 personas.ts의 정적 fallback을 덮어쓴다.
     """
-    from jinxus.agents.personas import PERSONAS
+    from jinxus.agents.personas import get_all_personas
     from jinxus.agents.personality import get_personality
 
     result: dict = {}
-    for code, p in PERSONAS.items():
+    for code, p in get_all_personas().items():
         # home_channel: 임원은 general, 나머지는 첫 번째 비-general 채널
         if p.team == "임원":
             home_channel = "general"
@@ -47,6 +47,7 @@ async def get_personas():
             "personalityEmoji": archetype.emoji if archetype else "",
             "personalityTagline": archetype.tagline if archetype else "",
             "mbti": p.mbti,
+            "rank": p.rank,
         }
 
     return {"personas": result}
@@ -248,35 +249,38 @@ async def get_all_runtime_status():
     }
 
 
-@router.get("/JX_CODER/team")
-async def get_jx_coder_team():
-    """JX_CODER 전문가 팀 조회"""
+# ── 전문가팀 레지스트리 (동적 조회용) ────────────────────────────────────
+# 새 전문가팀 추가 시 여기에만 등록하면 API 자동 노출
+def _get_specialist_registry() -> dict[str, dict]:
+    """부모 에이전트 → 전문가 딕셔너리 매핑 (지연 임포트)"""
     from jinxus.agents.coding import CODING_SPECIALISTS
-    from jinxus.agents.state_tracker import get_state_tracker
-
-    tracker = get_state_tracker()
-    team = []
-    for name, cls in CODING_SPECIALISTS.items():
-        state = tracker.get_state(name)
-        team.append({
-            "name": name,
-            "description": cls.description,
-            "status": state.status.value if state else "idle",
-            "current_task": state.current_task if state else None,
-            "current_node": state.current_node.value if (state and state.current_node) else None,
-        })
-    return {"parent": "JX_CODER", "team": team}
-
-
-@router.get("/JX_RESEARCHER/team")
-async def get_jx_researcher_team():
-    """JX_RESEARCHER 전문가 팀 조회"""
     from jinxus.agents.research import RESEARCH_SPECIALISTS
+    return {
+        "JX_CODER": CODING_SPECIALISTS,
+        "JX_RESEARCHER": RESEARCH_SPECIALISTS,
+    }
+
+
+@router.get("/{agent_name}/team")
+async def get_agent_team(agent_name: str):
+    """전문가 팀 조회 — 범용 엔드포인트.
+
+    부모 에이전트 이름으로 소속 전문가 팀을 조회한다.
+    현재 지원: JX_CODER, JX_RESEARCHER (확장 가능)
+    """
     from jinxus.agents.state_tracker import get_state_tracker
+
+    registry = _get_specialist_registry()
+    specialists = registry.get(agent_name)
+    if not specialists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"전문가 팀 없음: {agent_name}. 가능: {list(registry.keys())}",
+        )
 
     tracker = get_state_tracker()
     team = []
-    for name, cls in RESEARCH_SPECIALISTS.items():
+    for name, cls in specialists.items():
         state = tracker.get_state(name)
         team.append({
             "name": name,
@@ -285,7 +289,7 @@ async def get_jx_researcher_team():
             "current_task": state.current_task if state else None,
             "current_node": state.current_node.value if (state and state.current_node) else None,
         })
-    return {"parent": "JX_RESEARCHER", "team": team}
+    return {"parent": agent_name, "team": team}
 
 
 @router.get("/{agent_name}/graph")

@@ -228,6 +228,7 @@ class AgentFactory:
         description: str,
         parent_name: Optional[str] = None,
         task_focus: Optional[str] = None,
+        personality_id: Optional[str] = None,
     ) -> str:
         """인격 자동 생성 — sysprompt_ex.md 패턴 적용
 
@@ -259,11 +260,24 @@ class AgentFactory:
         strengths_str = "\n".join(f"  - {s}" for s in strengths)
         identity_str = "\n".join(f"- {r}" for r in identity_rules)
 
+        # 인격 snippet 주입
+        from jinxus.agents.personality import get_personality, get_random_personality
+        if personality_id:
+            archetype = get_personality(personality_id)
+        else:
+            archetype = get_random_personality()
+        personality_section = f"""
+<personality>
+{archetype.prompt_snippet}
+캐치프레이즈: "{archetype.catchphrase}"
+갈등 처리: {archetype.conflict_style}
+</personality>""" if archetype else ""
+
         return f"""<identity>
 너는 {name}이다. JINXUS의 {role_desc}.
 전문 분야: {focus}.
 {description}{hierarchy_line}
-</identity>
+</identity>{personality_section}
 
 <metadata>
 오늘은 {today}이다.
@@ -327,16 +341,25 @@ class AgentFactory:
         # 도구 프로필: specialty 기반으로 정규 에이전트 정책 매핑
         tool_profile = _SPECIALTY_TOOL_PROFILE.get(spec.specialty.lower())
 
-        # 시스템 프롬프트: 커스텀 제공 시 사용, 아니면 자동 생성
+        # 인격: spec에 지정된 것 or 랜덤 선택 후 기록
+        from jinxus.agents.personality import get_personality, get_random_personality
+        if spec.personality_id:
+            chosen_personality = get_personality(spec.personality_id)
+        else:
+            chosen_personality = get_random_personality()
+        resolved_personality_id = chosen_personality.id if chosen_personality else ""
+
+        # 시스템 프롬프트: 커스텀 제공 시 사용, 아니면 자동 생성 (인격 주입 포함)
         system_prompt = spec.system_prompt or cls._generate_system_prompt(
             name=name,
             specialty=spec.specialty,
             role=spec.role,
             capabilities=capabilities,
             description=description,
+            personality_id=resolved_personality_id,
         )
 
-        return DynamicAgent(
+        agent = DynamicAgent(
             agent_id=agent_id,
             name=name,
             specialty=spec.specialty,
@@ -346,6 +369,8 @@ class AgentFactory:
             tool_profile=tool_profile,
             system_prompt=system_prompt,
         )
+        agent.personality_id = resolved_personality_id
+        return agent
 
     @classmethod
     def spawn_child(

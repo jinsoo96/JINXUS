@@ -10,32 +10,14 @@ import { useAppStore } from '@/store/useAppStore';
 import { agentApi, hrApi, logsApi, chatApi, type AgentRuntimeStatus, type HRAgentRecord, type TaskLog, type SSEEvent } from '@/lib/api';
 import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import { formatTimeWithSeconds } from '@/lib/utils';
-import { PERSONA_MAP, TEAM_ORDER, getDisplayName, getRole, getPersona, getTeamGroups, sortByRank } from '@/lib/personas';
+import { PERSONA_MAP, getTeamOrder, getDisplayName, getRole, getPersona, getTeamGroups, sortByRank, getTeamConfig } from '@/lib/personas';
 import toast from 'react-hot-toast';
 import HireAgentModal from '../HireAgentModal';
 import AgentCard from '../AgentCard';
 import OrgChart from '../OrgChart';
 import PixelOffice from '../playground/PixelOffice';
 
-// ── 직원 현황 (부서 그리드) ──────────────────────────────────────
-
-const TEAM_COLOR: Record<string, string> = {
-  '임원':       'border-amber-500/30 bg-amber-500/5',
-  '엔지니어링': 'border-blue-500/30 bg-blue-500/5',
-  '리서치':     'border-green-500/30 bg-green-500/5',
-  '운영':       'border-orange-500/30 bg-orange-500/5',
-  '마케팅':     'border-pink-500/30 bg-pink-500/5',
-  '기획':       'border-cyan-500/30 bg-cyan-500/5',
-};
-
-const TEAM_LABEL_COLOR: Record<string, string> = {
-  '임원':       'text-amber-400',
-  '엔지니어링': 'text-blue-400',
-  '리서치':     'text-green-400',
-  '운영':       'text-orange-400',
-  '마케팅':     'text-pink-400',
-  '기획':       'text-cyan-400',
-};
+// ── 직원 현황 (부서 그리드) ── 팀 색상은 personas.ts TEAM_CONFIG에서 관리
 
 interface EmployeeCardProps {
   agentCode: string;
@@ -77,7 +59,7 @@ function EmployeeCard({ agentCode, runtime, onSelect, onGoChannel }: EmployeeCar
           title={`#${persona.channel} 채널로 이동`}
         >
           <Hash size={9} />
-          {persona.team === '엔지니어링' ? '개발' : persona.team === '리서치' ? '리서치' : persona.team}
+          {getTeamConfig(persona.team).labelShort || persona.team}
         </button>
       </div>
       {isWorking && runtime?.current_task && (
@@ -116,8 +98,8 @@ interface DirectMessage {
   timestamp: Date;
 }
 
-export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
-  const { agents, hrAgents, loadAgents, setActiveTab, personasVersion } = useAppStore();
+export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?: boolean; forcedSubTab?: 'playground' | 'status' }) {
+  const { agents, hrAgents, loadAgents, loadPersonas, setActiveTab, personasVersion, agentBubbles, muteChat } = useAppStore();
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [showHireModal, setShowHireModal] = useState(false);
   const [runtimeMap, setRuntimeMap] = useState<Record<string, AgentRuntimeStatus>>({});
@@ -126,8 +108,24 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   const [logsMap, setLogsMap] = useState<Record<string, TaskLog[]>>({});
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
 
+  // 액티비티 로그 (플레이그라운드 하단 패널)
+  interface ActivityEntry {
+    id: number;
+    ts: string;
+    agent: string;
+    type: 'start' | 'node' | 'done' | 'error' | 'tool';
+    detail: string;
+  }
+  const activityIdRef = useRef(0);
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
+  const [showActivity, setShowActivity] = useState(true);
+  const activityEndRef = useRef<HTMLDivElement>(null);
+
   // 서브탭: 직원현황 vs 플레이그라운드
-  const [subTab, setSubTab] = useState<'status' | 'playground'>('playground');
+  const [_subTab, _setSubTab] = useState<'status' | 'playground'>('playground');
+  // 외부에서 서브탭 제어 가능 (TeamTab에서 사용)
+  const subTab = forcedSubTab ?? _subTab;
+  const setSubTab = forcedSubTab ? () => {} : _setSubTab;
 
   // 직접 채팅
   const [chatAgent, setChatAgent] = useState<string | null>(null);
@@ -156,9 +154,21 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
     } catch { /* 없으면 무시 */ }
   };
 
+  // 액티비티 로그 헬퍼
+  const NODE_LABELS: Record<string, string> = {
+    receive: '수신', plan: '계획', execute: '실행',
+    evaluate: '평가', reflect: '회고', memory_write: '메모리 기록',
+    return_result: '결과 반환', pre_execute_guard: '사전 검증', post_execute: '후처리',
+  };
+  const pushActivity = useCallback((type: ActivityEntry['type'], agent: string, detail: string, ts?: string) => {
+    const id = ++activityIdRef.current;
+    const entry: ActivityEntry = { id, ts: ts || new Date().toISOString(), agent, type, detail };
+    setActivityLog(prev => [...prev.slice(-99), entry]);
+  }, []);
+
   // 플레이그라운드 SSE 연결 (실시간 상태 업데이트)
   useEffect(() => {
-    if (subTab !== 'playground' || !isActive) return;
+    if (!isActive) return;
 
     const es = new EventSource('/api/agents/runtime/stream');
 
@@ -170,6 +180,11 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
           current_task: data.task, current_tools: data.tools || [],
           last_update: null, error_message: null,
         }}));
+        // working 상태면 액티비티 로그에도 표시
+        if (data.status === 'working' && data.task) {
+          const name = getDisplayName(data.agent);
+          pushActivity('start', data.agent, `${name} 작업 중 — ${data.task?.slice(0, 60) || ''}`, data.ts);
+        }
       } catch { /* 파싱 실패 무시 */ }
     });
 
@@ -184,6 +199,15 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
           last_update: null,
           error_message: data.error || null,
         }}));
+        // 액티비티 로그
+        const name = getDisplayName(data.agent);
+        if (data.status === 'working') {
+          pushActivity('start', data.agent, `${name} 작업 시작 — ${data.task || ''}`, data.ts);
+        } else if (data.status === 'idle') {
+          pushActivity('done', data.agent, `${name} 작업 완료`, data.ts);
+        } else if (data.status === 'error') {
+          pushActivity('error', data.agent, `${name} 오류: ${data.error || ''}`, data.ts);
+        }
       } catch { /* 파싱 실패 무시 */ }
     });
 
@@ -195,6 +219,9 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
           if (!existing) return prev;
           return {...prev, [data.agent]: { ...existing, current_node: data.node }};
         });
+        const name = getDisplayName(data.agent);
+        const label = NODE_LABELS[data.node] || data.node;
+        pushActivity('node', data.agent, `${name} → ${label}`, data.ts);
       } catch { /* 파싱 실패 무시 */ }
     });
 
@@ -206,6 +233,10 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
           if (!existing) return prev;
           return {...prev, [data.agent]: { ...existing, current_tools: data.tools || [] }};
         });
+        if (data.tools?.length) {
+          const name = getDisplayName(data.agent);
+          pushActivity('tool', data.agent, `${name} 도구 사용: ${data.tools.join(', ')}`, data.ts);
+        }
       } catch { /* 파싱 실패 무시 */ }
     });
 
@@ -215,7 +246,12 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
     };
 
     return () => es.close();
-  }, [subTab, isActive]);
+  }, [subTab, isActive, pushActivity]);
+
+  // 액티비티 로그 자동 스크롤
+  useEffect(() => {
+    activityEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activityLog]);
 
   // 폴링 (직원 현황 탭 또는 SSE fallback)
   useEffect(() => {
@@ -345,7 +381,8 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   };
 
   const handleAgentHired = () => {
-    loadAgents();
+    loadAgents(true);   // force 리로드
+    loadPersonas();     // 동적 페르소나 즉시 동기화
     fetchFiredAgents();
   };
 
@@ -353,7 +390,8 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
     try {
       const res = await hrApi.rehireAgent(agentId);
       toast.success(res.message);
-      loadAgents();
+      loadAgents(true);
+      loadPersonas();
       fetchFiredAgents();
     } catch {
       toast.error('재고용 실패');
@@ -361,7 +399,7 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   };
 
   const handleGoChannel = useCallback(() => {
-    setActiveTab('channel');
+    setActiveTab('team');
   }, [setActiveTab]);
 
   const getStatusDot = (status?: string) => {
@@ -394,8 +432,8 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
   return (
     <div className="flex gap-4 h-full min-h-0">
 
-      {/* ── 왼쪽 패널: 에이전트 목록 + 관리 ── */}
-      <div className="w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 min-h-0">
+      {/* ── 왼쪽 패널: 에이전트 목록 + 관리 (TeamTab에서는 숨김) ── */}
+      <div className={`w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 min-h-0 ${forcedSubTab ? 'hidden' : ''}`}>
 
         {/* 헤더 */}
         <div className="flex items-center justify-between flex-shrink-0">
@@ -556,35 +594,39 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
       </div>
 
       {/* ── 오른쪽 패널 ── */}
-      <div className="flex-1 flex flex-col min-h-0 border border-dark-border rounded-xl overflow-hidden">
+      <div className={`flex-1 flex flex-col min-h-0 overflow-hidden ${forcedSubTab ? '' : 'border border-dark-border rounded-xl'}`}>
         {!chatAgent ? (
           <>
-            {/* 서브탭 헤더 */}
+            {/* 서브탭 헤더 — forcedSubTab이면 간소한 상태 바만 */}
             <div className="flex items-center justify-between px-4 py-2 border-b border-dark-border bg-zinc-900/60 flex-shrink-0">
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setSubTab('playground')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    subTab === 'playground'
-                      ? 'bg-zinc-700/60 text-white'
-                      : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
-                  }`}
-                >
-                  <span style={{ fontSize: 13 }}>🏢</span>
-                  플레이그라운드
-                </button>
-                <button
-                  onClick={() => setSubTab('status')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    subTab === 'status'
-                      ? 'bg-zinc-700/60 text-white'
-                      : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
-                  }`}
-                >
-                  <Building2 size={13} />
-                  직원 현황
-                </button>
-              </div>
+              {!forcedSubTab ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => _setSubTab('playground')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      subTab === 'playground'
+                        ? 'bg-zinc-700/60 text-white'
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+                    }`}
+                  >
+                    <span style={{ fontSize: 13 }}>🏢</span>
+                    플레이그라운드
+                  </button>
+                  <button
+                    onClick={() => _setSubTab('status')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      subTab === 'status'
+                        ? 'bg-zinc-700/60 text-white'
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+                    }`}
+                  >
+                    <Building2 size={13} />
+                    직원 현황
+                  </button>
+                </div>
+              ) : (
+                <div />
+              )}
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2 text-xs text-zinc-500">
                   <span className="px-2 py-0.5 bg-zinc-800 rounded-full">전체 {hiredSet.size}명</span>
@@ -612,13 +654,13 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
 
                 {/* 부서별 그리드 */}
                 <div className="space-y-5">
-                  {TEAM_ORDER.map(team => {
+                  {getTeamOrder().map(team => {
                     const members = (teamAgents[team] || []).filter(code => hiredSet.has(code)).sort(sortByRank);
                     if (members.length === 0) return null;
                     return (
                       <div key={team}>
-                        <div className={`flex items-center gap-2 mb-2.5 pb-1.5 border-b ${TEAM_COLOR[team] ?? 'border-zinc-700/30 bg-zinc-700/5'}`}>
-                          <span className={`text-xs font-bold uppercase tracking-wider ${TEAM_LABEL_COLOR[team] ?? 'text-zinc-400'}`}>
+                        <div className={`flex items-center gap-2 mb-2.5 pb-1.5 border-b ${getTeamConfig(team).borderBg}`}>
+                          <span className={`text-xs font-bold uppercase tracking-wider ${getTeamConfig(team).textColor}`}>
                             {team}
                           </span>
                           <span className="text-[10px] text-zinc-600">{members.length}명</span>
@@ -650,12 +692,66 @@ export default function AgentsTab({ isActive = true }: { isActive?: boolean }) {
               </div>
             ) : (
               /* 플레이그라운드 — 픽셀 오피스 */
-              <PixelOffice
-                runtimeMap={runtimeMap}
-                hiredSet={hiredSet}
-                onSelectAgent={handleSelectAgent}
-              />
+              <div className="flex-1 min-h-0">
+                <PixelOffice
+                  runtimeMap={runtimeMap}
+                  hiredSet={hiredSet}
+                  onSelectAgent={handleSelectAgent}
+                  agentBubbles={agentBubbles}
+                  muteChat={muteChat}
+                />
+              </div>
             )}
+
+            {/* 액티비티 로그 패널 */}
+            <div className={`border-t border-dark-border bg-zinc-950/80 flex flex-col transition-all ${showActivity ? 'h-44' : 'h-8'}`}>
+              <button
+                onClick={() => setShowActivity(v => !v)}
+                className="flex items-center justify-between px-3 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 flex-shrink-0"
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  실시간 액티비티
+                  {activityLog.length > 0 && <span className="text-zinc-600">({activityLog.length})</span>}
+                </span>
+                <span>{showActivity ? '▾' : '▴'}</span>
+              </button>
+              {showActivity && (
+                <div className="flex-1 overflow-y-auto px-3 pb-2 font-mono text-[11px] leading-relaxed">
+                  {activityLog.length === 0 && (
+                    <p className="text-zinc-700 italic">대기 중... 팀채널에서 업무를 지시하면 여기에 실시간 로그가 뜹니다</p>
+                  )}
+                  {activityLog.map(entry => {
+                    const time = new Date(entry.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const persona = getPersona(entry.agent);
+                    const emoji = persona?.emoji ?? '🤖';
+                    const colors: Record<string, string> = {
+                      start: 'text-blue-400',
+                      node: 'text-zinc-500',
+                      done: 'text-green-400',
+                      error: 'text-red-400',
+                      tool: 'text-amber-400',
+                    };
+                    const icons: Record<string, string> = {
+                      start: '▶',
+                      node: '  ↳',
+                      done: '✓',
+                      error: '✗',
+                      tool: '⚙',
+                    };
+                    return (
+                      <div key={entry.id} className={`flex gap-2 ${colors[entry.type]}`}>
+                        <span className="text-zinc-600 flex-shrink-0">{time}</span>
+                        <span className="flex-shrink-0 w-4 text-center">{icons[entry.type]}</span>
+                        <span className="flex-shrink-0">{emoji}</span>
+                        <span className="truncate">{entry.detail}</span>
+                      </div>
+                    );
+                  })}
+                  <div ref={activityEndRef} />
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <>

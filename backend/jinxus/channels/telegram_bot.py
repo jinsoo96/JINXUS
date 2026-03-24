@@ -38,6 +38,36 @@ from jinxus.core.orchestrator import get_orchestrator
 logger = logging.getLogger(__name__)
 
 
+# task 키워드 패턴 (이 중 하나라도 있으면 업무 지시로 분류)
+_TASK_KEYWORDS = [
+    "만들어", "해줘", "해 줘", "분석", "조사해", "작성", "검토", "수정", "업데이트",
+    "배포", "테스트", "구현", "개발", "설계", "기획", "리뷰", "정리해", "찾아봐",
+    "알아봐", "확인해", "처리해", "진행해", "보고해", "보내줘", "준비해",
+    "짜줘", "코딩", "디버그", "fix", "build", "deploy", "review",
+]
+
+def _classify_as_task(message: str) -> bool:
+    """텔레그램 메시지가 업무 지시인지 판별 (패턴 기반, 빠름)"""
+    msg_lower = message.lower()
+    # 명령어는 task 아님
+    if message.startswith("/"):
+        return False
+    # 너무 짧은 메시지 (5자 이하) — 대화
+    if len(message.strip()) <= 5:
+        return False
+    # task 키워드 확인
+    for kw in _TASK_KEYWORDS:
+        if kw in msg_lower:
+            return True
+    # 물음표로 끝나면 질문 → JINXUS_CORE
+    if message.strip().endswith("?") or message.strip().endswith("？"):
+        return False
+    # 길고 서술형이면 task
+    if len(message.strip()) > 30:
+        return True
+    return False
+
+
 class TelegramBot:
     """JINXUS 텔레그램 봇"""
 
@@ -77,48 +107,84 @@ class TelegramBot:
         task.add_done_callback(lambda t: logger.error(f"[TelegramBot] 처리 태스크 예외: {t.exception()}") if not t.cancelled() and t.exception() else None)
 
     async def _process_message(self, bot, chat_id: int, user_input: str):
-        """메시지 처리 (백그라운드 태스크)"""
+        """메시지 처리 (백그라운드 태스크)
+
+        task 분류 → Matrix general 공지 → AgentReactor (팀 배분+실행)
+        chat 분류 → JINXUS_CORE 기존 처리
+        """
         logger.info(f"[TelegramBot] 처리 시작: chat_id={chat_id}")
-        # 타이핑 인디케이터
-        typing_active = True
 
-        async def keep_typing():
-            while typing_active:
+        is_task = _classify_as_task(user_input)
+
+        if is_task:
+            # 1. 즉시 확인 응답
+            await bot.send_message(chat_id, "📢 전사 공지됐습니다. 팀장들이 배분하고 진행할게요.")
+
+            # 2. Matrix general에 CEO 공지 게시
+            try:
+                from jinxus.channels.matrix_channel import get_matrix_as
+                matrix_as = get_matrix_as()
+                await matrix_as.send_to_channel(
+                    "JINXUS_CORE", "general",
+                    f"📢 [CEO 진수님 지시] {user_input}"
+                )
+            except Exception as me:
+                logger.debug(f"[TelegramBot] Matrix 공지 게시 실패: {me}")
+
+            # 3. AgentReactor — 팀장 반응 + 실제 작업 + 텔레그램 보고
+            async def notify_telegram(message: str):
                 try:
-                    await bot.send_chat_action(chat_id, "typing")
+                    for i in range(0, len(message), 4000):
+                        await bot.send_message(chat_id, message[i:i+4000])
                 except Exception as e:
-                    logger.debug(f"[TelegramBot] 타이핑 인디케이터 전송 실패: {e}")
-                await asyncio.sleep(4)
+                    logger.warning(f"[TelegramBot] 완료 보고 전송 실패: {e}")
 
-        typing_task = asyncio.create_task(keep_typing())
-
-        try:
-            if not self._orchestrator:
-                self._orchestrator = get_orchestrator()
-                await self._orchestrator.initialize()
-
-            # JINXUS_CORE 실행
-            result = await self._orchestrator.run_task(
-                user_input=user_input,
-                session_id=f"telegram_{chat_id}",
+            from jinxus.hr.agent_reactor import get_agent_reactor
+            reactor = get_agent_reactor()
+            task = asyncio.create_task(
+                reactor.react(user_input, "general", telegram_callback=notify_telegram)
+            )
+            task.add_done_callback(
+                lambda t: logger.error(f"[TelegramBot] AgentReactor 예외: {t.exception()}")
+                if not t.cancelled() and t.exception() else None
             )
 
-            response = result["response"]
+        else:
+            # chat → 기존 JINXUS_CORE 처리
+            typing_active = True
 
-            # 타이핑 중단
-            typing_active = False
-            typing_task.cancel()
+            async def keep_typing():
+                while typing_active:
+                    try:
+                        await bot.send_chat_action(chat_id, "typing")
+                    except Exception as e:
+                        logger.debug(f"[TelegramBot] 타이핑 인디케이터 전송 실패: {e}")
+                    await asyncio.sleep(4)
 
-            # 텔레그램 4096자 제한 처리
-            for i in range(0, len(response), 4000):
-                chunk = response[i:i+4000]
-                await bot.send_message(chat_id, chunk)
+            typing_task = asyncio.create_task(keep_typing())
 
-        except Exception as e:
-            typing_active = False
-            typing_task.cancel()
-            logger.error(f"Telegram message handling error: {e}")
-            await bot.send_message(chat_id, f"오류가 발생했습니다: {str(e)[:200]}")
+            try:
+                if not self._orchestrator:
+                    self._orchestrator = get_orchestrator()
+                    await self._orchestrator.initialize()
+
+                result = await self._orchestrator.run_task(
+                    user_input=user_input,
+                    session_id=f"telegram_{chat_id}",
+                )
+
+                response = result["response"]
+                typing_active = False
+                typing_task.cancel()
+
+                for i in range(0, len(response), 4000):
+                    await bot.send_message(chat_id, response[i:i+4000])
+
+            except Exception as e:
+                typing_active = False
+                typing_task.cancel()
+                logger.error(f"Telegram message handling error: {e}")
+                await bot.send_message(chat_id, f"오류가 발생했습니다: {str(e)[:200]}")
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/start 명령"""

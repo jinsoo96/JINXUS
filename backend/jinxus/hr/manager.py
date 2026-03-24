@@ -15,6 +15,7 @@ from jinxus.hr.models import (
     OrgNode,
 )
 from jinxus.hr.agent_factory import AgentFactory
+# personas는 agents/__init__.py 순환 임포트 방지를 위해 사용 시점에 임포트
 
 logger = logging.getLogger(__name__)
 
@@ -55,38 +56,38 @@ class HRManager:
         logger.info("HRManager 초기화 완료")
 
     def _register_existing_agents(self, orchestrator: Any) -> None:
-        """기존 에이전트들을 HR 레코드에 등록"""
-        # JINXUS_CORE 등록
+        """기존 에이전트들을 HR 레코드에 등록.
+
+        에이전트 목록/역할/설명은 personas.py에서 자동 파생 — 하드코딩 없음.
+        순환 임포트 방지를 위해 personas를 여기서 임포트한다.
+        """
+        from jinxus.agents.personas import PERSONAS, get_persona  # 지연 임포트
+
+        core_persona = get_persona("JINXUS_CORE")
         core_id = "jinxus_core"
         self._records[core_id] = AgentRecord(
             id=core_id,
             name="JINXUS_CORE",
             role=AgentRole.CEO,
-            specialty="총괄 관리",
-            description="진수와 소통하는 유일한 총괄 지휘관",
+            specialty=core_persona.skills or core_persona.role,
+            description=f"{core_persona.role} — {core_persona.personality}",
+            personality_id=core_persona.personality_id,
         )
 
-        # 기존 에이전트들 등록
-        existing_agents = {
-            "JX_CODER": ("코딩", "코드 작성, 실행, 디버깅 전문가"),
-            "JX_RESEARCHER": ("리서치", "정보 수집, 분석, 요약 전문가"),
-            "JX_WRITER": ("작문", "글쓰기, 문서화 전문가"),
-            "JX_ANALYST": ("데이터 분석", "데이터 분석, 시각화 전문가"),
-            "JX_OPS": ("운영", "파일, 스케줄, 시스템 운영 전문가"),
-            "JS_PERSONA": ("자소서/포트폴리오", "진수 전용 자소서, 포트폴리오 작성 전문가"),
-        }
-
-        for name, (specialty, description) in existing_agents.items():
-            agent_id = name.lower()
+        # PERSONAS에서 JINXUS_CORE 제외하고 자동 등록
+        for code, persona in PERSONAS.items():
+            if code == "JINXUS_CORE":
+                continue
+            agent_id = code.lower()
             self._records[agent_id] = AgentRecord(
                 id=agent_id,
-                name=name,
+                name=code,
                 role=AgentRole.SENIOR,
-                specialty=specialty,
-                description=description,
+                specialty=persona.skills or persona.role,
+                description=f"{persona.role} — {persona.personality}",
                 parent_id=core_id,
+                personality_id=persona.personality_id,
             )
-            # 부모에 자식 추가
             self._records[core_id].children_ids.append(agent_id)
 
     async def hire(self, spec: HireSpec) -> AgentRecord:
@@ -109,6 +110,7 @@ class HRManager:
             specialty=spec.specialty,
             description=agent.description,
             parent_id="jinxus_core",  # 기본적으로 CORE 아래에 배치
+            personality_id=getattr(agent, "personality_id", ""),
         )
 
         # 저장
@@ -119,9 +121,52 @@ class HRManager:
         if record.parent_id and record.parent_id in self._records:
             self._records[record.parent_id].children_ids.append(agent.id)
 
+        # 동적 페르소나 등록 → /personas API에서 자동 반환
+        self._register_dynamic_persona(agent, spec)
+
         logger.info(f"[HR] 에이전트 고용: {agent.name} ({spec.specialty})")
 
         return record
+
+    @staticmethod
+    def _register_dynamic_persona(agent: Any, spec: HireSpec) -> None:
+        """동적 고용 에이전트의 페르소나를 등록 → 프론트엔드 자동 동기화."""
+        from jinxus.agents.personas import AgentPersona, register_dynamic_persona
+
+        # specialty에서 팀 추론
+        _SPECIALTY_TEAM = {
+            "코딩": "개발팀", "coder": "개발팀", "coding": "개발팀",
+            "리서치": "프로덕트팀", "researcher": "프로덕트팀", "research": "프로덕트팀",
+            "작문": "마케팅팀", "writer": "마케팅팀", "writing": "마케팅팀",
+            "데이터 분석": "경영지원팀", "analyst": "경영지원팀", "analysis": "경영지원팀",
+            "운영": "경영지원팀", "ops": "경영지원팀", "devops": "플랫폼팀",
+            "인프라": "플랫폼팀", "infra": "플랫폼팀", "platform": "플랫폼팀",
+        }
+        _SPECIALTY_CHANNEL = {
+            "개발팀": "dev", "플랫폼팀": "platform",
+            "프로덕트팀": "product", "마케팅팀": "marketing", "경영지원팀": "biz-support",
+        }
+
+        team = _SPECIALTY_TEAM.get(spec.specialty.lower(), "경영지원팀")
+        channel = _SPECIALTY_CHANNEL.get(team, "general")
+        personality_id = getattr(agent, "personality_id", "")
+
+        persona = AgentPersona(
+            korean_name=agent.name,
+            full_name=agent.name,
+            display_name=agent.name,
+            role=spec.specialty,
+            emoji="🤖",
+            personality=agent.description or f"{spec.specialty} 전문가",
+            speech_style="맡은 업무를 성실히 수행한다.",
+            channel_intro="작업 시작합니다.",
+            skills=spec.specialty,
+            team=team,
+            channels=(channel, "general"),
+            personality_id=personality_id,
+            rank=4,
+        )
+        register_dynamic_persona(agent.name, persona)
 
     async def fire(self, agent_id: str, reason: str = "") -> bool:
         """에이전트 해고 (Soft-Delete: 레코드 보존, 비활성화)
@@ -163,6 +208,10 @@ class HRManager:
 
         # 에이전트 인스턴스 제거 (레코드는 보존)
         self._agents.pop(agent_id, None)
+
+        # 동적 페르소나 제거
+        from jinxus.agents.personas import unregister_dynamic_persona
+        unregister_dynamic_persona(record.name)
 
         logger.info(f"[HR] 에이전트 해고 (soft-delete): {record.name} — 사유: {record.fire_reason}")
 

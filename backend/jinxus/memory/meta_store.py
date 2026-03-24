@@ -386,6 +386,13 @@ class MetaStore:
             await db.commit()
             return cursor.rowcount
 
+    async def clear_all_logs(self) -> int:
+        """전체 작업 로그 삭제"""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("DELETE FROM agent_task_logs")
+            await db.commit()
+            return cursor.rowcount
+
     # ===== 프롬프트 버전 =====
 
     async def save_prompt_version(

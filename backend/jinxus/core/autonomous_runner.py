@@ -32,21 +32,31 @@ from jinxus.config import get_settings
 logger = logging.getLogger(__name__)
 
 PLAN_SYSTEM_PROMPT = """너는 JINXUS의 작업 계획 생성기다.
-복잡한 작업을 독립적인 실행 단계(step)들로 분해해야 한다.
+복잡한 작업을 실행 단계(step)들로 분해해야 한다.
 
 규칙:
 - 각 step은 JINXUS_CORE가 한 번의 run_task로 처리할 수 있는 단위여야 한다
 - step 수는 2~10개 사이로 유지
-- 각 step은 이전 step의 결과에 의존할 수 있다
+- 서로 독립적인(의존성 없는) step들은 같은 group에 넣어 병렬 실행한다
+- 이전 group의 결과에 의존하는 step들은 다음 group으로 분리한다
 - 각 step에 명확한 instruction을 작성하라
 
 응답 형식 (JSON만 출력):
 {
-  "steps": [
-    {"instruction": "수행할 구체적 지시", "description": "간단한 설명"},
-    ...
+  "groups": [
+    [
+      {"instruction": "수행할 구체적 지시 A", "description": "간단한 설명 A"},
+      {"instruction": "수행할 구체적 지시 B", "description": "간단한 설명 B"}
+    ],
+    [
+      {"instruction": "A,B 결과를 바탕으로 수행할 지시", "description": "간단한 설명"}
+    ]
   ]
-}"""
+}
+
+병렬 실행 예시:
+- GitHub 프로필 2개 조사 → 같은 group (서로 독립)
+- 조사 결과를 종합 비교 → 다음 group (이전 결과에 의존)"""
 
 EVALUATE_SYSTEM_PROMPT = """너는 JINXUS의 작업 결과 평가기다.
 현재까지 실행된 결과와 남은 계획을 보고 다음을 판단하라:
@@ -197,8 +207,8 @@ class AutonomousRunner:
         if progress_callback:
             await progress_callback("[Autonomous] 작업 계획 생성 중...")
 
-        steps = await self._create_plan(task)
-        if not steps:
+        groups = await self._create_plan(task)
+        if not groups:
             return AutonomousResult(
                 success=False,
                 task=task,
@@ -208,16 +218,23 @@ class AutonomousRunner:
                 total_duration_s=time.time() - start_time,
             )
 
-        total_planned = len(steps)
+        total_planned = sum(len(g) for g in groups)
         if progress_callback:
-            step_list = "\n".join(f"  {i+1}. {s['description']}" for i, s in enumerate(steps))
+            lines = []
+            step_num = 0
+            for gi, group in enumerate(groups):
+                parallel_tag = f" (병렬 {len(group)}명)" if len(group) > 1 else ""
+                for s in group:
+                    step_num += 1
+                    lines.append(f"  {step_num}. {s.get('description', s['instruction'][:50])}{parallel_tag}")
+                    parallel_tag = ""  # 첫 번째만 태그
             await progress_callback(
-                f"[Autonomous] 계획 수립 완료 ({total_planned}단계)\n{step_list}"
+                f"[Autonomous] 계획 수립 완료 ({total_planned}단계, {len(groups)}그룹)\n" + "\n".join(lines)
             )
 
-        # 2. 각 단계 실행
-        return await self._execute_steps(
-            task, steps, [], 0, total_planned,
+        # 2. 그룹별 실행 (그룹 내 병렬)
+        return await self._execute_groups(
+            task, groups, [], 0, total_planned,
             session_id, orchestrator, start_time, progress_callback,
         )
 
@@ -225,7 +242,7 @@ class AutonomousRunner:
         self, checkpoint: dict, task: str, session_id: str,
         orchestrator, start_time: float, progress_callback,
     ) -> AutonomousResult:
-        """체크포인트에서 재개"""
+        """체크포인트에서 재개 (하위 호환: flat steps → 단일 그룹으로 래핑)"""
         records = [
             StepRecord(**r) for r in checkpoint["records"]
         ]
@@ -238,10 +255,127 @@ class AutonomousRunner:
                 f"[Autonomous] 체크포인트에서 재개: {step_index}/{total_planned} 완료됨"
             )
 
-        return await self._execute_steps(
-            task, remaining_steps, records, step_index, total_planned,
+        # flat steps → groups 변환
+        groups = [[s] for s in remaining_steps]
+        return await self._execute_groups(
+            task, groups, records, step_index, total_planned,
             session_id, orchestrator, start_time, progress_callback,
         )
+
+    async def _execute_groups(
+        self, task: str, groups: list[list[dict]], records: list[StepRecord],
+        step_index: int, total_planned: int,
+        session_id: str, orchestrator, start_time: float,
+        progress_callback,
+    ) -> AutonomousResult:
+        """그룹별 실행 — 그룹 내 step들은 병렬, 그룹 간은 순차"""
+
+        for group_idx, group in enumerate(groups):
+            # 일시정지 대기
+            await self._pause_event.wait()
+            if self._cancelled:
+                return self._build_result(
+                    task, records, total_planned, start_time,
+                    stopped_reason="사용자 취소",
+                )
+
+            # 타임아웃 체크
+            elapsed = time.time() - start_time
+            if elapsed > self._timeout_seconds:
+                return self._build_result(
+                    task, records, total_planned, start_time,
+                    stopped_reason=f"타임아웃 ({elapsed:.0f}초)",
+                )
+
+            if len(group) == 1:
+                # 단일 step → 기존 로직
+                step = group[0]
+                step_index += 1
+                instruction = step["instruction"]
+                description = step.get("description", instruction[:50])
+
+                if progress_callback:
+                    await progress_callback(
+                        f"[Autonomous] [{step_index}/{total_planned}] {description}"
+                    )
+
+                progress_pct = int((step_index - 1) / max(total_planned, 1) * 100)
+                if self._progress_update:
+                    await self._progress_update(progress_pct, step_index - 1, total_planned)
+
+                record = await self._execute_step_with_guardrail(
+                    step_index, instruction, description,
+                    records, session_id, orchestrator, progress_callback,
+                )
+                records.append(record)
+            else:
+                # 병렬 실행 — 같은 그룹의 step들을 동시에
+                if progress_callback:
+                    names = ", ".join(s.get("description", s["instruction"][:30]) for s in group)
+                    await progress_callback(
+                        f"[Autonomous] 병렬 실행 ({len(group)}개): {names}"
+                    )
+
+                async def _run_one(step: dict, idx: int) -> StepRecord:
+                    instruction = step["instruction"]
+                    description = step.get("description", instruction[:50])
+                    return await self._execute_step_with_guardrail(
+                        idx, instruction, description,
+                        records, session_id, orchestrator, progress_callback,
+                    )
+
+                tasks = []
+                indices = []
+                for step in group:
+                    step_index += 1
+                    indices.append(step_index)
+                    tasks.append(_run_one(step, step_index))
+
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        records.append(StepRecord(
+                            index=indices[i],
+                            instruction=group[i]["instruction"],
+                            description=group[i].get("description", ""),
+                            response=str(result),
+                            success=False,
+                            duration_s=0.0,
+                        ))
+                    else:
+                        records.append(result)
+
+            # 진행률 업데이트
+            progress_pct = int(step_index / max(total_planned, 1) * 100)
+            if self._progress_update:
+                await self._progress_update(progress_pct, step_index, total_planned)
+
+            if progress_callback:
+                completed = len([r for r in records if r.success])
+                failed = len([r for r in records if not r.success])
+                await progress_callback(
+                    f"[Autonomous] 그룹 {group_idx + 1}/{len(groups)} 완료 (성공 {completed}, 실패 {failed})"
+                )
+
+            # 체크포인트 저장
+            remaining_groups = groups[group_idx + 1:]
+            flat_remaining = [s for g in remaining_groups for s in g]
+            await self._save_checkpoint(
+                task, records, flat_remaining, step_index, total_planned
+            )
+
+            # 중간 평가 (그룹 2개마다)
+            if remaining_groups and (group_idx + 1) % 2 == 0:
+                if progress_callback:
+                    await progress_callback("[Autonomous] 중간 평가 중...")
+                evaluation = await self._evaluate_progress(task, records, flat_remaining)
+                if evaluation.get("done"):
+                    if progress_callback:
+                        await progress_callback(f"[Autonomous] 조기 완료: {evaluation.get('reason', '')}")
+                    break
+
+        await self._delete_checkpoint()
+        return self._build_result(task, records, total_planned, start_time)
 
     async def _execute_steps(
         self, task: str, steps: list[dict], records: list[StepRecord],
@@ -249,7 +383,7 @@ class AutonomousRunner:
         session_id: str, orchestrator, start_time: float,
         progress_callback,
     ) -> AutonomousResult:
-        """단계별 실행 루프 (체크포인트, 가드레일, 타임아웃 포함)"""
+        """단계별 실행 루프 (체크포인트, 가드레일, 타임아웃 포함) — 하위 호환용"""
 
         while steps and step_index < self._max_steps:
             # 일시정지 대기
@@ -508,13 +642,14 @@ class AutonomousRunner:
         if not self._task_id:
             return
 
+        r = None
         try:
             r = await self._get_redis()
             key = _CHECKPOINT_KEY.format(task_id=self._task_id)
 
             checkpoint = {
                 "task": task,
-                "records": [asdict(r) for r in records],
+                "records": [asdict(rec) for rec in records],
                 "remaining_steps": remaining_steps,
                 "step_index": step_index,
                 "total_planned": total_planned,
@@ -523,23 +658,25 @@ class AutonomousRunner:
 
             await r.set(key, json.dumps(checkpoint, ensure_ascii=False))
             await r.expire(key, self._checkpoint_ttl)
-            await r.aclose()
 
             logger.debug(f"[AutonomousRunner] 체크포인트 저장: step {step_index}/{total_planned}")
 
         except Exception as e:
             logger.warning(f"[AutonomousRunner] 체크포인트 저장 실패: {e}")
+        finally:
+            if r:
+                await r.aclose()
 
     async def _load_checkpoint(self) -> Optional[dict]:
         """체크포인트 로드 (Redis)"""
         if not self._task_id:
             return None
 
+        r = None
         try:
             r = await self._get_redis()
             key = _CHECKPOINT_KEY.format(task_id=self._task_id)
             data = await r.get(key)
-            await r.aclose()
 
             if data:
                 checkpoint = json.loads(data)
@@ -551,6 +688,9 @@ class AutonomousRunner:
 
         except Exception as e:
             logger.warning(f"[AutonomousRunner] 체크포인트 로드 실패: {e}")
+        finally:
+            if r:
+                await r.aclose()
 
         return None
 
@@ -559,13 +699,16 @@ class AutonomousRunner:
         if not self._task_id:
             return
 
+        r = None
         try:
             r = await self._get_redis()
             key = _CHECKPOINT_KEY.format(task_id=self._task_id)
             await r.delete(key)
-            await r.aclose()
         except Exception as e:
             logger.debug(f"[AutonomousRunner] 체크포인트 삭제 실패: {e}")
+        finally:
+            if r:
+                await r.aclose()
 
     # ===== LLM 호출 =====
 
@@ -607,23 +750,52 @@ class AutonomousRunner:
         logger.warning(f"[AutonomousRunner] JSON 파싱 실패, 폴백 사용: {stripped[:100]}")
         return fallback if fallback is not None else {}
 
-    async def _create_plan(self, task: str) -> list[dict]:
-        """LLM으로 작업 계획 생성"""
+    async def _create_plan(self, task: str) -> list[list[dict]]:
+        """LLM으로 작업 계획 생성 — groups 형태 반환 (120초 타임아웃)
+
+        Returns:
+            list[list[dict]] — 각 내부 리스트는 병렬 실행 가능한 step 그룹
+        """
         try:
-            response = await self._client.messages.create(
-                model=self._model,
-                max_tokens=2000,
-                system=PLAN_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": task}],
+            response = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model,
+                    max_tokens=2000,
+                    system=PLAN_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": task}],
+                ),
+                timeout=120,
             )
 
             text = response.content[0].text.strip()
-            plan = self._parse_json_safe(text, fallback={"steps": []})
+            plan = self._parse_json_safe(text, fallback={})
+
+            # groups 형식 지원 (신규)
+            groups = plan.get("groups")
+            if groups and isinstance(groups, list):
+                # 총 스텝 수 제한
+                total = sum(len(g) for g in groups if isinstance(g, list))
+                if total > self._max_steps:
+                    result = []
+                    count = 0
+                    for g in groups:
+                        if not isinstance(g, list):
+                            continue
+                        remaining = self._max_steps - count
+                        if remaining <= 0:
+                            break
+                        result.append(g[:remaining])
+                        count += len(result[-1])
+                    return result
+                return [g for g in groups if isinstance(g, list)]
+
+            # 하위 호환: steps 형식 → 각 step을 단일 그룹으로 래핑
             steps = plan.get("steps", [])
+            return [[s] for s in steps[:self._max_steps]]
 
-            # 최대 스텝 수 제한
-            return steps[:self._max_steps]
-
+        except asyncio.TimeoutError:
+            logger.error("[AutonomousRunner] 계획 생성 타임아웃 (120초)")
+            return []
         except Exception as e:
             logger.error(f"[AutonomousRunner] 계획 생성 실패: {e}")
             return []
@@ -631,7 +803,7 @@ class AutonomousRunner:
     async def _evaluate_progress(
         self, task: str, records: list[StepRecord], remaining_steps: list[dict]
     ) -> dict:
-        """중간 평가 — 계속할지, 계획을 조정할지 판단"""
+        """중간 평가 — 계속할지, 계획을 조정할지 판단 (90초 타임아웃)"""
         try:
             completed_summary = "\n".join(
                 f"Step {r.index}: [{('성공' if r.success else '실패')}] {r.description}\n  결과: {r.response[:300]}"
@@ -649,16 +821,22 @@ class AutonomousRunner:
                 f"남은 계획:\n{remaining_summary}"
             )
 
-            response = await self._client.messages.create(
-                model=self._model,
-                max_tokens=1500,
-                system=EVALUATE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
+            response = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model,
+                    max_tokens=1500,
+                    system=EVALUATE_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=90,
             )
 
             text = response.content[0].text.strip()
             return self._parse_json_safe(text, fallback={"done": False})
 
+        except asyncio.TimeoutError:
+            logger.error("[AutonomousRunner] 평가 타임아웃 (90초), 계속 진행")
+            return {"done": False}
         except Exception as e:
             logger.error(f"[AutonomousRunner] 평가 실패: {e}")
             return {"done": False}

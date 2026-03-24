@@ -30,6 +30,7 @@ class AgentRecord:
     total_tasks: int = 0
     success_rate: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    personality_id: str = ""        # personality.py 아키타입 ID
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +48,7 @@ class AgentRecord:
             "total_tasks": self.total_tasks,
             "success_rate": self.success_rate,
             "metadata": self.metadata,
+            "personality_id": self.personality_id,
         }
 
 
@@ -60,6 +62,7 @@ class HireSpec:
     capabilities: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     system_prompt: Optional[str] = None
+    personality_id: Optional[str] = None   # 없으면 랜덤 선택
 
 
 @dataclass

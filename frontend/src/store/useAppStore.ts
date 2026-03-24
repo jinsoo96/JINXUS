@@ -18,10 +18,18 @@ interface AppState {
   personasVersion: number;  // loadPersonas 완료 시 증가 → 구독 컴포넌트 리렌더링 트리거
 
   // 현재 탭
-  activeTab: 'chat' | 'projects' | 'agents' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes' | 'channel';
+  activeTab: 'mission' | 'team' | 'projects' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
 
   // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
   logsAgentFilter: string;
+
+  // 에이전트 말풍선 (미션/플레이그라운드 공유)
+  agentBubbles: Record<string, { text: string; ts: number }>;
+  pushAgentBubble: (agentCode: string, text: string) => void;
+
+  // 플레이그라운드 잡담 음소거 (전역 — Office/Corporation 공유)
+  muteChat: boolean;
+  setMuteChat: (mute: boolean) => void;
 
   // 액션
   addMessage: (message: ChatMessage) => void;
@@ -33,7 +41,7 @@ interface AppState {
 
   // 데이터 로드
   loadSystemStatus: () => Promise<void>;
-  loadAgents: () => Promise<void>;
+  loadAgents: (force?: boolean) => Promise<void>;
   /** 백엔드 personas.py → 동적 PERSONA_MAP 덮어쓰기. 앱 시작 시 1회 호출 */
   loadPersonas: () => Promise<void>;
 
@@ -51,8 +59,19 @@ export const useAppStore = create<AppState>((set) => ({
   hrAgents: [],
   _agentsLoading: false,
   personasVersion: 0,
-  activeTab: 'chat',
+  activeTab: 'mission',
   logsAgentFilter: 'all',
+  agentBubbles: {},
+  muteChat: false,
+  setMuteChat: (mute) => set({ muteChat: mute }),
+
+  pushAgentBubble: (agentCode, text) =>
+    set((state) => ({
+      agentBubbles: {
+        ...state.agentBubbles,
+        [agentCode]: { text: text.slice(0, 40), ts: Date.now() },
+      },
+    })),
 
   // 채팅 액션
   addMessage: (message) =>
@@ -84,10 +103,10 @@ export const useAppStore = create<AppState>((set) => ({
     }
   },
 
-  loadAgents: async () => {
+  loadAgents: async (force?: boolean) => {
     const { agents: existing, _agentsLoading } = useAppStore.getState();
-    // 이미 로드됐거나 로딩 중이면 skip (중복/동시 호출 방지)
-    if (existing.length > 0 || _agentsLoading) return;
+    // 이미 로드됐거나 로딩 중이면 skip (force=true로 강제 리로드 가능)
+    if (!force && (existing.length > 0 || _agentsLoading)) return;
 
     set({ _agentsLoading: true });
     try {

@@ -281,12 +281,7 @@ N+1 쿼리 + 불필요한 전체 조회가 원인. 수정 시 10x 이상 개선 
                     f"- {c.get('output', '')[:500]}" for c in context if isinstance(c, dict)
                 )
 
-            tool_cb = None
-            if self._progress_callback:
-                cb = self._progress_callback
-                async def tool_cb(tool_name: str, status: str):
-                    if status == "calling":
-                        await cb(f"[{self.name}] {tool_name} 실행 중...")
+            tool_cb = self._make_tool_callback()
 
             full_context = f"{memory_str}\n{context_str}" if memory_str or context_str else None
 

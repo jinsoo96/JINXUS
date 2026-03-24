@@ -124,7 +124,7 @@ async def delete_log(log_id: str):
     return {"success": True, "deleted_id": log_id}
 
 
-@router.delete("")
+@router.post("/bulk-delete")
 async def delete_logs_bulk(request: DeleteLogsRequest):
     """로그 일괄 삭제"""
     memory = get_jinx_memory()

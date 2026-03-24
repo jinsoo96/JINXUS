@@ -68,6 +68,7 @@ class SystemStatusResponse(BaseModel):
     uptime_seconds: int
     redis_connected: bool
     qdrant_connected: bool
+    synapse_connected: bool = False
     total_tasks_processed: int
     active_agents: list[str]
 

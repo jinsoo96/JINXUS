@@ -9,10 +9,11 @@ ENV/
 env/
 .venv/
 
-# Environment
+# Environment & Secrets
 .env
 .env.local
 .env.*.local
+backend/.env
 
 # IDE
 .idea/
@@ -28,6 +29,7 @@ env/
 # Logs
 *.log
 logs/
+frontend/logs/
 
 # Node
 node_modules/
@@ -45,6 +47,8 @@ Thumbs.db
 frontend/.next/
 frontend/node_modules/
 frontend/out/
+frontend/.src_hash
+frontend/.package_hash
 
 # Misc
 *.tmp
@@ -53,7 +57,13 @@ server.log
 frontend.log
 nohup.out
 
-# 내부 문서: dev_notes만 추적, 나머지 docs 하위는 무시
+# Internal docs (development notes, plans, status - not for public)
 docs/
-!docs/dev_notes/
 shsprompt_ex.md
+
+# Claude Code internal
+.claude/worktrees/
+.claude/settings.local.json
+
+# Synapse config (contains secrets)
+backend/synapse/

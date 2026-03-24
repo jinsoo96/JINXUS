@@ -259,7 +259,7 @@ async def chat_smart(request: ChatRequest):
             }
 
             # 작업 진행 SSE 스트리밍
-            queue = worker.subscribe_events(task_id)
+            queue = await worker.subscribe_events(task_id)
             try:
                 while True:
                     try:
@@ -278,7 +278,7 @@ async def chat_smart(request: ChatRequest):
                         if not task or task.status.value in ("completed", "failed", "cancelled"):
                             break
             finally:
-                worker.unsubscribe_events(task_id, queue)
+                await worker.unsubscribe_events(task_id, queue)
 
             yield {
                 "event": "done",

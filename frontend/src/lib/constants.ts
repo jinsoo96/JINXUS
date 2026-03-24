@@ -17,5 +17,5 @@ export const MAX_MESSAGES = 300;
 
 /** 메인 탭 목록 */
 export const MAIN_TABS = [
-  'chat', 'projects', 'agents', 'memory', 'logs', 'tools', 'notes', 'settings', 'channel',
+  'chat', 'team', 'projects', 'memory', 'logs', 'tools', 'notes', 'settings',
 ] as const;

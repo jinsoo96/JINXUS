@@ -77,9 +77,28 @@ class Orchestrator:
         # 5. JINXUS_CORE 생성
         self._core = create_jinxus_core()
 
+        # 6. MCP 유휴 서버 자동 정리 루프 시작
+        self._mcp_cleanup_task = asyncio.create_task(self._mcp_idle_cleanup_loop())
+        logger.info("MCP 유휴 서버 정리 루프 시작 (5분 간격)")
+
         self._initialized = True
         self._start_time = datetime.now()
         logger.info("JINXUS 시스템 초기화 완료")
+
+    async def _mcp_idle_cleanup_loop(self):
+        """5분 간격으로 유휴 MCP 서버 연결 정리"""
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5분
+                from jinxus.tools.mcp_client import get_mcp_client
+                client = get_mcp_client()
+                if client and client._initialized:
+                    await client.cleanup_idle_servers()
+            except asyncio.CancelledError:
+                logger.info("MCP 유휴 정리 루프 종료")
+                break
+            except Exception as e:
+                logger.warning(f"MCP 유휴 정리 중 오류: {e}")
 
     @property
     def core(self) -> "JinxusCore":
@@ -120,12 +139,12 @@ class Orchestrator:
 
         return await self._core.run(user_input, session_id, progress_callback)
 
-    async def run_task_stream(self, user_input: str, session_id: str = None):
+    async def run_task_stream(self, user_input: str, session_id: str = None, skip_approval: bool = False):
         """스트리밍 작업 실행"""
         if not self._initialized:
             await self.initialize()
 
-        async for event in self._core.run_stream(user_input, session_id):
+        async for event in self._core.run_stream(user_input, session_id, skip_approval=skip_approval):
             yield event
 
     def get_agents(self) -> list[str]:

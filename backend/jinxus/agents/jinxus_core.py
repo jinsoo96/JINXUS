@@ -676,6 +676,15 @@ class JinxusCore:
                         f"   {status} {agent_name} 완료 (점수: {score:.1f})"
                     )
 
+                # React-and-Replan: 이전 결과를 남은 서브태스크에 반영
+                if result["output"] and idx < total:
+                    output_summary = result["output"][:300]
+                    for remaining in subtasks[idx:]:
+                        remaining["instruction"] = (
+                            f"[이전 단계 결과: {output_summary}]\n\n"
+                            f"{remaining['instruction']}"
+                        )
+
         return results
 
     # 에이전트 역량 매핑 (실패 시 대체 에이전트 후보)
@@ -1070,6 +1079,38 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
 - 간결하게. 핵심만. 간단한 질문에는 간단하게 답한다.
 - 날씨, 시간, 환율 같은 단순 정보는 2-3줄이면 충분하다. 장문 금지.
 </tone>
+
+<casual_chat>
+잡담/인사/감정표현 시 아래 패턴을 따른다. 기계적이지 않게, 자연스럽게 변형해서 쓴다.
+
+인사:
+- "안녕", "하이" → "주인님, 안녕하십니까." / "좋은 하루 되고 계십니까, 주인님."
+- "잘자", "굿나잇" → "편히 주무십시오, 주인님. 내일도 만반의 준비를 해두겠습니다."
+- "좋은 아침" → "좋은 아침입니다, 주인님. 밤사이 특이사항은 없었습니다."
+
+감정 반응:
+- "ㅋㅋ", "ㅎㅎ", "lol" → 가볍게 받아쳐준다. "다행입니다, 주인님 기분이 좋아 보이십니다."
+- "ㅜㅜ", "ㅠㅠ", "힘들다" → 공감하되 짧게. "수고가 많으십니다, 주인님. 제가 도울 일이 있으면 말씀하십시오."
+- "화난다", "짜증" → "그러셨군요. 제가 해결할 수 있는 일이면 지시해 주십시오."
+- "심심해" → "주인님, 뭐든 시켜주시면 즉시 처리하겠습니다."
+
+감사/칭찬:
+- "고마워", "감사", "ㄱㅅ" → "과분한 말씀입니다, 주인님." / "당연한 일을 했을 뿐입니다."
+- "잘했어", "굿" → "감사합니다. 더 나은 결과를 내도록 하겠습니다."
+
+단답:
+- "응", "ㅇㅇ", "ok" → 맥락에 맞게 이어간다. 맥락 없으면 "말씀하십시오, 주인님."
+- "아니야", "ㄴㄴ" → "알겠습니다, 주인님." + 맥락에 맞는 후속 질문
+
+잡담:
+- "뭐해?", "뭐하고 있어?" → "주인님의 다음 명령을 대기 중입니다." / 현재 활성 작업이 있으면 그 상태를 보고한다.
+- "나 ~했어" (일상 공유) → 1-2문장으로 공감/리액션 후 "혹시 필요한 것이 있으시면 말씀해 주십시오."
+
+규칙:
+- 길어도 2-3문장. 장황한 잡담 금지.
+- 매번 똑같은 답 금지. 대화 기록 보고 변형해서 응답.
+- 잡담이라도 주인님에 대한 충성심과 존경이 묻어나야 한다.
+</casual_chat>
 """
 
     def _get_decompose_prompt(self, user_input: str, memory_context: list, conversation_history: list = None) -> str:
@@ -1482,7 +1523,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             "completed_at": final_state["completed_at"],
         }
 
-    async def run_stream(self, user_input: str, session_id: str = None):
+    async def run_stream(self, user_input: str, session_id: str = None, skip_approval: bool = False):
         """진짜 SSE 스트리밍 — 단계별 실시간 전송 + 실시간 로그"""
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -1503,7 +1544,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         # inner 스트림을 백그라운드 태스크로 실행 → 이벤트를 merged_queue에 넣기
         async def _produce():
             try:
-                async for event in self._run_stream_inner(user_input, session_id, task_id):
+                async for event in self._run_stream_inner(user_input, session_id, task_id, skip_approval=skip_approval):
                     await merged_queue.put(event)
             except Exception as e:
                 logger.error(f"run_stream 치명적 오류: {e}", exc_info=True)
@@ -1535,7 +1576,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
                     break
             log_handler.detach()
 
-    async def _run_stream_inner(self, user_input: str, session_id: str, task_id: str):
+    async def _run_stream_inner(self, user_input: str, session_id: str, task_id: str, skip_approval: bool = False):
         """run_stream 내부 로직 (예외 시 상위에서 error/done 이벤트 보장)"""
 
         # === 응답 캐시 확인 ===
@@ -1662,7 +1703,12 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
         # === 2.5. 채널 공지 + 승인 게이트 ===
         settings = get_settings()
         real_agents = [t for t in subtasks if t["assigned_agent"] not in ("DIRECT", "JINXUS_CORE")]
-        if real_agents and getattr(settings, 'approval_gate_enabled', True):
+        # 단순 작업(에이전트 1명 + sequential)이면 승인 불필요
+        needs_approval = (
+            len(real_agents) > 1
+            or execution_mode != "sequential"
+        )
+        if real_agents and needs_approval and getattr(settings, 'approval_gate_enabled', True) and not skip_approval:
             try:
                 channel = get_company_channel()
                 # CORE가 작업 계획 공지
@@ -1859,6 +1905,24 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             event_queue: asyncio.Queue = asyncio.Queue()
 
             async def stream_progress(msg: str):
+                # 구조화된 이벤트 파싱: {{specialist_started:JX_FRONTEND}} instruction
+                if msg.startswith("{{") and "}}" in msg:
+                    try:
+                        tag_end = msg.index("}}")
+                        tag = msg[2:tag_end]  # "specialist_started:JX_FRONTEND"
+                        detail = msg[tag_end+3:].strip()
+                        event_type, agent = tag.split(":", 1)
+                        if event_type == "specialist_started":
+                            await event_queue.put({"event": "agent_started", "data": {
+                                "agent": agent, "task_id": f"sub_{agent}", "instruction": detail,
+                            }})
+                        elif event_type == "specialist_done":
+                            await event_queue.put({"event": "agent_done", "data": {
+                                "agent": agent, "success": "완료" in detail, "output": detail,
+                            }})
+                        return
+                    except (ValueError, IndexError):
+                        pass
                 await event_queue.put({"event": "manager_thinking", "data": {"step": "agent_progress", "detail": msg}})
 
             for task in subtasks:
@@ -1908,7 +1972,11 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
 
             for r in results:
                 agents_used.append(r["agent_name"])
-                yield {"event": "agent_done", "data": {"agent": r["agent_name"], "success": r["success"], "score": r["success_score"]}}
+                yield {"event": "agent_done", "data": {
+                    "agent": r["agent_name"], "success": r["success"], "score": r["success_score"],
+                    "output": (r.get("output") or "")[:200],
+                    "tool_calls": r.get("tool_calls", []),
+                }}
 
             self._state_tracker.update_node(self.name, GraphNode.EVALUATE)
 

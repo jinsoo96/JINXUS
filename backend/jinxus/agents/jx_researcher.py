@@ -631,14 +631,7 @@ simple/browser/github/file 중 하나만 답해."""
             context = f"{memory_str}\n{error_context}" if memory_str or error_context else None
 
             # 도구 호출 콜백 (실시간 이벤트)
-            tool_cb = None
-            if hasattr(self, '_progress_callback') and self._progress_callback:
-                cb = self._progress_callback
-                async def tool_cb(tool_name: str, status: str):
-                    if status == "calling":
-                        await cb(f"🔧 [{self.name}] {tool_name} 호출 중...")
-                    elif status == "error":
-                        await cb(f"❌ [{self.name}] {tool_name} 실패")
+            tool_cb = self._make_tool_callback()
 
             result = await executor.execute(
                 instruction=instruction,

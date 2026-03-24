@@ -4,20 +4,19 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { systemApi, agentApi, type AgentRuntimeStatus } from '@/lib/api';
-import { MessageSquare, Bot, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban, Building2 } from 'lucide-react';
+import { MessageSquare, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban, Building2, Target } from 'lucide-react';
 import { getDisplayName, sortByRank } from '@/lib/personas';
 import { SIDEBAR_POLLING_MS } from '@/lib/constants';
 
 const tabs = [
-  { id: 'chat', label: '채팅', icon: MessageSquare },
-  { id: 'channel', label: '팀 채널', icon: Building2 },
-  { id: 'projects', label: '프로젝트', icon: FolderKanban },
-  { id: 'agents', label: '에이전트', icon: Bot },
-  { id: 'memory', label: '메모리', icon: Brain },
-  { id: 'logs', label: '로그', icon: ScrollText },
-  { id: 'tools', label: '도구', icon: Wrench },
-  { id: 'notes', label: '업무 노트', icon: BookOpen },
-  { id: 'settings', label: '설정', icon: Settings },
+  { id: 'mission', label: 'Office', icon: Target },
+  { id: 'team', label: 'Corporation', icon: Building2 },
+  { id: 'projects', label: 'Projects', icon: FolderKanban },
+  { id: 'memory', label: 'Memory', icon: Brain },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+  { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'notes', label: 'Notes', icon: BookOpen },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 export default function Sidebar() {

@@ -22,6 +22,9 @@ from jinxus.api.routers import (
     projects_router,
     processes_router,
     docker_logs_router,
+    channel_router,
+    matrix_router,
+    mission_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,9 +100,9 @@ async def lifespan(app: FastAPI):
         if scheduler:
             # 스케줄된 작업 실행 콜백 (JINXUS_CORE로 처리)
             async def task_callback(task_prompt: str) -> str:
-                from jinxus.agents import get_jinxus_core
-                jinxus_core = get_jinxus_core()
-                result = await jinxus_core.run(task_prompt, session_id="scheduled_task")
+                from jinxus.core import get_orchestrator
+                orchestrator = get_orchestrator()
+                result = await orchestrator.process(task_prompt, session_id="scheduled_task")
                 return result.get("response", "완료")
 
             scheduler.initialize(
@@ -119,6 +122,15 @@ async def lifespan(app: FastAPI):
         print("ProjectManager: projects restored")
     except Exception as e:
         logger.debug(f"ProjectManager restore failed: {e}")
+
+    # Matrix 에이전트 셋업 (Synapse가 실행 중이면 가상 계정 + 룸 초기화)
+    try:
+        from jinxus.channels.matrix_channel import get_matrix_as
+        matrix_as = get_matrix_as()
+        asyncio.create_task(matrix_as.setup_all_agents())
+        print("Matrix agent setup scheduled")
+    except Exception as e:
+        logger.warning(f"Matrix setup failed: {e}")
 
     # 상태 추적기 Redis 초기화
     try:
@@ -155,29 +167,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"Metrics snapshot init failed: {e}")
 
-    # 메모리 자동 정리 (6시간 간격)
+    # 메모리 최적화 (시작 시 1회 + 24시간 주기)
     memory_cleanup_task = None
     try:
-        async def _periodic_memory_prune():
-            import asyncio
-            from jinxus.memory.long_term import get_long_term_memory, AGENT_COLLECTIONS
-            while True:
-                await asyncio.sleep(6 * 3600)  # 6시간
-                try:
-                    ltm = get_long_term_memory()
-                    total_deleted = 0
-                    for agent_name in AGENT_COLLECTIONS:
-                        deleted = ltm.prune_low_quality(agent_name, importance_threshold=0.3, max_days=30)
-                        total_deleted += deleted
-                    if total_deleted > 0:
-                        logger.info(f"메모리 자동 정리: {total_deleted}개 삭제")
-                except Exception as e:
-                    logger.warning(f"메모리 자동 정리 실패: {e}")
+        from jinxus.memory.long_term import get_long_term_memory
 
-        memory_cleanup_task = asyncio.create_task(_periodic_memory_prune())
-        print("Memory auto-prune scheduled (every 6h)")
+        async def _run_memory_optimization():
+            """시간 감쇠 정리 + 중복 제거 실행"""
+            try:
+                ltm = get_long_term_memory()
+                results = await asyncio.to_thread(ltm.optimize_all_collections)
+                total_pruned = sum(r["pruned"] for r in results.values())
+                total_deduped = sum(r["deduped"] for r in results.values())
+                if total_pruned > 0 or total_deduped > 0:
+                    logger.info(
+                        f"[MemoryOptim] 최적화: {total_pruned}개 정리, {total_deduped}개 중복 제거"
+                    )
+                return total_pruned, total_deduped
+            except Exception as e:
+                logger.warning(f"[MemoryOptim] 최적화 실패: {e}")
+                return 0, 0
+
+        # 시작 시 1회 실행 (백그라운드)
+        asyncio.create_task(_run_memory_optimization())
+        print("Memory optimization: startup run scheduled")
+
+        async def _periodic_memory_optimize():
+            while True:
+                await asyncio.sleep(24 * 3600)  # 24시간
+                await _run_memory_optimization()
+
+        memory_cleanup_task = asyncio.create_task(_periodic_memory_optimize())
+        print("Memory optimization: periodic run every 24h")
     except Exception as e:
-        logger.debug(f"Memory prune schedule failed: {e}")
+        logger.debug(f"Memory optimization schedule failed: {e}")
 
     yield
 
@@ -198,6 +221,55 @@ async def lifespan(app: FastAPI):
         get_jinx_memory().close()
     except Exception as e:
         logger.debug(f"[server] JinxMemory 종료 중 오류: {e}")
+
+    # StateTracker Redis 종료
+    try:
+        from jinxus.agents.state_tracker import get_state_tracker
+        await get_state_tracker().close()
+    except Exception as e:
+        logger.debug(f"[server] StateTracker 종료 중 오류: {e}")
+
+    # ArtifactStore Redis 종료
+    try:
+        from jinxus.core.artifact_store import get_artifact_store
+        await get_artifact_store().close()
+    except Exception as e:
+        logger.debug(f"[server] ArtifactStore 종료 중 오류: {e}")
+
+    # ShortTermMemory Redis 종료
+    try:
+        from jinxus.memory.short_term import get_short_term_memory
+        await get_short_term_memory().disconnect()
+    except Exception as e:
+        logger.debug(f"[server] ShortTermMemory 종료 중 오류: {e}")
+
+    # CompanyChannel Redis 종료
+    try:
+        from jinxus.hr.channel import get_company_channel
+        await get_company_channel().close()
+    except Exception as e:
+        logger.debug(f"[server] CompanyChannel 종료 중 오류: {e}")
+
+    # MatrixAS 세션 종료
+    try:
+        from jinxus.channels.matrix_channel import get_matrix_as
+        await get_matrix_as().close()
+    except Exception as e:
+        logger.debug(f"[server] MatrixAS 종료 중 오류: {e}")
+
+    # ApprovalGate Redis 종료
+    try:
+        from jinxus.core.approval_gate import get_approval_gate
+        await get_approval_gate().close()
+    except Exception as e:
+        logger.debug(f"[server] ApprovalGate 종료 중 오류: {e}")
+
+    # MissionStore Redis 종료
+    try:
+        from jinxus.core.mission import get_mission_store
+        await get_mission_store().close()
+    except Exception as e:
+        logger.debug(f"[server] MissionStore 종료 중 오류: {e}")
 
     # 스케줄러 종료
     try:
@@ -260,6 +332,9 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(processes_router)
     app.include_router(docker_logs_router)
+    app.include_router(channel_router)
+    app.include_router(matrix_router)
+    app.include_router(mission_router)
 
     @app.get("/")
     async def root():

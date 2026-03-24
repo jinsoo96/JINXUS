@@ -229,6 +229,15 @@ class ArtifactStore:
             logger.warning(f"[ArtifactStore] 삭제 실패: {e}")
             return 0
 
+    async def close(self) -> None:
+        """Redis 연결 종료"""
+        if self._redis:
+            try:
+                await self._redis.close()
+            except Exception as e:
+                logger.debug(f"[ArtifactStore] Redis 종료 중 오류: {e}")
+            self._redis = None
+
     async def extract_artifacts_from_result(
         self,
         project_id: str,

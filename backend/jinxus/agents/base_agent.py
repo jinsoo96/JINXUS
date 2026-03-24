@@ -480,6 +480,22 @@ JSON으로 응답해:
             except Exception as e:
                 logger.debug(f"[BaseAgent] SSE progress_callback 호출 실패 (무시): {e}")
 
+    def _make_tool_callback(self, agent_name: str = None):
+        """도구 호출 콜백 생성 (calling/done/error 전부 SSE로 전달)"""
+        if not hasattr(self, '_progress_callback') or not self._progress_callback:
+            return None
+        cb = self._progress_callback
+        name = agent_name or self.name
+
+        async def tool_cb(tool_name: str, status: str):
+            if status == "calling":
+                await cb(f"[{name}] 🔧 {tool_name} 도구 호출")
+            elif status == "done":
+                await cb(f"[{name}] ✅ {tool_name} 완료")
+            elif status == "error":
+                await cb(f"[{name}] ❌ {tool_name} 실패")
+        return tool_cb
+
     # ===== 헬퍼 메서드 =====
 
     @abstractmethod
@@ -510,15 +526,19 @@ JSON으로 응답해:
 
     def _should_save_to_longterm(self, state: AgentState) -> bool:
         """장기기억 저장 여부 결정"""
-        # 단순 작업은 저장 안 함
-        if state.get("duration_ms", 0) < 5000:
+        # 즉각 실패(100ms 미만)는 저장 안 함
+        if state.get("duration_ms", 0) < 500:
             return False
 
-        # 반성이 비어있으면 저장 안 함
-        if not state.get("reflection") or len(state.get("reflection", "")) < 20:
-            return False
+        # reflection이 있으면 무조건 저장 (내용 있는 경험)
+        if state.get("reflection") and len(state.get("reflection", "")) >= 5:
+            return True
 
-        return True
+        # reflection 없어도 output이 있으면 저장 (결과가 있는 작업)
+        if state.get("output") and len(state.get("output", "")) > 20:
+            return True
+
+        return False
 
     def _calc_importance(self, state: AgentState) -> float:
         """중요도 점수 계산"""
@@ -539,6 +559,28 @@ JSON으로 응답해:
         return min(score, 1.0)
 
     # ===== 협업 인터페이스 =====
+
+    async def post_to_channel(
+        self,
+        content: str,
+        channel: Optional[str] = None,
+        message_type: str = "chat",
+    ):
+        """팀 채널에 메시지 게시 (에이전트 간 대화)
+
+        에이전트가 작업 중 발견한 내용이나 의견을 채널에 공유할 때 사용.
+        """
+        try:
+            from jinxus.hr.channel import get_company_channel
+            ch = get_company_channel()
+            await ch.post(
+                from_name=self.name,
+                content=content,
+                channel=channel,
+                message_type=message_type,
+            )
+        except Exception as e:
+            logger.debug(f"[{self.name}] 채널 포스팅 실패: {e}")
 
     async def request_help(
         self,

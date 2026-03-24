@@ -1,4 +1,4 @@
-"""개발 노트 API — docs/dev_notes/*.md CRUD"""
+"""업무 노트 API — docs/dev_notes/*.md CRUD"""
 import logging
 import os
 import re
@@ -18,6 +18,25 @@ _NOTES_DIR = Path(os.getenv("PROJECT_ROOT", "/home/jinsookim/jinxus")) / "docs" 
 
 def _ensure_dir():
     _NOTES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_work_note(title: str, content: str, filename: str | None = None) -> dict:
+    """에이전트 내부에서 직접 호출 가능한 업무 노트 생성 함수 (HTTP 경유 불필요)"""
+    _ensure_dir()
+    if filename:
+        fname = filename if filename.endswith(".md") else f"{filename}.md"
+    else:
+        today = datetime.now().strftime("%Y-%m-%d")
+        fname = f"{today}_{_slug(title)}.md"
+    path = _NOTES_DIR / fname
+    # 같은 파일명이 이미 있으면 타임스탬프 suffix 추가
+    if path.exists():
+        ts = datetime.now().strftime("%H%M%S")
+        fname = fname.replace(".md", f"_{ts}.md")
+        path = _NOTES_DIR / fname
+    path.write_text(content, encoding="utf-8")
+    logger.info(f"[WorkNotes] 에이전트 자동 생성: {fname}")
+    return _parse_note(path)
 
 
 def _slug(title: str) -> str:
@@ -83,7 +102,7 @@ async def list_notes():
         try:
             notes.append(_parse_note(f))
         except Exception as e:
-            logger.warning(f"[DevNotes] 노트 파싱 실패 ({f.name}): {e}")
+            logger.warning(f"[WorkNotes] 노트 파싱 실패 ({f.name}): {e}")
     return {"notes": notes, "count": len(notes)}
 
 
@@ -122,7 +141,7 @@ async def create_note(body: NoteCreate):
         raise HTTPException(status_code=409, detail=f"이미 존재: {fname}")
 
     path.write_text(body.content, encoding="utf-8")
-    logger.info(f"[DevNotes] 생성: {fname}")
+    logger.info(f"[WorkNotes] 생성: {fname}")
     return _parse_note(path)
 
 
@@ -139,7 +158,7 @@ async def update_note(note_id: str, body: NoteUpdate):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"노트 없음: {note_id}")
     path.write_text(body.content, encoding="utf-8")
-    logger.info(f"[DevNotes] 수정: {note_id}")
+    logger.info(f"[WorkNotes] 수정: {note_id}")
     return _parse_note(path)
 
 
@@ -152,5 +171,5 @@ async def delete_note(note_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"노트 없음: {note_id}")
     path.unlink()
-    logger.info(f"[DevNotes] 삭제: {note_id}")
+    logger.info(f"[WorkNotes] 삭제: {note_id}")
     return {"deleted": note_id}

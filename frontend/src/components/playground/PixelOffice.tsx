@@ -1,391 +1,44 @@
 'use client';
 
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { getFirstName, getDisplayName, getRole, getPersona, sortByRank } from '@/lib/personas';
+import { getFirstName, getDisplayName, getRole, getPersona, sortByRank, TEAM_CONFIG } from '@/lib/personas';
 import type { AgentRuntimeStatus } from '@/lib/api';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 상수
-// ═══════════════════════════════════════════════════════════════════════════
-const SCALE = 2; // 스프라이트 확대 배율
-const TILE = 16 * SCALE; // 32 (2x 확대)
-const SW = 12; // 스프라이트 소스 폭
-const SH = 16; // 스프라이트 소스 높이
-const DSW = SW * SCALE; // 24 — 화면에 그릴 스프라이트 폭
-const DSH = SH * SCALE; // 32 — 화면에 그릴 스프라이트 높이
-const MAP_W = 50;
-const MAP_H = 30;
-const CW = MAP_W * TILE; // 1600
-const CH = MAP_H * TILE; // 960
-const WALK_SPEED = 48 * SCALE; // px/sec (SCALE 보정)
-const WALK_FRAME_DUR = 0.15;
-const TYPE_FRAME_DUR = 0.3;
-const READ_FRAME_DUR = 0.5;
-const THINK_FRAME_DUR = 0.6;
-const SEARCH_FRAME_DUR = 0.35;
-const WALK_SEQ = [0, 1, 0, 2]; // stand→stepA→stand→stepB
-const SPEECH_BUBBLE_DURATION = 3.0; // 초
-type Row = number[];
-type Frame = Row[];
+// ── Module imports ──
+import type { CharState, GameState, DeskDef, Frame } from './engine/types';
+import {
+  SCALE, TILE, SW, SH, DSW, DSH, MAP_W, MAP_H, CW, CH,
+  WALK_SPEED, WALK_FRAME_DUR, TYPE_FRAME_DUR, READ_FRAME_DUR,
+  THINK_FRAME_DUR, SEARCH_FRAME_DUR, SPEECH_BUBBLE_DURATION,
+} from './engine/constants';
+import { walkFrame, typeFrame, readFrame, thinkFrame } from './sprites/character';
+import { SHIRT, hash } from './sprites/colors';
+import { TOOL_ICONS, getToolIcon, getWorkState } from './sprites/icons';
+import { sprite } from './sprites/cache';
+import {
+  makeDeskSprite, makePlantSprite, makeCoffeeMachine, makeWhiteboard,
+  makeBookshelf, makeServerRack, makePrinterSprite, makeVendingMachine,
+  makeFridgeSprite, makeSofaSprite, makeWaterCooler, makeBenchSprite,
+  makeTreeSprite, makeAshtraySprite, makeUmbrellaTable,
+} from './sprites/furniture';
+import {
+  ROOMS, DESKS, DOORS, POI_LIST, FURNITURE, TEAM_EN, ROOM_FLOORS,
+  buildGrid,
+} from './map/mapData';
+import { bfs, setGrid, getGrid } from './engine/pathfinding';
+import { CHAT_TEMPLATES, getIdleActivity, getIdleBehavior } from './engine/social';
+import { drawActivityEmoji } from './render/emoji';
+import type { Camera } from './engine/camera';
+import { createCamera, screenToWorld, clampCamera, centerOn, applyZoom, startDrag, updateDrag, endDrag } from './engine/camera';
+import { initPOIStates } from './poi/poiManager';
+
+// ── Re-exports for consumers (AgentsTab, MissionTab) ──
+export type { ActivityLogEntry } from './engine/types';
+export type { PixelOfficeProps } from './engine/types';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 스프라이트 파트 (0=투명 1=머리 2=피부 3=눈 4=입 5=셔츠 6=바지 7=신발 8=팔피부)
+// Helper functions
 // ═══════════════════════════════════════════════════════════════════════════
-
-// ── 머리 ──
-const HD: Frame = [ // DOWN (정면)
-  [0,0,0,0,1,1,1,1,0,0,0,0],[0,0,0,1,1,1,1,1,1,0,0,0],
-  [0,0,1,1,1,1,1,1,1,1,0,0],[0,0,1,2,2,2,2,2,2,1,0,0],
-  [0,0,2,2,3,2,2,3,2,2,0,0],[0,0,2,2,2,2,2,2,2,2,0,0],
-  [0,0,0,2,2,4,4,2,2,0,0,0],
-];
-const HU: Frame = [ // UP (뒷모습)
-  [0,0,0,0,1,1,1,1,0,0,0,0],[0,0,0,1,1,1,1,1,1,0,0,0],
-  [0,0,1,1,1,1,1,1,1,1,0,0],[0,0,1,1,1,1,1,1,1,1,0,0],
-  [0,0,1,1,1,1,1,1,1,1,0,0],[0,0,0,1,1,1,1,1,1,0,0,0],
-  [0,0,0,0,2,2,2,2,0,0,0,0],
-];
-const HL: Frame = [ // LEFT (측면)
-  [0,0,0,0,0,1,1,1,0,0,0,0],[0,0,0,0,1,1,1,1,1,0,0,0],
-  [0,0,0,1,1,1,1,1,1,0,0,0],[0,0,0,1,2,2,2,1,0,0,0,0],
-  [0,0,0,2,3,2,2,0,0,0,0,0],[0,0,0,2,2,2,0,0,0,0,0,0],
-  [0,0,0,0,2,4,0,0,0,0,0,0],
-];
-
-// ── 몸통 ──
-const TF: Frame = [ // FRONT 몸통
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,8,5,5,5,5,5,5,8,0,0],[0,0,8,5,5,5,5,5,5,8,0,0],
-];
-const TS: Frame = [ // SIDE 몸통
-  [0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,5,5,0,0,0,0,0,0],
-  [0,0,0,8,5,5,5,5,0,0,0,0],[0,0,0,8,5,5,5,5,0,0,0,0],
-];
-const TY0: Frame = [ // TYPE 0 (팔 앞으로 — 타이핑)
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,0,5,5,5,5,5,5,0,0,0],[0,8,8,5,5,5,5,5,5,8,8,0],
-];
-const TY1: Frame = [ // TYPE 1 (팔 약간 다르게)
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,8,0,5,5,5,5,5,5,0,8,0],[0,8,0,5,5,5,5,5,5,0,8,0],
-];
-// ── READ 몸통 (한 팔 위로 — 뭔가 들고 있는 자세) ──
-const TR0: Frame = [
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,8,5,5,5,5,5,5,0,8,0],[0,0,0,5,5,5,5,5,5,8,0,0],
-];
-const TR1: Frame = [
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,8,5,5,5,5,5,5,8,0,0],[0,0,0,5,5,5,5,5,5,0,8,0],
-];
-// ── THINK 몸통 (팔짱 — 양팔 교차) ──
-const TK0: Frame = [
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,0,5,5,5,5,5,5,0,0,0],[0,0,8,5,8,5,5,8,5,8,0,0],
-];
-const TK1: Frame = [
-  [0,0,0,0,2,2,2,2,0,0,0,0],[0,0,0,0,5,5,5,5,0,0,0,0],
-  [0,0,0,5,5,5,5,5,5,0,0,0],[0,8,0,5,8,5,5,8,5,0,8,0],
-];
-
-// ── 다리 (정면/뒷면 공용) ──
-const L0: Frame = [ // 서있기
-  [0,0,0,0,5,5,5,5,0,0,0,0],[0,0,0,0,6,6,6,6,0,0,0,0],
-  [0,0,0,0,6,0,0,6,0,0,0,0],[0,0,0,0,6,0,0,6,0,0,0,0],
-  [0,0,0,7,7,0,0,7,7,0,0,0],
-];
-const LA: Frame = [ // 왼발 앞으로
-  [0,0,0,0,5,5,5,5,0,0,0,0],[0,0,0,0,6,6,6,6,0,0,0,0],
-  [0,0,0,6,6,0,0,0,6,0,0,0],[0,0,7,7,0,0,0,0,6,0,0,0],
-  [0,0,0,0,0,0,0,7,7,0,0,0],
-];
-const LB: Frame = [ // 오른발 앞으로
-  [0,0,0,0,5,5,5,5,0,0,0,0],[0,0,0,0,6,6,6,6,0,0,0,0],
-  [0,0,0,6,0,0,6,6,0,0,0,0],[0,0,0,6,0,0,0,7,7,0,0,0],
-  [0,0,7,7,0,0,0,0,0,0,0,0],
-];
-// ── 다리 (측면) ──
-const SL0: Frame = [
-  [0,0,0,0,5,5,5,0,0,0,0,0],[0,0,0,0,6,6,6,0,0,0,0,0],
-  [0,0,0,0,0,6,6,0,0,0,0,0],[0,0,0,0,0,6,6,0,0,0,0,0],
-  [0,0,0,0,7,7,0,0,0,0,0,0],
-];
-const SLA: Frame = [
-  [0,0,0,0,5,5,5,0,0,0,0,0],[0,0,0,0,6,6,6,0,0,0,0,0],
-  [0,0,0,6,6,0,6,0,0,0,0,0],[0,0,7,7,0,0,6,0,0,0,0,0],
-  [0,0,0,0,0,7,7,0,0,0,0,0],
-];
-const SLB: Frame = [
-  [0,0,0,0,5,5,5,0,0,0,0,0],[0,0,0,0,6,6,6,0,0,0,0,0],
-  [0,0,0,0,6,6,0,0,0,0,0,0],[0,0,0,0,6,0,7,7,0,0,0,0],
-  [0,0,0,7,7,0,0,0,0,0,0,0],
-];
-
-// ── 프레임 조합 ──
-const mk = (h: Frame, t: Frame, l: Frame): Frame => [...h, ...t, ...l];
-const mirror = (f: Frame): Frame => f.map(r => [...r].reverse());
-
-function walkFrame(dir: number, step: number): Frame {
-  const i = WALK_SEQ[step % 4];
-  if (dir === 0) return mk(HD, TF, [L0, LA, LB][i]);
-  if (dir === 3) return mk(HU, TF, [L0, LA, LB][i]);
-  const f = mk(HL, TS, [SL0, SLA, SLB][i]);
-  return dir === 2 ? mirror(f) : f;
-}
-function typeFrame(i: number): Frame { return mk(HD, i === 0 ? TY0 : TY1, L0); }
-function readFrame(i: number): Frame { return mk(HD, i === 0 ? TR0 : TR1, L0); }
-function thinkFrame(i: number): Frame { return mk(HD, i === 0 ? TK0 : TK1, L0); }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 도구 아이콘 (5x5 픽셀)
-// ═══════════════════════════════════════════════════════════════════════════
-type IconGrid = number[][];
-
-const TOOL_ICONS: Record<string, IconGrid> = {
-  terminal: [ // >_
-    [1,0,0,0,0],
-    [0,1,0,0,0],
-    [1,0,0,0,0],
-    [0,0,0,0,0],
-    [0,1,1,1,0],
-  ],
-  magnifier: [ // 돋보기
-    [0,1,1,0,0],
-    [1,0,0,1,0],
-    [0,1,1,0,0],
-    [0,0,0,1,0],
-    [0,0,0,0,1],
-  ],
-  pencil: [ // 연필
-    [0,0,0,0,1],
-    [0,0,0,1,0],
-    [0,0,1,0,0],
-    [0,1,0,0,0],
-    [1,0,0,0,0],
-  ],
-  brain: [ // 뇌
-    [0,1,1,1,0],
-    [1,1,0,1,1],
-    [1,0,1,0,1],
-    [1,1,0,1,1],
-    [0,1,1,1,0],
-  ],
-  globe: [ // 지구
-    [0,1,1,1,0],
-    [1,0,1,0,1],
-    [1,1,1,1,1],
-    [1,0,1,0,1],
-    [0,1,1,1,0],
-  ],
-};
-
-// 도구 → 아이콘 매핑
-function getToolIcon(tools: string[], node: string | null): string | null {
-  const toolStr = (tools.join(' ') + ' ' + (node || '')).toLowerCase();
-  if (toolStr.match(/plan|reflect|evaluate|think/)) return 'brain';
-  if (toolStr.match(/code_executor|bash|execute/)) return 'terminal';
-  if (toolStr.match(/write|edit|self_modifier/)) return 'pencil';
-  if (toolStr.match(/read|grep|glob|pdf|rss/)) return 'magnifier';
-  if (toolStr.match(/web_searcher|fetch|brave|searcher|naver|search/)) return 'globe';
-  if (tools.length > 0) return 'terminal'; // 기본: 터미널
-  return null;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 작업 상태 판별 (도구/노드 기반)
-// ═══════════════════════════════════════════════════════════════════════════
-type WorkState = 'type' | 'read' | 'think' | 'search';
-
-function getWorkState(runtime: AgentRuntimeStatus | undefined): WorkState {
-  const tools = runtime?.current_tools || [];
-  const node = runtime?.current_node || '';
-
-  if (node === 'plan' || node === 'reflect' || node === 'evaluate') return 'think';
-
-  const toolStr = tools.join(' ').toLowerCase();
-  if (toolStr.match(/read|grep|glob|pdf|rss/)) return 'read';
-  if (toolStr.match(/web_searcher|fetch|brave|searcher|naver|search/)) return 'search';
-  return 'type'; // 기본: write/edit/bash/code_executor
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 색상 시스템
-// ═══════════════════════════════════════════════════════════════════════════
-const HAIR = ['#1a1a2e','#3d2b1f','#5c3317','#8B4513','#C68642','#B22222','#2d3436','#4a0e0e','#1b2631','#4b3621','#6b3a2e','#2c1810'];
-const SHIRT: Record<string,string> = {'임원':'#d4a520','엔지니어링':'#3b7dd8','리서치':'#2ea855','운영':'#d97422','마케팅':'#d4589a','기획':'#1a9eb0'};
-const CLR: Record<number,number> = {1:0,2:1,3:2,4:3,5:4,6:5,7:6,8:7};
-
-function hash(s: string) { let h=0; for(let i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0; return Math.abs(h); }
-
-function colors(agent: string, team: string): string[] {
-  return [
-    HAIR[hash(agent)%HAIR.length], // 0: hair
-    '#e8b88a',                      // 1: skin
-    '#1a1a2e',                      // 2: eye
-    '#c96b6b',                      // 3: mouth
-    SHIRT[team]||'#6b7280',         // 4: shirt
-    '#2d3748',                      // 5: pants
-    '#1a1a2e',                      // 6: shoe
-    '#d4a070',                      // 7: arm skin
-  ];
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 스프라이트 캐시
-// ═══════════════════════════════════════════════════════════════════════════
-const cache = new Map<string, HTMLCanvasElement>();
-
-function sprite(agent: string, team: string, frame: Frame): HTMLCanvasElement {
-  const key = `${agent}:${JSON.stringify(frame)}`;
-  let c = cache.get(key);
-  if (c) return c;
-  c = document.createElement('canvas'); c.width = SW; c.height = SH;
-  const ctx = c.getContext('2d')!;
-  const cl = colors(agent, team);
-  for (let y = 0; y < frame.length; y++)
-    for (let x = 0; x < frame[y].length; x++) {
-      const t = frame[y][x];
-      if (!t) continue;
-      ctx.fillStyle = cl[CLR[t]];
-      ctx.fillRect(x, y, 1, 1);
-    }
-  cache.set(key, c);
-  return c;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 오피스 레이아웃
-// ═══════════════════════════════════════════════════════════════════════════
-interface RoomDef { team: string; x: number; y: number; w: number; h: number; color: string; wall: string; label: string }
-interface DeskDef { team: string; dx: number; dy: number; sx: number; sy: number; dir: number }
-
-const ROOMS: RoomDef[] = [
-  { team:'임원',       x:0,  y:0,  w:13, h:12, color:'#12100a', wall:'#fbbf2430', label:'#fbbf24' },
-  { team:'엔지니어링', x:13, y:0,  w:24, h:12, color:'#0a0e18', wall:'#3b82f630', label:'#3b82f6' },
-  { team:'리서치',     x:37, y:0,  w:13, h:12, color:'#0a140a', wall:'#22c55e30', label:'#22c55e' },
-  { team:'운영',       x:0,  y:16, w:13, h:12, color:'#140a04', wall:'#f9731630', label:'#f97316' },
-  { team:'마케팅',     x:13, y:16, w:24, h:12, color:'#140610', wall:'#ec489930', label:'#ec4899' },
-  { team:'기획',       x:37, y:16, w:13, h:12, color:'#061414', wall:'#06b6d430', label:'#06b6d4' },
-];
-
-const TEAM_EN: Record<string,string> = {'임원':'EXEC','엔지니어링':'ENG','리서치':'RESEARCH','운영':'OPS','마케팅':'MARKETING','기획':'PLANNING'};
-
-const DESKS: DeskDef[] = [
-  // 임원 (4) — 방: x0 y0 w13 h12, 내부: x1-11 y1-10
-  {team:'임원',dx:3,dy:3,sx:3,sy:4,dir:3},{team:'임원',dx:7,dy:3,sx:7,sy:4,dir:3},
-  {team:'임원',dx:3,dy:8,sx:3,sy:7,dir:0},{team:'임원',dx:7,dy:8,sx:7,sy:7,dir:0},
-  // 엔지니어링 (12) — 방: x13 y0 w24 h12, 내부: x14-35 y1-10
-  {team:'엔지니어링',dx:16,dy:3,sx:16,sy:4,dir:3},{team:'엔지니어링',dx:19,dy:3,sx:19,sy:4,dir:3},
-  {team:'엔지니어링',dx:22,dy:3,sx:22,sy:4,dir:3},{team:'엔지니어링',dx:25,dy:3,sx:25,sy:4,dir:3},
-  {team:'엔지니어링',dx:28,dy:3,sx:28,sy:4,dir:3},{team:'엔지니어링',dx:31,dy:3,sx:31,sy:4,dir:3},
-  {team:'엔지니어링',dx:16,dy:9,sx:16,sy:8,dir:0},{team:'엔지니어링',dx:19,dy:9,sx:19,sy:8,dir:0},
-  {team:'엔지니어링',dx:22,dy:9,sx:22,sy:8,dir:0},{team:'엔지니어링',dx:25,dy:9,sx:25,sy:8,dir:0},
-  {team:'엔지니어링',dx:28,dy:9,sx:28,sy:8,dir:0},{team:'엔지니어링',dx:31,dy:9,sx:31,sy:8,dir:0},
-  // 리서치 (4) — 방: x37 y0 w13 h12, 내부: x38-48 y1-10
-  {team:'리서치',dx:40,dy:3,sx:40,sy:4,dir:3},{team:'리서치',dx:44,dy:3,sx:44,sy:4,dir:3},
-  {team:'리서치',dx:40,dy:8,sx:40,sy:7,dir:0},{team:'리서치',dx:44,dy:8,sx:44,sy:7,dir:0},
-  // 운영 (2) — 방: x0 y16 w13 h12, 내부: x1-11 y17-26
-  {team:'운영',dx:3,dy:19,sx:3,sy:20,dir:3},{team:'운영',dx:7,dy:19,sx:7,sy:20,dir:3},
-  // 마케팅 (4) — 방: x13 y16 w24 h12, 내부: x14-35 y17-26
-  {team:'마케팅',dx:19,dy:19,sx:19,sy:20,dir:3},{team:'마케팅',dx:25,dy:19,sx:25,sy:20,dir:3},
-  {team:'마케팅',dx:19,dy:24,sx:19,sy:23,dir:0},{team:'마케팅',dx:25,dy:24,sx:25,sy:23,dir:0},
-  // 기획 (2) — 방: x37 y16 w13 h12, 내부: x38-48 y17-26
-  {team:'기획',dx:40,dy:19,sx:40,sy:20,dir:3},{team:'기획',dx:44,dy:19,sx:44,sy:20,dir:3},
-];
-
-// 문 위치 (방↔복도 연결)
-const DOORS: [number,number][] = [
-  [6,11],[7,11],[24,11],[25,11],[43,11],[44,11],  // 상단 방 → 복도
-  [6,16],[7,16],[24,16],[25,16],[43,16],[44,16],  // 복도 → 하단 방
-];
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 이동 가능 그리드 + BFS
-// ═══════════════════════════════════════════════════════════════════════════
-const deskSet = new Set(DESKS.map(d => `${d.dx},${d.dy}`));
-
-function buildGrid(): boolean[][] {
-  const g: boolean[][] = Array.from({length:MAP_H}, ()=>Array(MAP_W).fill(false));
-  // 방 내부
-  for (const r of ROOMS) {
-    for (let y=r.y+1; y<r.y+r.h-1; y++)
-      for (let x=r.x+1; x<r.x+r.w-1; x++)
-        g[y][x] = true;
-  }
-  // 복도 (y=12~15, 4타일 높이)
-  for (let y=12; y<=15; y++)
-    for (let x=0; x<MAP_W; x++) g[y][x]=true;
-  // 문
-  for (const [dx,dy] of DOORS) g[dy][dx] = true;
-  // 책상 타일 비이동
-  for (const d of DESKS) g[d.dy][d.dx] = false;
-  return g;
-}
-
-const GRID = buildGrid();
-
-function bfs(sx:number,sy:number,ex:number,ey:number): [number,number][] {
-  if (sx===ex && sy===ey) return [];
-  if (!GRID[ey]?.[ex]) return [];
-  const visited = new Set<string>();
-  const parent = new Map<string, string>();
-  const q: [number,number][] = [[sx,sy]];
-  visited.add(`${sx},${sy}`);
-  const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
-  while (q.length) {
-    const [cx,cy] = q.shift()!;
-    if (cx===ex && cy===ey) {
-      const path: [number,number][] = [];
-      let k = `${ex},${ey}`;
-      while (k !== `${sx},${sy}`) {
-        const [a,b] = k.split(',').map(Number);
-        path.unshift([a,b]);
-        k = parent.get(k)!;
-      }
-      return path;
-    }
-    for (const [ddx,ddy] of dirs) {
-      const nx=cx+ddx, ny=cy+ddy;
-      const nk = `${nx},${ny}`;
-      if (nx>=0 && nx<MAP_W && ny>=0 && ny<MAP_H && GRID[ny][nx] && !visited.has(nk)) {
-        visited.add(nk);
-        parent.set(nk, `${cx},${cy}`);
-        q.push([nx,ny]);
-      }
-    }
-  }
-  return [];
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 게임 상태
-// ═══════════════════════════════════════════════════════════════════════════
-interface CharState {
-  code: string; team: string;
-  col: number; row: number; // 현재 타일
-  x: number; y: number;     // 픽셀 (타일 중심)
-  path: [number,number][];
-  pathIdx: number;
-  dir: number;              // 0=down 1=left 2=right 3=up
-  walkStep: number;
-  animT: number;
-  state: 'idle' | 'walk' | 'type' | 'read' | 'think' | 'search';
-  deskCol: number; deskRow: number; deskDir: number;
-  idleTimer: number;
-  typeFrame: number;
-  // 말풍선
-  speechBubble: string | null;
-  speechBubbleTimer: number;
-  // 이전 상태 추적 (상태 전환 감지)
-  prevStatus: string | null;
-}
-
-interface GameState {
-  chars: Map<string, CharState>;
-  lastT: number;
-  rafId: number;
-  deskMap: Map<string, DeskDef>;
-}
 
 function tileCenter(col: number, row: number): [number, number] {
   return [col * TILE + TILE / 2, row * TILE + TILE / 2];
@@ -400,11 +53,11 @@ function dirBetween(fx: number, fy: number, tx: number, ty: number): number {
 function assignDesks(hired: Set<string>): Map<string, DeskDef> {
   const m = new Map<string, DeskDef>();
   const byTeam: Record<string, DeskDef[]> = {};
-  for (const d of DESKS) { if (!byTeam[d.team]) byTeam[d.team]=[]; byTeam[d.team].push(d); }
+  for (const d of DESKS) { if (!byTeam[d.team]) byTeam[d.team] = []; byTeam[d.team].push(d); }
   const agents: Record<string, string[]> = {};
   Array.from(hired).forEach(code => {
     const p = getPersona(code); if (!p) return;
-    if (!agents[p.team]) agents[p.team]=[];
+    if (!agents[p.team]) agents[p.team] = [];
     agents[p.team].push(code);
   });
   for (const [team, codes] of Object.entries(agents)) {
@@ -416,64 +69,58 @@ function assignDesks(hired: Set<string>): Map<string, DeskDef> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 업데이트 로직
+// Character lifecycle
 // ═══════════════════════════════════════════════════════════════════════════
+
 function initChar(code: string, desk: DeskDef): CharState {
   const p = getPersona(code);
   const team = p?.team || '';
-  // 시작 위치: 복도 중앙 (랜덤 x)
-  const startCol = 5 + hash(code) % 40;
-  const startRow = 12 + (hash(code) % 4);
+  // Spawn at desk position directly (not entrance)
+  const startCol = desk.dx;
+  const startRow = desk.dy;
   const [x, y] = tileCenter(startCol, startRow);
   return {
     code, team, col: startCol, row: startRow, x, y,
-    path:[], pathIdx:0, dir:0, walkStep:0, animT:0,
-    state:'idle', deskCol:desk.sx, deskRow:desk.sy, deskDir:desk.dir,
-    idleTimer: 0.5 + Math.random()*2, typeFrame:0,
+    path: [], pathIdx: 0, dir: 0, walkStep: 0, animT: 0,
+    state: 'idle', deskCol: desk.sx, deskRow: desk.sy, deskDir: desk.dir,
+    idleTimer: 0.5 + Math.random() * 2, typeFrame: 0,
     speechBubble: null, speechBubbleTimer: 0,
     prevStatus: null,
+    activity: '출근 중', poiTarget: null, socialTarget: null, socialTimer: 0,
   };
 }
 
-function updateChar(c: CharState, runtime: AgentRuntimeStatus|undefined, dt: number) {
+function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: number) {
   const status = runtime?.status || 'idle';
 
-  // 말풍선 타이머 업데이트
+  // Speech bubble timer
   if (c.speechBubble) {
     c.speechBubbleTimer -= dt;
-    if (c.speechBubbleTimer <= 0) {
-      c.speechBubble = null;
-      c.speechBubbleTimer = 0;
-    }
+    if (c.speechBubbleTimer <= 0) { c.speechBubble = null; c.speechBubbleTimer = 0; }
   }
 
-  // 상태 전환 감지: idle → working 시 말풍선 표시
+  // Status transition detection
   if (c.prevStatus !== status) {
     if (status === 'working' && c.prevStatus !== 'working') {
       const taskText = runtime?.current_task;
       if (taskText) {
-        // 작업 내용 축약 (최대 20자)
         c.speechBubble = taskText.length > 20 ? taskText.slice(0, 18) + '..' : taskText;
         c.speechBubbleTimer = SPEECH_BUBBLE_DURATION;
       }
+      c.activity = taskText ? (taskText.length > 14 ? taskText.slice(0, 12) + '..' : taskText) : '작업 중';
+      c.socialTarget = null; c.socialTimer = 0;
+    } else if (status !== 'working' && c.prevStatus === 'working') {
+      c.activity = getIdleActivity(c.code);
     }
     c.prevStatus = status;
   }
 
-  // 작업 상태별 애니메이션 분기
   const workState = getWorkState(runtime);
 
-  // 상태 전환
+  // Working state
   if (status === 'working') {
-    // 이미 작업 중 상태 (type/read/think/search)
     if (c.state === 'type' || c.state === 'read' || c.state === 'think' || c.state === 'search') {
-      // 도구 변경에 따라 작업 상태 전환
-      if (c.state !== workState && (c.state === 'type' || c.state === 'read' || c.state === 'think' || c.state === 'search')) {
-        c.state = workState;
-        c.animT = 0;
-        c.typeFrame = 0;
-      }
-      // 프레임 애니메이션
+      if (c.state !== workState) { c.state = workState; c.animT = 0; c.typeFrame = 0; }
       const frameDur = c.state === 'read' ? READ_FRAME_DUR
         : c.state === 'think' ? THINK_FRAME_DUR
         : c.state === 'search' ? SEARCH_FRAME_DUR
@@ -495,41 +142,82 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus|undefined, dt: num
     c.state = 'idle'; c.idleTimer = 1 + Math.random() * 3;
   }
 
-  // 걷기 처리
+  // Walking
   if (c.state === 'walk') {
     if (c.pathIdx >= c.path.length) {
-      c.state = 'idle'; c.idleTimer = 2 + Math.random() * 5; c.walkStep = 0;
+      c.state = 'idle'; c.walkStep = 0;
+      if (c.poiTarget) {
+        const poi = POI_LIST.find(p => p.name === c.poiTarget);
+        if (poi) c.activity = poi.action;
+        c.idleTimer = 5 + Math.random() * 8;
+        c.poiTarget = null;
+      } else {
+        c.idleTimer = 2 + Math.random() * 5;
+      }
       return;
     }
     const [nx, ny] = c.path[c.pathIdx];
     c.dir = dirBetween(c.col, c.row, nx, ny);
     const [tx, ty] = tileCenter(nx, ny);
     const ddx = tx - c.x, ddy = ty - c.y;
-    const dist = Math.sqrt(ddx*ddx + ddy*ddy);
+    const dist = Math.sqrt(ddx * ddx + ddy * ddy);
     const spd = WALK_SPEED * dt;
-    if (dist <= spd) {
-      c.x = tx; c.y = ty; c.col = nx; c.row = ny; c.pathIdx++;
-    } else {
-      c.x += (ddx/dist)*spd; c.y += (ddy/dist)*spd;
-    }
+    if (dist <= spd) { c.x = tx; c.y = ty; c.col = nx; c.row = ny; c.pathIdx++; }
+    else { c.x += (ddx / dist) * spd; c.y += (ddy / dist) * spd; }
     c.animT += dt;
-    if (c.animT >= WALK_FRAME_DUR) { c.animT -= WALK_FRAME_DUR; c.walkStep = (c.walkStep+1)%4; }
+    if (c.animT >= WALK_FRAME_DUR) { c.animT -= WALK_FRAME_DUR; c.walkStep = (c.walkStep + 1) % 4; }
     return;
   }
 
-  // 대기 중: 가끔 배회
+  // Social interaction
+  if (c.socialTimer > 0) {
+    c.socialTimer -= dt;
+    if (c.socialTimer <= 0) {
+      c.socialTarget = null;
+      c.activity = getIdleActivity(c.code);
+      c.idleTimer = 2 + Math.random() * 4;
+    }
+    return;
+  }
+
+  // Idle behavior
   if (c.state === 'idle') {
     c.idleTimer -= dt;
     if (c.idleTimer <= 0) {
+      const kstHour = new Date(Date.now() + 9 * 3600000).getUTCHours();
+      const behavior = getIdleBehavior(kstHour);
+
+      if (behavior === 'poi') {
+        const poi = POI_LIST[Math.floor(Math.random() * POI_LIST.length)];
+        const p = bfs(c.col, c.row, poi.col, poi.row);
+        if (p.length > 0 && p.length <= 30) {
+          c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+          c.poiTarget = poi.name; c.activity = poi.action;
+          c.idleTimer = 6 + Math.random() * 8;
+          return;
+        }
+      }
+
+      if (behavior === 'desk') {
+        const p = bfs(c.col, c.row, c.deskCol, c.deskRow);
+        if (p.length > 0) {
+          c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+          c.activity = '자리로 돌아가는 중';
+          c.idleTimer = 3 + Math.random() * 5;
+          return;
+        }
+      }
+
+      // Default: wander nearby
       c.idleTimer = 4 + Math.random() * 8;
-      // 근처 랜덤 타일로 이동
-      const tries = 8;
-      for (let i = 0; i < tries; i++) {
-        const tx = c.col + Math.floor(Math.random()*7) - 3;
-        const ty = c.row + Math.floor(Math.random()*7) - 3;
-        if (tx>=0 && tx<MAP_W && ty>=0 && ty<MAP_H && GRID[ty][tx]) {
+      c.activity = getIdleActivity(c.code);
+      for (let i = 0; i < 8; i++) {
+        const tx = c.col + Math.floor(Math.random() * 9) - 4;
+        const ty = c.row + Math.floor(Math.random() * 9) - 4;
+        const grid = getGrid();
+        if (tx >= 0 && tx < MAP_W && ty >= 0 && ty < MAP_H && grid[ty]?.[tx]) {
           const p = bfs(c.col, c.row, tx, ty);
-          if (p.length > 0 && p.length <= 10) {
+          if (p.length > 0 && p.length <= 12) {
             c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
             break;
           }
@@ -540,233 +228,439 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus|undefined, dt: num
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 렌더링
+// Rendering
 // ═══════════════════════════════════════════════════════════════════════════
+
+const _floorCache = new Map<string, HTMLCanvasElement>();
+
+function makeFloorTile(type: string, base: string, accent: string): HTMLCanvasElement {
+  const key = `${type}:${base}`;
+  if (_floorCache.has(key)) return _floorCache.get(key)!;
+  const c = document.createElement('canvas'); c.width = 16; c.height = 16;
+  const x2 = c.getContext('2d')!;
+  x2.fillStyle = base; x2.fillRect(0, 0, 16, 16);
+  x2.fillStyle = accent;
+  if (type === 'wood') {
+    for (let y = 0; y < 16; y += 4) { x2.fillRect(0, y, 16, 1); for (let x = 0; x < 16; x++) if ((x + y * 3) % 7 === 0) { x2.globalAlpha = 0.15; x2.fillRect(x, y + 1, 1, 2); x2.globalAlpha = 1; } }
+    x2.fillRect(8, 0, 1, 4); x2.fillRect(4, 4, 1, 4); x2.fillRect(12, 8, 1, 4); x2.fillRect(6, 12, 1, 4);
+  } else if (type === 'carpet') {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if ((x + y) % 2 === 0) { x2.globalAlpha = 0.08; x2.fillRect(x, y, 1, 1); } x2.globalAlpha = 1;
+  } else if (type === 'tile') {
+    x2.fillRect(0, 0, 16, 1); x2.fillRect(0, 0, 1, 16);
+    x2.globalAlpha = 0.05; for (let y = 2; y < 16; y += 4) for (let x = 2; x < 16; x += 4) x2.fillRect(x, y, 1, 1); x2.globalAlpha = 1;
+  } else {
+    for (let i = 0; i < 12; i++) { x2.globalAlpha = 0.1; x2.fillRect((i * 7 + 3) % 16, (i * 11 + 5) % 16, 1, 1); } x2.globalAlpha = 1;
+  }
+  _floorCache.set(key, c); return c;
+}
+
 function drawToolIcon(ctx: CanvasRenderingContext2D, iconName: string, ix: number, iy: number, color: string) {
   const icon = TOOL_ICONS[iconName];
   if (!icon) return;
-  for (let y = 0; y < icon.length; y++) {
-    for (let x = 0; x < icon[y].length; x++) {
-      if (icon[y][x]) {
-        ctx.fillStyle = color;
-        ctx.fillRect(ix + x * SCALE, iy + y * SCALE, SCALE, SCALE);
-      }
-    }
-  }
+  for (let y = 0; y < icon.length; y++)
+    for (let x = 0; x < icon[y].length; x++)
+      if (icon[y][x]) { ctx.fillStyle = color; ctx.fillRect(ix + x * SCALE, iy + y * SCALE, SCALE, SCALE); }
 }
 
 function drawSpeechBubble(ctx: CanvasRenderingContext2D, text: string, cx: number, cy: number, alpha: number) {
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.font = `${10 * SCALE}px monospace`;
+  ctx.font = `${6 * SCALE}px monospace`;
   const textWidth = ctx.measureText(text).width;
-  const bw = textWidth + 12 * SCALE;
-  const bh = 18 * SCALE;
+  const bw = textWidth + 8 * SCALE;
+  const bh = 11 * SCALE;
   const bx = Math.round(cx - bw / 2);
-  const by = Math.round(cy - DSH - bh - 4 * SCALE);
-
-  // 말풍선 배경
+  const by = Math.round(cy - DSH - bh - 2 * SCALE);
+  ctx.fillStyle = '#1e1e2e'; ctx.fillRect(bx, by, bw, bh);
+  ctx.strokeStyle = '#3f3f46'; ctx.lineWidth = 0.5 * SCALE; ctx.strokeRect(bx, by, bw, bh);
   ctx.fillStyle = '#1e1e2e';
-  ctx.fillRect(bx, by, bw, bh);
-  ctx.strokeStyle = '#3f3f46';
-  ctx.lineWidth = 1 * SCALE;
-  ctx.strokeRect(bx, by, bw, bh);
-
-  // 꼬리 (작은 삼각형)
-  ctx.fillStyle = '#1e1e2e';
-  ctx.beginPath();
-  ctx.moveTo(cx - 4 * SCALE, by + bh);
-  ctx.lineTo(cx + 4 * SCALE, by + bh);
-  ctx.lineTo(cx, by + bh + 6 * SCALE);
-  ctx.closePath();
-  ctx.fill();
-
-  // 텍스트
-  ctx.fillStyle = '#e4e4e7';
-  ctx.textAlign = 'center';
-  ctx.fillText(text, Math.round(cx), by + 12 * SCALE);
+  ctx.beginPath(); ctx.moveTo(cx - 3 * SCALE, by + bh); ctx.lineTo(cx + 3 * SCALE, by + bh); ctx.lineTo(cx, by + bh + 4 * SCALE); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#e4e4e7'; ctx.textAlign = 'center';
+  ctx.fillText(text, Math.round(cx), by + 7.5 * SCALE);
   ctx.textAlign = 'left';
   ctx.restore();
 }
 
-function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Record<string,AgentRuntimeStatus>) {
-  // 배경
-  ctx.fillStyle = '#08080c';
+const FURN_MAKERS: Record<string, () => HTMLCanvasElement> = {
+  plant: makePlantSprite, coffee: makeCoffeeMachine, wb: makeWhiteboard,
+  book: makeBookshelf, server: makeServerRack, printer: makePrinterSprite,
+  vending: makeVendingMachine, fridge: makeFridgeSprite, sofa: makeSofaSprite,
+  water: makeWaterCooler, bench: makeBenchSprite, tree: makeTreeSprite,
+  ashtray: makeAshtraySprite, umbrella: makeUmbrellaTable,
+};
+
+function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Record<string, AgentRuntimeStatus>, camera: Camera) {
+  ctx.imageSmoothingEnabled = false;
+
+  // Apply camera transform
+  ctx.save();
+  ctx.scale(camera.zoom, camera.zoom);
+  ctx.translate(-camera.x, -camera.y);
+
+  // LAYER 0: Background
+  ctx.fillStyle = '#06060a';
   ctx.fillRect(0, 0, CW, CH);
 
-  // 방 바닥
+  // Outdoor ground (y0-3 and y36-39)
+  const outdoorTile = makeFloorTile('concrete', '#0a120a', '#101a10');
+  for (let y = 0; y <= 3; y++)
+    for (let x = 0; x < MAP_W; x++)
+      ctx.drawImage(outdoorTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+  for (let y = 36; y <= 39; y++)
+    for (let x = 0; x < MAP_W; x++)
+      ctx.drawImage(outdoorTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+
+  // LAYER 1: Room floors
   for (const r of ROOMS) {
-    ctx.fillStyle = r.color;
-    ctx.fillRect((r.x+1)*TILE, (r.y+1)*TILE, (r.w-2)*TILE, (r.h-2)*TILE);
+    const cfg = ROOM_FLOORS[r.team] || ROOM_FLOORS['경영지원팀'] || { type: 'tile', base: '#0c0c14', accent: '#141420' };
+    const tile = makeFloorTile(cfg.type, cfg.base, cfg.accent);
+    for (let y = r.y + 1; y < r.y + r.h - 1; y++)
+      for (let x = r.x + 1; x < r.x + r.w - 1; x++)
+        ctx.drawImage(tile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+  }
+  // Hallway floors
+  const hallTile = makeFloorTile('concrete', '#0c0c12', '#14141c');
+  for (let x = 0; x < MAP_W; x++) {
+    for (let y = 4; y <= 5; y++) ctx.drawImage(hallTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+    for (let y = 18; y <= 21; y++) ctx.drawImage(hallTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+    for (let y = 34; y <= 35; y++) ctx.drawImage(hallTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
   }
 
-  // 복도
-  ctx.fillStyle = '#0e0e12';
-  ctx.fillRect(0, 12*TILE, CW, 4*TILE);
+  // LAYER 2: Grid lines (subtle)
+  ctx.strokeStyle = 'rgba(255,255,255,0.012)'; ctx.lineWidth = 0.5 * SCALE;
+  for (let x = 0; x <= CW; x += TILE) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CH); ctx.stroke(); }
+  for (let y = 0; y <= CH; y += TILE) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CW, y); ctx.stroke(); }
 
-  // 바닥 그리드
-  ctx.strokeStyle = 'rgba(255,255,255,0.015)';
-  ctx.lineWidth = 0.5 * SCALE;
-  for (let x=0; x<=CW; x+=TILE) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH); ctx.stroke(); }
-  for (let y=0; y<=CH; y+=TILE) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CW,y); ctx.stroke(); }
-
-  // 방 벽
+  // LAYER 3: Room lighting
   for (const r of ROOMS) {
-    ctx.strokeStyle = r.wall;
-    ctx.lineWidth = 2 * SCALE;
-    ctx.strokeRect(r.x*TILE+1*SCALE, r.y*TILE+1*SCALE, r.w*TILE-2*SCALE, r.h*TILE-2*SCALE);
+    const cx = (r.x + r.w / 2) * TILE, cy = (r.y + r.h / 2) * TILE;
+    const radius = Math.max(r.w, r.h) * TILE * 0.6;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    grad.addColorStop(0, 'rgba(255, 240, 200, 0.04)'); grad.addColorStop(0.6, 'rgba(255, 240, 200, 0.015)'); grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = grad; ctx.fillRect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE);
   }
 
-  // 문 표시 (벽 끊기)
-  ctx.fillStyle = '#0e0e12';
-  for (const [dx,dy] of DOORS) ctx.fillRect(dx*TILE-1*SCALE, dy*TILE, TILE+2*SCALE, TILE);
-
-  // 방 라벨
-  ctx.textAlign = 'left';
+  // LAYER 4: Walls
   for (const r of ROOMS) {
-    ctx.fillStyle = r.label;
-    ctx.globalAlpha = 0.4;
-    ctx.font = `${7 * SCALE}px monospace`;
-    ctx.fillText(TEAM_EN[r.team]||r.team, (r.x+1)*TILE+2*SCALE, r.y*TILE+9*SCALE);
+    ctx.strokeStyle = r.wall; ctx.lineWidth = 2.5 * SCALE;
+    ctx.strokeRect(r.x * TILE + 1 * SCALE, r.y * TILE + 1 * SCALE, r.w * TILE - 2 * SCALE, r.h * TILE - 2 * SCALE);
+    ctx.strokeStyle = 'rgba(255,255,255,0.02)'; ctx.lineWidth = 1 * SCALE;
+    ctx.strokeRect(r.x * TILE + 3 * SCALE, r.y * TILE + 3 * SCALE, r.w * TILE - 6 * SCALE, r.h * TILE - 6 * SCALE);
+  }
+
+  // Doors
+  for (const [dx, dy] of DOORS) {
+    ctx.fillStyle = '#0c0c12'; ctx.fillRect(dx * TILE - 1 * SCALE, dy * TILE, TILE + 2 * SCALE, TILE);
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fillRect(dx * TILE, dy * TILE, 1 * SCALE, TILE);
+    ctx.fillRect(dx * TILE + TILE - 1 * SCALE, dy * TILE, 1 * SCALE, TILE);
+  }
+
+  // LAYER 5: Room labels
+  ctx.imageSmoothingEnabled = true; ctx.textAlign = 'left';
+  for (const r of ROOMS) {
+    const labelText = TEAM_EN[r.team] || r.team;
+    ctx.font = `bold ${7 * SCALE}px monospace`;
+    const tw = ctx.measureText(labelText).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect((r.x + 1) * TILE, r.y * TILE + 1 * SCALE, tw + 4 * SCALE, 10 * SCALE);
+    ctx.fillStyle = r.label; ctx.globalAlpha = 0.7;
+    ctx.fillText(labelText, (r.x + 1) * TILE + 2 * SCALE, r.y * TILE + 9 * SCALE);
     ctx.globalAlpha = 1;
   }
+  // Hallway labels
+  ctx.fillStyle = '#27272a'; ctx.font = `${5 * SCALE}px monospace`; ctx.textAlign = 'center';
+  ctx.fillText('ENTRANCE', CW / 2, 4 * TILE + TILE + 4 * SCALE);
+  ctx.fillText('— MAIN HALLWAY —', CW / 2, 19 * TILE + TILE + 4 * SCALE);
+  ctx.fillText('EXIT', CW / 2, 34 * TILE + TILE + 4 * SCALE);
+  // Outdoor labels
+  ctx.fillStyle = '#1a3a1a'; ctx.globalAlpha = 0.6;
+  ctx.fillText('PARKING', 10 * TILE, 1 * TILE + 4 * SCALE);
+  ctx.fillText('GARDEN', 50 * TILE, 1 * TILE + 4 * SCALE);
+  ctx.fillText('SMOKING AREA', 10 * TILE, 37 * TILE + 4 * SCALE);
+  ctx.fillText('TERRACE', 30 * TILE, 37 * TILE + 4 * SCALE);
+  ctx.fillText('ROOFTOP GARDEN', 50 * TILE, 37 * TILE + 4 * SCALE);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left'; ctx.imageSmoothingEnabled = false;
 
-  // 책상 + 모니터
+  // LAYER 6: Desks
   for (const d of DESKS) {
     const active = Array.from(game.chars.values()).some(ch =>
-      ch.deskCol===d.sx && ch.deskRow===d.sy &&
-      (ch.state==='type' || ch.state==='read' || ch.state==='think' || ch.state==='search')
+      ch.deskCol === d.sx && ch.deskRow === d.sy && ['type', 'read', 'think', 'search'].includes(ch.state)
     );
-    // 책상
-    ctx.fillStyle = '#3d3530';
-    ctx.fillRect(d.dx*TILE+2*SCALE, d.dy*TILE+4*SCALE, TILE-4*SCALE, TILE-6*SCALE);
-    // 모니터
-    ctx.fillStyle = active ? '#1e293b' : '#111118';
-    ctx.fillRect(d.dx*TILE+4*SCALE, d.dy*TILE+1*SCALE, 8*SCALE, 4*SCALE);
+    ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(d.dx * TILE + 3 * SCALE, d.dy * TILE + 3 * SCALE, TILE - 4 * SCALE, TILE - 4 * SCALE);
+    const desk = makeDeskSprite(active);
+    ctx.drawImage(desk, 0, 0, 16, 16, d.dx * TILE, d.dy * TILE, TILE, TILE);
     if (active) {
-      ctx.fillStyle = '#3b82f6'; ctx.fillRect(d.dx*TILE+5*SCALE, d.dy*TILE+2*SCALE, 5*SCALE, 1*SCALE);
-      ctx.fillStyle = '#22c55e'; ctx.fillRect(d.dx*TILE+5*SCALE, d.dy*TILE+3*SCALE, 3*SCALE, 1*SCALE);
+      const cx = d.dx * TILE + TILE / 2, cy = d.dy * TILE + TILE / 4;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, TILE * 1.2);
+      grad.addColorStop(0, 'rgba(59, 130, 246, 0.06)'); grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = grad; ctx.fillRect(cx - TILE * 1.2, cy - TILE * 1.2, TILE * 2.4, TILE * 2.4);
     }
-    // 모니터 받침
-    ctx.fillStyle = '#27272a';
-    ctx.fillRect(d.dx*TILE+7*SCALE, d.dy*TILE+5*SCALE, 2*SCALE, 2*SCALE);
   }
 
-  // 캐릭터 (Y 정렬)
-  const sorted = Array.from(game.chars.values()).sort((a,b) => a.y - b.y);
+  // LAYER 6b: Furniture
+  for (const f of FURNITURE) {
+    const maker = FURN_MAKERS[f.type];
+    if (!maker) continue;
+    const spr = maker();
+    const fw = f.w ?? 1;
+    ctx.drawImage(spr, 0, 0, 16, 16, f.x * TILE, f.y * TILE, TILE * fw, TILE);
+  }
+
+  // Coffee steam
+  const steamT = Date.now() / 600;
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  for (let i = 0; i < 3; i++) {
+    const sy = 19 * TILE - (2 + i * 3) * SCALE - ((steamT + i * 2) % 5) * SCALE;
+    const sx = 30 * TILE + 6 * SCALE + Math.sin(steamT + i) * 1.5 * SCALE;
+    ctx.fillRect(sx, sy, 2 * SCALE, 1 * SCALE);
+  }
+
+  // LAYER 7: Characters (Y-sorted)
+  const sorted = Array.from(game.chars.values()).sort((a, b) => a.y - b.y);
   for (const c of sorted) {
     let f: Frame;
     if (c.state === 'type') f = typeFrame(c.typeFrame);
     else if (c.state === 'read' || c.state === 'search') f = readFrame(c.typeFrame);
     else if (c.state === 'think') f = thinkFrame(c.typeFrame);
     else if (c.state === 'walk') f = walkFrame(c.dir, c.walkStep);
-    else f = walkFrame(c.dir, 0); // idle = standing
+    else f = walkFrame(c.dir, 0);
 
     const s = sprite(c.code, c.team, f);
-    const dx = Math.round(c.x - DSW/2);
-    const dy = Math.round(c.y - DSH/2);
+    const dx = Math.round(c.x - DSW / 2);
+    const dy = Math.round(c.y - DSH / 2);
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(s, dx, dy, DSW, DSH);
+    ctx.imageSmoothingEnabled = true;
 
-    // 상태 인디케이터
+    // Status indicator
     const runtime = runtimeMap[c.code];
     const isWorking = runtime?.status === 'working';
     const isError = runtime?.status === 'error';
     if (isWorking) {
-      ctx.fillStyle = '#3b82f6';
-      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now()/300);
-      ctx.beginPath(); ctx.arc(dx+DSW+1*SCALE, dy+2*SCALE, 2*SCALE, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#3b82f6'; ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 300);
+      ctx.beginPath(); ctx.arc(dx + DSW + 1 * SCALE, dy + 2 * SCALE, 2 * SCALE, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
-
-      // 도구 아이콘 그리기 (캐릭터 위)
       const iconName = getToolIcon(runtime?.current_tools || [], runtime?.current_node || null);
       if (iconName) {
         const shirtColor = SHIRT[c.team] || '#6b7280';
-        const iconX = Math.round(c.x + DSW/2 + 2*SCALE);
-        const iconY = Math.round(c.y - DSH/2 - 2*SCALE);
-        drawToolIcon(ctx, iconName, iconX, iconY, shirtColor);
+        drawToolIcon(ctx, iconName, Math.round(c.x + DSW / 2 + 2 * SCALE), Math.round(c.y - DSH / 2 - 2 * SCALE), shirtColor);
       }
     }
     if (isError) {
-      ctx.fillStyle = '#ef4444';
-      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now()/200);
-      ctx.font = `${6 * SCALE}px sans-serif`;
-      ctx.fillText('!', dx+DSW-1*SCALE, dy);
+      ctx.fillStyle = '#ef4444'; ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 200);
+      ctx.font = `${6 * SCALE}px sans-serif`; ctx.fillText('!', dx + DSW - 1 * SCALE, dy);
       ctx.globalAlpha = 1;
     }
 
-    // 말풍선
+    // Speech bubble
     if (c.speechBubble && c.speechBubbleTimer > 0) {
-      const alpha = c.speechBubbleTimer < 0.5
-        ? c.speechBubbleTimer / 0.5 // 페이드아웃
-        : Math.min(1, (SPEECH_BUBBLE_DURATION - c.speechBubbleTimer + 0.3) / 0.3); // 페이드인
+      const alpha = c.speechBubbleTimer < 0.5 ? c.speechBubbleTimer / 0.5
+        : Math.min(1, (SPEECH_BUBBLE_DURATION - c.speechBubbleTimer + 0.3) / 0.3);
       drawSpeechBubble(ctx, c.speechBubble, Math.round(c.x), dy, alpha);
     }
 
-    // 이름
-    ctx.fillStyle = isWorking ? '#93c5fd' : isError ? '#fca5a5' : '#71717a';
-    ctx.font = `${5 * SCALE}px monospace`;
+    // Emoji above head (when no speech bubble)
+    if (!c.speechBubble && c.activity) {
+      drawActivityEmoji(ctx, c.activity, c.x, c.y, DSH);
+    }
+
+    // Name + activity
     ctx.textAlign = 'center';
-    ctx.fillText(getFirstName(c.code), Math.round(c.x), Math.round(c.y+DSH/2+6*SCALE));
+    ctx.fillStyle = isWorking ? '#93c5fd' : isError ? '#fca5a5' : '#d4d4d8';
+    ctx.font = `bold ${5 * SCALE}px monospace`;
+    ctx.fillText(getFirstName(c.code), Math.round(c.x), Math.round(c.y + DSH / 2 + 6 * SCALE));
+    const activityText = isWorking
+      ? (runtime?.current_task ? (runtime.current_task.length > 14 ? runtime.current_task.slice(0, 12) + '..' : runtime.current_task) : '작업 중')
+      : c.activity || '';
+    if (activityText) {
+      ctx.fillStyle = isWorking ? '#93c5fd' : '#a1a1aa';
+      ctx.font = `${3.5 * SCALE}px monospace`;
+      ctx.fillText(activityText, Math.round(c.x), Math.round(c.y + DSH / 2 + 12 * SCALE));
+    }
     ctx.textAlign = 'left';
   }
 
-  // 복도 라벨
-  ctx.fillStyle = '#27272a';
-  ctx.font = `${6 * SCALE}px monospace`;
-  ctx.textAlign = 'center';
-  ctx.fillText('— HALLWAY —', CW/2, 13*TILE+TILE+4*SCALE);
-  ctx.textAlign = 'left';
+  // LAYER 8: Day/Night overlay
+  const kstHour = new Date(Date.now() + 9 * 3600000).getUTCHours();
+  let nightAlpha = 0;
+  if (kstHour >= 22 || kstHour < 5) nightAlpha = 0.35;
+  else if (kstHour >= 19) nightAlpha = (kstHour - 19) / 3 * 0.35;
+  else if (kstHour < 7) nightAlpha = (7 - kstHour) / 2 * 0.35;
+  if (nightAlpha > 0) {
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = `rgba(25, 35, 70, ${nightAlpha})`; ctx.fillRect(0, 0, CW, CH);
+    ctx.globalCompositeOperation = 'source-over';
+    const vig = ctx.createRadialGradient(CW / 2, CH / 2, CW * 0.3, CW / 2, CH / 2, CW * 0.7);
+    vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, `rgba(0,0,0,${nightAlpha * 0.25})`);
+    ctx.fillStyle = vig; ctx.fillRect(0, 0, CW, CH);
+  }
+
+  // LAYER 9: Dust particles
+  if (nightAlpha < 0.1) {
+    ctx.fillStyle = 'rgba(255, 248, 220, 0.06)';
+    const t = Date.now() / 3000;
+    for (let i = 0; i < 15; i++) {
+      const px = ((t * 15 + i * 260) % CW);
+      const py = ((Math.sin(t * 0.7 + i * 1.7) + 1) * 0.5 * CH);
+      ctx.beginPath(); ctx.arc(px, py, (1 + Math.sin(t + i) * 0.5) * SCALE, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // LAYER 10: Clock (KST)
+  ctx.imageSmoothingEnabled = true;
+  const clkX = CW - 3 * TILE, clkY = 1 * SCALE;
+  ctx.fillStyle = '#1e1e2e'; ctx.fillRect(clkX, clkY, 11 * SCALE, 7 * SCALE);
+  ctx.strokeStyle = '#3f3f46'; ctx.lineWidth = 0.5 * SCALE; ctx.strokeRect(clkX, clkY, 11 * SCALE, 7 * SCALE);
+  const kstMin = new Date(Date.now() + 9 * 3600000).getUTCMinutes();
+  ctx.fillStyle = nightAlpha > 0.1 ? '#60a5fa' : '#a1a1aa';
+  ctx.font = `${3.5 * SCALE}px monospace`;
+  ctx.fillText(`${String(kstHour).padStart(2, '0')}:${String(kstMin).padStart(2, '0')}`, clkX + 1.5 * SCALE, clkY + 5 * SCALE);
+  ctx.imageSmoothingEnabled = false;
+
+  ctx.restore(); // pop camera transform
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// React 컴포넌트
+// React Component
 // ═══════════════════════════════════════════════════════════════════════════
-interface PixelOfficeProps {
-  runtimeMap: Record<string, AgentRuntimeStatus>;
-  hiredSet: Set<string>;
-  onSelectAgent: (code: string) => void;
-}
 
-export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent }: PixelOfficeProps) {
+import type { ActivityLogEntry, PixelOfficeProps } from './engine/types';
+
+let _actLogId = 0;
+
+export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agentBubbles, onActivityLog, muteChat }: PixelOfficeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<GameState | null>(null);
-  const propsRef = useRef({ runtimeMap, hiredSet, onSelectAgent });
-  const [hovered, setHovered] = useState<string|null>(null);
-  const [tipPos, setTipPos] = useState({x:0, y:0});
+  const cameraRef = useRef<Camera>(createCamera(800, 600));
+  const propsRef = useRef({ runtimeMap, hiredSet, onSelectAgent, agentBubbles, onActivityLog, muteChat });
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
 
-  propsRef.current = { runtimeMap, hiredSet, onSelectAgent };
+  propsRef.current = { runtimeMap, hiredSet, onSelectAgent, agentBubbles, onActivityLog, muteChat };
 
-  // 게임 초기화 + 루프
+  // Build grid + init POIs once
+  useEffect(() => {
+    const grid = buildGrid();
+    setGrid(grid);
+    initPOIStates(POI_LIST);
+  }, []);
+
+  // Canvas resize
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const resize = () => {
+      const rect = container.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = rect.width;
+      const h = rect.height;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = `${Math.round(w)}px`;
+      canvas.style.height = `${Math.round(h)}px`;
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      cameraRef.current.viewportW = w;
+      cameraRef.current.viewportH = h;
+      clampCamera(cameraRef.current);
+    };
+    resize();
+    // Center on office area (rooms are y6-17, center around y=12 x=30)
+    centerOn(cameraRef.current, 30 * TILE, 12 * TILE);
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
+
+  // Game loop
   useEffect(() => {
     const game: GameState = { chars: new Map(), lastT: 0, rafId: 0, deskMap: new Map() };
     gameRef.current = game;
 
     const loop = (ts: number) => {
-      const dt = game.lastT ? Math.min((ts - game.lastT)/1000, 0.1) : 0.016;
+      const dt = game.lastT ? Math.min((ts - game.lastT) / 1000, 0.1) : 0.016;
       game.lastT = ts;
-      const { runtimeMap: rm, hiredSet: hs } = propsRef.current;
+      const { runtimeMap: rm, hiredSet: hs, agentBubbles: bubbles } = propsRef.current;
 
-      // 에이전트 동기화
+      // Sync agents
       const newDeskMap = assignDesks(hs);
-      // 새 에이전트 추가
       Array.from(hs).forEach(code => {
         if (!game.chars.has(code)) {
           const desk = newDeskMap.get(code);
           if (desk) game.chars.set(code, initChar(code, desk));
         }
       });
-      // 해고된 에이전트 제거
       Array.from(game.chars.keys()).forEach(code => {
         if (!hs.has(code)) game.chars.delete(code);
       });
       game.deskMap = newDeskMap;
 
-      // 업데이트
-      game.chars.forEach((ch, code) => updateChar(ch, rm[code], dt));
+      // Update
+      game.chars.forEach((ch, code) => {
+        updateChar(ch, rm[code], dt);
+        const bubble = bubbles?.[code];
+        if (bubble && Date.now() - bubble.ts < 5000 && (!ch.speechBubble || ch.speechBubble !== bubble.text)) {
+          ch.speechBubble = bubble.text.length > 22 ? bubble.text.slice(0, 20) + '..' : bubble.text;
+          ch.speechBubbleTimer = SPEECH_BUBBLE_DURATION;
+        }
+      });
 
-      // 렌더
+      // Spontaneous chat
+      const { onActivityLog: emitLog, muteChat: muted } = propsRef.current;
+      const chars = Array.from(game.chars.values());
+      if (!muted) for (let i = 0; i < chars.length; i++) {
+        const a = chars[i];
+        if (a.state !== 'idle' || a.socialTimer > 0 || rm[a.code]?.status === 'working') continue;
+        for (let j = i + 1; j < chars.length; j++) {
+          const b = chars[j];
+          if (b.state !== 'idle' || b.socialTimer > 0 || rm[b.code]?.status === 'working') continue;
+          const dist = Math.abs(a.col - b.col) + Math.abs(a.row - b.row);
+          if (dist <= 2 && Math.random() < 0.002) {
+            a.dir = dirBetween(a.x, a.y, b.x, b.y);
+            b.dir = dirBetween(b.x, b.y, a.x, a.y);
+            a.socialTarget = b.code; b.socialTarget = a.code;
+            const chatDur = 3 + Math.random() * 4;
+            a.socialTimer = chatDur; b.socialTimer = chatDur;
+            const nameA = getFirstName(a.code), nameB = getFirstName(b.code);
+            a.activity = `${nameB}와 대화 중`; b.activity = `${nameA}와 대화 중`;
+            const tpl = CHAT_TEMPLATES[Math.floor(Math.random() * CHAT_TEMPLATES.length)];
+            a.speechBubble = tpl[0]; a.speechBubbleTimer = chatDur;
+            b.speechBubble = tpl[1]; b.speechBubbleTimer = chatDur;
+            const pA = getPersona(a.code), pB = getPersona(b.code);
+            const now = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            emitLog?.({
+              id: ++_actLogId, time: now, type: 'chat',
+              agentA: nameA, emojiA: pA?.emoji || '🤖',
+              agentB: nameB, emojiB: pB?.emoji || '🤖',
+              message: `"${tpl[0]}" — "${tpl[1]}"`,
+            });
+          }
+        }
+      }
+
+      // POI arrival log
+      game.chars.forEach(ch => {
+        if (ch.state === 'idle' && ch.poiTarget) {
+          const poi = POI_LIST.find(p => p.name === ch.poiTarget);
+          if (poi) {
+            const p = getPersona(ch.code);
+            const now = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            emitLog?.({
+              id: ++_actLogId, time: now, type: 'move',
+              agentA: getFirstName(ch.code), emojiA: p?.emoji || '🤖',
+              message: poi.action,
+            });
+          }
+        }
+      });
+
+      // Render
       const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) render(game, ctx, rm);
+      if (ctx) render(game, ctx, rm, cameraRef.current);
 
       game.rafId = requestAnimationFrame(loop);
     };
@@ -774,35 +668,69 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent }: Pix
     return () => cancelAnimationFrame(game.rafId);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 마우스
-  const findChar = useCallback((e: React.MouseEvent) => {
-    const canvas = canvasRef.current; if (!canvas) return null;
+  // Mouse handlers
+  const getCanvasCoords = useCallback((e: React.MouseEvent): [number, number] => {
+    const canvas = canvasRef.current;
+    if (!canvas) return [0, 0];
     const rect = canvas.getBoundingClientRect();
-    const sx = CW / rect.width, sy = CH / rect.height;
-    const px = (e.clientX - rect.left) * sx, py = (e.clientY - rect.top) * sy;
-    const game = gameRef.current; if (!game) return null;
-    let found: string|null = null;
-    game.chars.forEach((ch, code) => {
-      if (!found && Math.abs(px - ch.x) < 8 * SCALE && Math.abs(py - ch.y) < 10 * SCALE) found = code;
-    });
-    return found;
+    return [e.clientX - rect.left, e.clientY - rect.top];
   }, []);
 
-  const handleMove = useCallback((e: React.MouseEvent) => {
-    const code = findChar(e);
-    setHovered(code);
-    if (code) setTipPos({ x: e.clientX, y: e.clientY });
+  const findChar = useCallback((e: React.MouseEvent) => {
+    const [sx, sy] = getCanvasCoords(e);
+    const cam = cameraRef.current;
+    const [wx, wy] = screenToWorld(cam, sx, sy);
+    const game = gameRef.current;
+    if (!game) return null;
+    let found: string | null = null;
+    game.chars.forEach((ch, code) => {
+      if (!found && Math.abs(wx - ch.x) < 8 * SCALE && Math.abs(wy - ch.y) < 10 * SCALE) found = code;
+    });
+    return found;
+  }, [getCanvasCoords]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) {
+      const [sx, sy] = getCanvasCoords(e);
+      startDrag(cameraRef.current, sx, sy);
+    }
+  }, [getCanvasCoords]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const cam = cameraRef.current;
+    if (cam.isDragging) {
+      const [sx, sy] = getCanvasCoords(e);
+      updateDrag(cam, sx, sy);
+      setHovered(null);
+    } else {
+      const code = findChar(e);
+      setHovered(code);
+      if (code) setTipPos({ x: e.clientX, y: e.clientY });
+    }
+  }, [getCanvasCoords, findChar]);
+
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    const cam = cameraRef.current;
+    const wasDragging = cam.isDragging;
+    const dragDist = Math.abs(e.clientX - cam.dragStartX - (canvasRef.current?.getBoundingClientRect().left ?? 0)) +
+                     Math.abs(e.clientY - cam.dragStartY - (canvasRef.current?.getBoundingClientRect().top ?? 0));
+    endDrag(cam);
+    // Only click if didn't drag significantly
+    if (!wasDragging || dragDist < 5) {
+      const code = findChar(e);
+      if (code) propsRef.current.onSelectAgent(code);
+    }
   }, [findChar]);
 
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    const code = findChar(e);
-    if (code) propsRef.current.onSelectAgent(code);
-  }, [findChar]);
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const [sx, sy] = getCanvasCoords(e);
+    applyZoom(cameraRef.current, e.deltaY, sx, sy);
+  }, [getCanvasCoords]);
 
   const hp = hovered ? getPersona(hovered) : null;
   const hr = hovered ? runtimeMap[hovered] : undefined;
 
-  // 도구 아이콘/작업 상태 한국어 라벨
   const getWorkLabel = (rt: AgentRuntimeStatus | undefined): string => {
     if (!rt || rt.status !== 'working') return '대기';
     const ws = getWorkState(rt);
@@ -817,67 +745,69 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent }: Pix
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* 헤더 */}
+      {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-1.5"
-        style={{background:'linear-gradient(90deg,#0f0f14,#16161d,#0f0f14)',borderBottom:'2px solid #1e1e26'}}>
-        <span style={{fontSize:11,fontFamily:'monospace',fontWeight:800,color:'#e4e4e7',letterSpacing:2}}>
+        style={{ background: 'linear-gradient(90deg,#0f0f14,#16161d,#0f0f14)', borderBottom: '2px solid #1e1e26' }}>
+        <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 800, color: '#e4e4e7', letterSpacing: 2 }}>
           JINXUS CORP.
         </span>
-        <div className="flex gap-2" style={{fontSize:9,fontFamily:'monospace'}}>
-          <span style={{color:'#a1a1aa'}}>{hiredSet.size}명</span>
-          {Object.values(runtimeMap).filter(r=>r.status==='working').length > 0 && (
-            <span style={{color:'#93c5fd'}}>{Object.values(runtimeMap).filter(r=>r.status==='working').length}명 작업중</span>
+        <div className="flex gap-2" style={{ fontSize: 9, fontFamily: 'monospace' }}>
+          <span style={{ color: '#a1a1aa' }}>{hiredSet.size}명</span>
+          {Object.values(runtimeMap).filter(r => r.status === 'working').length > 0 && (
+            <span style={{ color: '#93c5fd' }}>{Object.values(runtimeMap).filter(r => r.status === 'working').length}명 작업중</span>
           )}
         </div>
       </div>
 
-      {/* 캔버스 */}
-      <div className="flex-1 min-h-0 flex items-center justify-center bg-[#08080c] overflow-hidden">
+      {/* Canvas */}
+      <div ref={containerRef} className="flex-1 min-h-0 flex items-center justify-center bg-[#08080c] overflow-hidden">
         <canvas
           ref={canvasRef}
-          width={CW} height={CH}
-          onMouseMove={handleMove}
-          onMouseLeave={() => setHovered(null)}
-          onClick={handleClick}
-          style={{
-            maxWidth:'100%', maxHeight:'100%', objectFit:'contain',
-            imageRendering:'pixelated', cursor: hovered ? 'pointer' : 'default',
-          }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={() => { setHovered(null); endDrag(cameraRef.current); }}
+          onWheel={handleWheel}
+          style={{ cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab' }}
         />
       </div>
 
-      {/* 툴팁 */}
+      {/* Tooltip */}
       {hovered && hp && (
         <div className="fixed z-50 pointer-events-none"
-          style={{left:tipPos.x+12,top:tipPos.y-10,padding:'6px 10px',
-            background:'#1e1e2e',border:'1px solid #3f3f46',borderRadius:6,
-            boxShadow:'0 4px 16px rgba(0,0,0,0.6)',maxWidth:200}}>
-          <p style={{fontSize:11,color:'#fff',fontWeight:600}}>{hp.emoji} {getDisplayName(hovered)}</p>
-          <p style={{fontSize:9,color:'#a1a1aa',marginBottom:3}}>{getRole(hovered)}</p>
-          <div className="flex items-center gap-1" style={{fontSize:9}}>
-            <span style={{width:6,height:6,borderRadius:'50%',display:'inline-block',
-              background:hr?.status==='working'?'#3b82f6':hr?.status==='error'?'#ef4444':'#22c55e'}} />
-            <span style={{color:hr?.status==='working'?'#93c5fd':hr?.status==='error'?'#fca5a5':'#86efac'}}>
-              {hr?.status==='working' ? getWorkLabel(hr) : hr?.status==='error' ? '오류' : '대기'}
+          style={{
+            left: tipPos.x + 12, top: tipPos.y - 10, padding: '6px 10px',
+            background: '#1e1e2e', border: '1px solid #3f3f46', borderRadius: 6,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.6)', maxWidth: 200,
+          }}>
+          <p style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>{hp.emoji} {getDisplayName(hovered)}</p>
+          <p style={{ fontSize: 9, color: '#a1a1aa', marginBottom: 3 }}>{getRole(hovered)}</p>
+          <div className="flex items-center gap-1" style={{ fontSize: 9 }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
+              background: hr?.status === 'working' ? '#3b82f6' : hr?.status === 'error' ? '#ef4444' : '#22c55e',
+            }} />
+            <span style={{ color: hr?.status === 'working' ? '#93c5fd' : hr?.status === 'error' ? '#fca5a5' : '#86efac' }}>
+              {hr?.status === 'working' ? getWorkLabel(hr) : hr?.status === 'error' ? '오류' : '대기'}
             </span>
           </div>
-          {hr?.status==='working' && hr.current_task && (
-            <p style={{fontSize:8,color:'#93c5fd',marginTop:3,wordBreak:'break-all'}}>작업: {hr.current_task}</p>
+          {hr?.status === 'working' && hr.current_task && (
+            <p style={{ fontSize: 8, color: '#93c5fd', marginTop: 3, wordBreak: 'break-all' }}>작업: {hr.current_task}</p>
           )}
-          {hr?.current_tools && hr.current_tools.length>0 && (
-            <p style={{fontSize:7,color:'#71717a',marginTop:2}}>도구: {hr.current_tools.join(', ')}</p>
+          {hr?.current_tools && hr.current_tools.length > 0 && (
+            <p style={{ fontSize: 7, color: '#71717a', marginTop: 2 }}>도구: {hr.current_tools.join(', ')}</p>
           )}
           {hr?.current_node && (
-            <p style={{fontSize:7,color:'#52525b',marginTop:1}}>노드: {hr.current_node}</p>
+            <p style={{ fontSize: 7, color: '#52525b', marginTop: 1 }}>노드: {hr.current_node}</p>
           )}
-          <p style={{fontSize:7,color:'#52525b',marginTop:3}}>클릭하여 대화</p>
+          <p style={{ fontSize: 7, color: '#52525b', marginTop: 3 }}>클릭하여 대화</p>
         </div>
       )}
 
-      {/* 하단 안내 */}
+      {/* Footer */}
       <div className="flex-shrink-0 px-3 py-1 text-center"
-        style={{fontSize:8,color:'#3f3f46',fontFamily:'monospace',background:'#0a0a0e',borderTop:'1px solid #1e1e26'}}>
-        캐릭터를 클릭하면 직접 대화할 수 있습니다 · 작업 상태에 따라 애니메이션이 변합니다
+        style={{ fontSize: 8, color: '#3f3f46', fontFamily: 'monospace', background: '#0a0a0e', borderTop: '1px solid #1e1e26' }}>
+        드래그로 이동 · 스크롤로 줌 · 캐릭터 클릭으로 대화
       </div>
     </div>
   );

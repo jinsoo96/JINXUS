@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { devNotesApi, type DevNote } from '@/lib/api';
 import {
   FileText, Plus, Trash2, Edit3, Check, X,
-  RefreshCw, Loader2, Calendar, Clock,
+  RefreshCw, Loader2, Calendar, Clock, BookOpen,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -16,11 +16,15 @@ const DEFAULT_TEMPLATE = (title: string) => `# ${title}
 **날짜:** ${new Date().toISOString().slice(0, 10)}
 **작업자:** 직접 작성
 
-## 작업 내용
+## 업무 내용
 
 (여기에 내용 작성)
 
-## 변경 파일
+## 변경 파일 / 영향 범위
+
+-
+
+## 의존 시스템
 
 -
 `;
@@ -36,6 +40,8 @@ export default function NotesTab() {
   const [editMode, setEditMode] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const isUnsaved = editMode && editContent !== (selectedNote?.content || '');
 
   // 새 노트 생성
   const [showCreate, setShowCreate] = useState(false);
@@ -140,12 +146,12 @@ export default function NotesTab() {
     <div className="h-full flex gap-4 min-h-0">
 
       {/* ── 왼쪽: 노트 목록 ── */}
-      <div className="w-64 flex-shrink-0 flex flex-col gap-3">
+      <div className="w-48 md:w-64 flex-shrink-0 flex flex-col gap-3">
 
         {/* 헤더 */}
         <div className="flex items-center justify-between">
           <span className="text-sm font-semibold text-zinc-300">
-            개발 노트 ({notes.length})
+            업무 노트 ({notes.length})
           </span>
           <div className="flex items-center gap-1.5">
             <button
@@ -174,7 +180,7 @@ export default function NotesTab() {
           ) : notes.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 gap-2 text-zinc-600">
               <FileText size={28} />
-              <p className="text-xs">노트 없음</p>
+              <p className="text-xs">업무 노트 없음</p>
             </div>
           ) : (
             notes.map(note => (
@@ -211,9 +217,31 @@ export default function NotesTab() {
 
         {/* 새 노트 생성 모달 */}
         {showCreate && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-dark-card border border-dark-border rounded-2xl p-5 w-80">
-              <h3 className="text-sm font-semibold mb-3">새 노트</h3>
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+            role="dialog"
+            aria-modal="true"
+            aria-label="새 업무 노트 생성"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') { setShowCreate(false); setNewTitle(''); return; }
+              if (e.key !== 'Tab') return;
+              const modal = e.currentTarget.querySelector('[data-modal-content]') as HTMLElement | null;
+              if (!modal) return;
+              const focusable = modal.querySelectorAll<HTMLElement>(
+                'input, button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+              );
+              if (focusable.length === 0) return;
+              const first = focusable[0];
+              const last = focusable[focusable.length - 1];
+              if (e.shiftKey) {
+                if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+              } else {
+                if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+              }
+            }}
+          >
+            <div data-modal-content className="bg-dark-card border border-dark-border rounded-2xl p-5 w-80">
+              <h3 className="text-sm font-semibold mb-3">새 업무 노트</h3>
               <form onSubmit={handleCreate} className="space-y-3">
                 <input
                   autoFocus
@@ -221,6 +249,7 @@ export default function NotesTab() {
                   value={newTitle}
                   onChange={e => setNewTitle(e.target.value)}
                   placeholder="노트 제목..."
+                  aria-label="노트 제목"
                   className="w-full bg-zinc-900 border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"
                 />
                 <div className="flex gap-2">
@@ -250,8 +279,8 @@ export default function NotesTab() {
         {!selectedNote ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <FileText size={40} className="mx-auto mb-3 text-zinc-700" />
-              <p className="text-sm text-zinc-500">노트를 선택하거나</p>
+              <BookOpen size={40} className="mx-auto mb-3 text-zinc-700" />
+              <p className="text-sm text-zinc-500">업무 노트를 선택하거나</p>
               <p className="text-sm text-zinc-500">새 노트를 만드세요</p>
             </div>
           </div>
@@ -264,7 +293,15 @@ export default function NotesTab() {
             {/* 헤더 */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-dark-border bg-zinc-900/60 flex-shrink-0">
               <div className="flex-1 min-w-0">
-                <h2 className="text-sm font-semibold text-white truncate">{selectedNote.title}</h2>
+                <h2 className="text-sm font-semibold text-white truncate flex items-center gap-2">
+                  {selectedNote.title}
+                  {isUnsaved && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] rounded-full font-normal flex-shrink-0">
+                      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
+                      수정됨
+                    </span>
+                  )}
+                </h2>
                 <div className="flex items-center gap-3 mt-0.5">
                   {selectedNote.date && (
                     <span className="text-[10px] text-zinc-500 flex items-center gap-1">

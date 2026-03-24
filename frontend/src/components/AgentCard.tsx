@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { Bot, Loader2, AlertCircle, Wrench, ScrollText, ChevronDown, ChevronUp, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { Loader2, AlertCircle, Wrench, ScrollText, ChevronDown, ChevronUp, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { type AgentRuntimeStatus, logsApi, type TaskLog } from '@/lib/api';
 import type { AgentInfo } from '@/types';
-import { useAppStore } from '@/store/useAppStore';
 import { formatTimeWithSeconds } from '@/lib/utils';
+import { getDisplayName, getRole, getPersona } from '@/lib/personas';
 
 interface AgentCardProps {
   agent: AgentInfo;
@@ -18,6 +18,8 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
+
+  const persona = getPersona(agent.name);
 
   const getStatusColor = () => {
     if (!runtime) return 'bg-zinc-500';
@@ -37,23 +39,11 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
     }
   };
 
-  const getStatusIcon = () => {
-    if (!runtime) return <Bot size={16} />;
-    switch (runtime.status) {
-      case 'working': return <Loader2 size={16} className="animate-spin" />;
-      case 'error': return <AlertCircle size={16} />;
-      default: return <Bot size={16} />;
-    }
-  };
-
   const handleToggleLogs = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (showLogs) {
-      setShowLogs(false);
-      return;
-    }
+    if (showLogs) { setShowLogs(false); return; }
     setShowLogs(true);
-    if (logs.length > 0) return; // 이미 로드됨
+    if (logs.length > 0) return;
     setLogsLoading(true);
     try {
       const res = await logsApi.getLogs(agent.name, 10, 0);
@@ -65,12 +55,11 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
     }
   };
 
-  const formatAgentName = (name: string) => name.replace('JX_', '').replace('JINXUS_', '');
-  const getAgentRole = useAppStore((s) => s.getAgentRole);
-
   return (
     <div
       onClick={onSelect}
+      role="button"
+      aria-label={`${getDisplayName(agent.name)} 에이전트 상태`}
       className={`rounded-xl border transition-all cursor-pointer ${
         selected
           ? 'bg-primary/10 border-primary'
@@ -81,44 +70,46 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
         {/* 헤더 */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <div className={`p-1.5 rounded-md ${getStatusBgColor()}`}>
-              {getStatusIcon()}
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-xl ${getStatusBgColor()}`}>
+              {persona?.emoji ?? '🤖'}
             </div>
             <div>
-              <h3 className="font-semibold text-white">{formatAgentName(agent.name)}</h3>
-              <p className="text-xs text-zinc-500">{getAgentRole(agent.name)}</p>
+              <h3 className="font-semibold text-white text-sm">{getDisplayName(agent.name)}</h3>
+              <p className="text-[11px] text-zinc-500">{getRole(agent.name)}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${getStatusColor()} ${runtime?.status === 'working' ? 'shadow-[0_0_5px_rgba(59,130,246,0.7)]' : ''}`} />
-          </div>
+          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${getStatusColor()} ${runtime?.status === 'working' ? 'shadow-[0_0_5px_rgba(59,130,246,0.7)] animate-pulse' : ''}`} />
         </div>
 
-        {/* 작업 중 상태 */}
+        {/* 작업 중 */}
         {runtime?.status === 'working' && (
           <div className="mb-3 p-2 bg-blue-500/10 rounded-lg border border-blue-500/20">
-            <p className="text-xs text-blue-300 truncate">{runtime.current_task || '작업 중...'}</p>
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <Loader2 size={10} className="animate-spin text-blue-400 flex-shrink-0" />
+              <p className="text-xs text-blue-300 truncate">{runtime.current_task || '작업 중...'}</p>
+            </div>
             {runtime.current_node && (
-              <p className="text-xs text-blue-400/70 mt-0.5">단계: {runtime.current_node}</p>
+              <p className="text-[10px] text-blue-400/60 pl-4 truncate">단계: {runtime.current_node}</p>
             )}
           </div>
         )}
 
-        {/* 에러 상태 */}
+        {/* 에러 */}
         {runtime?.status === 'error' && (
           <div className="mb-3 p-2 bg-red-500/10 rounded-lg border border-red-500/20">
-            <p className="text-xs text-red-300 truncate">{runtime.error_message || '오류 발생'}</p>
+            <div className="flex items-center gap-1.5">
+              <AlertCircle size={10} className="text-red-400 flex-shrink-0" />
+              <p className="text-xs text-red-300 truncate">{runtime.error_message || '오류 발생'}</p>
+            </div>
           </div>
         )}
 
-        {/* 도구 */}
+        {/* 사용 중 도구 */}
         {runtime?.current_tools && runtime.current_tools.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-1">
-            <span className="text-xs text-zinc-500 flex items-center gap-1 mr-1">
-              <Wrench size={10} />
-            </span>
+            <Wrench size={10} className="text-zinc-500 mt-0.5" />
             {runtime.current_tools.map((tool) => (
-              <span key={tool} className="px-1.5 py-0.5 text-xs bg-zinc-700/60 rounded text-zinc-300">
+              <span key={tool} className="px-1.5 py-0.5 text-[10px] bg-zinc-700/60 rounded text-zinc-300">
                 {tool}
               </span>
             ))}
@@ -143,7 +134,7 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
         </div>
       </div>
 
-      {/* 로그 토글 버튼 */}
+      {/* 로그 토글 */}
       <button
         onClick={handleToggleLogs}
         className={`w-full flex items-center justify-between px-4 py-2 text-xs border-t transition-colors ${
@@ -152,14 +143,10 @@ export default function AgentCard({ agent, runtime, onSelect, selected }: AgentC
             : 'border-dark-border text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
         }`}
       >
-        <span className="flex items-center gap-1.5">
-          <ScrollText size={12} />
-          최근 로그
-        </span>
+        <span className="flex items-center gap-1.5"><ScrollText size={12} />최근 로그</span>
         {showLogs ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
 
-      {/* 로그 패널 */}
       {showLogs && (
         <div className="border-t border-dark-border bg-zinc-900/50 rounded-b-xl max-h-48 overflow-y-auto">
           {logsLoading ? (

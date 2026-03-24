@@ -52,11 +52,11 @@ async def memory_stats():
         total_tasks = await memory.get_total_tasks_count()
 
         # 에이전트별 메모리 통계
-        from jinxus.memory.long_term import AGENT_COLLECTIONS, get_long_term_memory
+        from jinxus.memory.long_term import _DEFAULT_AGENTS, get_long_term_memory
         long_term = get_long_term_memory()
 
         collection_stats = {}
-        for agent_name in AGENT_COLLECTIONS.keys():
+        for agent_name in _DEFAULT_AGENTS:
             stats = long_term.get_collection_stats(agent_name)
             collection_stats[agent_name] = stats
 

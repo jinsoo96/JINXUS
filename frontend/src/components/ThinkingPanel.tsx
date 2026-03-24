@@ -20,8 +20,9 @@ interface ThinkingPanelProps {
   isActive: boolean;
   taskId: string | null;
   onStop: () => void;
-  onClose: () => void;
+  onClose?: () => void;
   messages: ChatMessage[];
+  embedded?: boolean;
 }
 
 export default function ThinkingPanel({
@@ -31,6 +32,7 @@ export default function ThinkingPanel({
   onStop,
   onClose,
   messages,
+  embedded = false,
 }: ThinkingPanelProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -129,21 +131,27 @@ export default function ThinkingPanel({
   // 실시간 로그가 있거나 히스토리 메시지가 있으면 패널 표시
   const hasContent = logs.length > 0 || isActive || assistantMessages.length > 0;
 
+  const containerClass = embedded
+    ? 'w-full bg-dark-card flex flex-col h-full'
+    : 'w-96 border-l border-dark-border bg-dark-card flex flex-col h-full';
+
   if (!hasContent) {
     return (
-      <div className="w-96 border-l border-dark-border bg-dark-card flex flex-col h-full">
-        <div className="flex items-center justify-between p-3 border-b border-dark-border">
-          <div className="flex items-center gap-2">
-            <Brain size={18} className="text-zinc-400" />
-            <span className="font-medium text-sm">실행 로그</span>
+      <div className={containerClass}>
+        {!embedded && (
+          <div className="flex items-center justify-between p-3 border-b border-dark-border">
+            <div className="flex items-center gap-2">
+              <Brain size={18} className="text-zinc-400" />
+              <span className="font-medium text-sm">실행 로그</span>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
+            >
+              <X size={16} />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
-          >
-            <X size={16} />
-          </button>
-        </div>
+        )}
         <div className="flex-1 flex items-center justify-center p-4">
           <p className="text-xs text-zinc-500 text-center">대화를 시작하면 실행 흐름이 여기에 표시됩니다</p>
         </div>
@@ -152,38 +160,52 @@ export default function ThinkingPanel({
   }
 
   return (
-    <div className="w-96 border-l border-dark-border bg-dark-card flex flex-col h-full">
-      {/* 헤더 */}
-      <div className="flex items-center justify-between p-3 border-b border-dark-border">
-        <div className="flex items-center gap-2">
-          <Brain size={18} className={isActive ? 'text-primary animate-pulse' : 'text-zinc-400'} />
-          <span className="font-medium text-sm">실행 로그</span>
-          {isActive && (
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-          )}
-        </div>
-        <div className="flex items-center gap-1">
+    <div className={containerClass}>
+      {/* 헤더 — embedded 모드에서는 간소화 */}
+      {embedded ? (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-dark-border">
+          {isActive && <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />}
           <button
             onClick={() => setViewMode(viewMode === 'terminal' ? 'summary' : 'terminal')}
-            className={`p-1 rounded transition-colors ${viewMode === 'terminal' ? 'bg-zinc-700 text-green-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
+            className={`p-1 rounded transition-colors text-xs ${viewMode === 'terminal' ? 'bg-zinc-700 text-green-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
             title={viewMode === 'terminal' ? '요약 뷰' : '터미널 뷰'}
           >
-            {viewMode === 'terminal' ? <Terminal size={14} /> : <Eye size={14} />}
+            {viewMode === 'terminal' ? <Terminal size={12} /> : <Eye size={12} />}
           </button>
-          <button
-            onClick={() => setIsMinimized(!isMinimized)}
-            className="p-1 hover:bg-zinc-800 rounded transition-colors"
-          >
-            {isMinimized ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
-          >
-            <X size={16} />
-          </button>
+          <span className="text-[10px] text-zinc-500">{logs.length}개 이벤트</span>
         </div>
-      </div>
+      ) : (
+        <div className="flex items-center justify-between p-3 border-b border-dark-border">
+          <div className="flex items-center gap-2">
+            <Brain size={18} className={isActive ? 'text-primary animate-pulse' : 'text-zinc-400'} />
+            <span className="font-medium text-sm">실행 로그</span>
+            {isActive && (
+              <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setViewMode(viewMode === 'terminal' ? 'summary' : 'terminal')}
+              className={`p-1 rounded transition-colors ${viewMode === 'terminal' ? 'bg-zinc-700 text-green-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
+              title={viewMode === 'terminal' ? '요약 뷰' : '터미널 뷰'}
+            >
+              {viewMode === 'terminal' ? <Terminal size={14} /> : <Eye size={14} />}
+            </button>
+            <button
+              onClick={() => setIsMinimized(!isMinimized)}
+              className="p-1 hover:bg-zinc-800 rounded transition-colors"
+            >
+              {isMinimized ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 로그 영역 */}
       {!isMinimized && (

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useCallback, memo, useMemo } from 'react';
 import { channelApi, agentApi, type PendingApproval, type AgentRuntimeStatus } from '@/lib/api';
-import { getChannelAgents, getPersona, getDisplayName, getRole, sortByRank } from '@/lib/personas';
+import { getChannelAgents, getPersona, getDisplayName, getRole, sortByRank, getChannelList } from '@/lib/personas';
 import { useAppStore } from '@/store/useAppStore';
 import {
   matrixLogin, matrixSync, matrixSend, getMatrixHS,
@@ -12,19 +12,12 @@ import {
 } from '@/lib/matrix';
 import { Send, CheckCircle, XCircle, Edit2, AlertCircle, ChevronRight, Building2, Users, Wifi, WifiOff, Trash2 } from 'lucide-react';
 
-// ── 채널 설정 (백엔드 ChannelName enum 동기화) ───────────────────────────
+// ── 채널 설정 (personas.ts TEAM_CONFIG에서 자동 생성) ────────────────────
 
-const CHANNELS = [
-  { id: 'general',     label: '전사 공지',   icon: '🏢', description: '업무 수여 및 전사 보고' },
-  { id: 'engineering', label: '개발팀',      icon: '💻', description: '개발·구현·인프라·QA' },
-  { id: 'research',    label: '리서치팀',    icon: '🔬', description: '기술 조사·시장 분석·팩트체크' },
-  { id: 'marketing',   label: '마케팅팀',    icon: '📣', description: '최신 기법·GitHub 트렌드·아이디어 발굴' },
-  { id: 'ops',         label: '운영팀',      icon: '🖥️', description: '시스템 운영·모니터링·배포' },
-  { id: 'planning',    label: '전략기획',    icon: '📐', description: '제품 기획·로드맵·전략 수립' },
-] as const;
+const CHANNELS = getChannelList();
 
-type ChannelId = typeof CHANNELS[number]['id'];
-const CHANNEL_IDS = CHANNELS.map(c => c.id) as ChannelId[];
+type ChannelId = string;
+const CHANNEL_IDS = CHANNELS.map(c => c.id);
 
 // ── Matrix 메시지 → 내부 메시지 타입 ─────────────────────────────────────
 
@@ -198,15 +191,15 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [isActive]);
   const [activeChannel, setActiveChannel] = useState<ChannelId>('general');
-  const [messages, setMessages] = useState<Record<ChannelId, ChatMsg[]>>({
-    general: [], planning: [], engineering: [], research: [], ops: [], marketing: [],
-  });
+  const [messages, setMessages] = useState<Record<ChannelId, ChatMsg[]>>(
+    Object.fromEntries(CHANNELS.map(c => [c.id, []])) as Record<ChannelId, ChatMsg[]>
+  );
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [unread, setUnread] = useState<Record<ChannelId, number>>({
-    general: 0, planning: 0, engineering: 0, research: 0, ops: 0, marketing: 0,
-  });
+  const [unread, setUnread] = useState<Record<ChannelId, number>>(
+    Object.fromEntries(CHANNELS.map(c => [c.id, 0])) as Record<ChannelId, number>
+  );
   const [matrixStatus, setMatrixStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [retryCount, setRetryCount] = useState(0);
   // 멤버 패널 리사이즈
@@ -414,6 +407,42 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, retryCount]);
 
+  // ── 내부 채널 SSE 구독 (Matrix와 병렬) ─────────────────────────────
+  useEffect(() => {
+    if (!isActive) return;
+    const onData = (data: { type: string; message?: import('@/lib/api').ChannelMessage }) => {
+      if (data.type !== 'message' || !data.message) return;
+      const m = data.message;
+      const channel = m.channel as ChannelId;
+      if (!CHANNEL_IDS.includes(channel)) return;
+      const cleared = clearedAtRef.current;
+      if (cleared[channel] && m.created_at <= cleared[channel]) return;
+
+      const agentCode = (m.metadata?.agent_code as string) ?? '';
+      const persona = agentCode ? getPersona(agentCode) : undefined;
+      const msg: ChatMsg = {
+        id: `sse-${m.id}`,
+        channel,
+        fromName: m.from_name,
+        emoji: persona?.emoji ?? (m.role === 'user' ? '👤' : '🤖'),
+        content: m.content,
+        isUser: m.role === 'user',
+        createdAt: m.created_at,
+      };
+      setMessages(prev => {
+        const existing = prev[channel] ?? [];
+        if (existing.some(x => x.id === msg.id)) return prev;
+        return { ...prev, [channel]: [...existing, msg] };
+      });
+      if (channel !== activeChannelRef.current && !msg.isUser) {
+        setUnread(prev => ({ ...prev, [channel]: (prev[channel] ?? 0) + 1 }));
+      }
+    };
+    const abort = new AbortController();
+    channelApi.streamChannel(onData, abort.signal);
+    return () => abort.abort();
+  }, [isActive]);
+
   // activeChannel ref 동기화
   useEffect(() => {
     activeChannelRef.current = activeChannel;
@@ -437,11 +466,9 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
       const roomId = channelToRoomRef.current[activeChannel];
       if (session && roomId) {
         await matrixSend(session.accessToken, roomId, text);
-        // Matrix sync가 자신의 메시지를 다시 받아오므로 별도 추가 불필요
-      } else {
-        // fallback: JINXUS 내부 채널로 전송 (Matrix 룸 아직 없을 때)
-        await channelApi.postMessage(text, activeChannel);
       }
+      // JINXUS 내부 채널로도 전송 (AgentReactor 트리거)
+      await channelApi.postMessage(text, activeChannel);
     } catch (e) {
       console.error('메시지 전송 실패', e);
     } finally {
@@ -614,12 +641,19 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
           <div className="flex gap-2 items-end bg-dark-card border border-dark-border rounded-xl px-3 py-2 focus-within:border-blue-500 transition-colors">
             <textarea
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => {
+                setInput(e.target.value);
+                // 자동 높이 조절
+                const el = e.target;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+              }}
               onKeyDown={handleKeyDown}
               placeholder={`${activeChannelInfo.label}에 메시지 보내기...`}
               aria-label={`${activeChannelInfo.label} 메시지 입력`}
-              className="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 resize-none outline-none min-h-[20px] max-h-[120px]"
+              className="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 resize-none outline-none min-h-[20px] max-h-[200px]"
               rows={1}
+              style={{ overflow: 'hidden' }}
             />
             <button
               onClick={handleSend}

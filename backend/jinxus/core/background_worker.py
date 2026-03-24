@@ -108,6 +108,7 @@ class BackgroundWorker:
         self._event_subscribers: dict[str, list[asyncio.Queue]] = {}
         # 이벤트 버퍼 (구독 전 발생한 이벤트 보관, 구독 시 replay)
         self._event_buffer: dict[str, list[dict]] = {}
+        self._event_lock = asyncio.Lock()  # 이벤트 버퍼/구독자 동시 접근 보호
         _EVENT_BUFFER_MAX = 100  # 작업당 최대 버퍼 수
         # v1.7.0: 체이닝 대기 작업 (depends_on task_id -> [waiting task_ids])
         self._waiting_tasks: dict[str, list[str]] = {}
@@ -411,53 +412,56 @@ class BackgroundWorker:
 
         return attachments[:5]
 
-    def subscribe_events(self, task_id: str) -> asyncio.Queue:
+    async def subscribe_events(self, task_id: str) -> asyncio.Queue:
         """작업 이벤트 구독 (SSE 스트림용)
 
         구독 전 발생한 이벤트가 버퍼에 있으면 자동 replay.
         """
         q: asyncio.Queue = asyncio.Queue()
-        if task_id not in self._event_subscribers:
-            self._event_subscribers[task_id] = []
-        self._event_subscribers[task_id].append(q)
+        async with self._event_lock:
+            if task_id not in self._event_subscribers:
+                self._event_subscribers[task_id] = []
+            self._event_subscribers[task_id].append(q)
 
-        # 버퍼된 이벤트 replay (구독 전 발생한 이벤트)
-        for buffered in self._event_buffer.get(task_id, []):
-            try:
-                q.put_nowait(buffered)
-            except asyncio.QueueFull:
-                break
+            # 버퍼된 이벤트 replay (구독 전 발생한 이벤트)
+            for buffered in self._event_buffer.get(task_id, []):
+                try:
+                    q.put_nowait(buffered)
+                except asyncio.QueueFull:
+                    break
 
         return q
 
-    def unsubscribe_events(self, task_id: str, q: asyncio.Queue):
+    async def unsubscribe_events(self, task_id: str, q: asyncio.Queue):
         """이벤트 구독 해제"""
-        subs = self._event_subscribers.get(task_id, [])
-        if q in subs:
-            subs.remove(q)
-        if not subs:
-            self._event_subscribers.pop(task_id, None)
-            # 마지막 구독자 해제 시 버퍼도 정리
-            self._event_buffer.pop(task_id, None)
+        async with self._event_lock:
+            subs = self._event_subscribers.get(task_id, [])
+            if q in subs:
+                subs.remove(q)
+            if not subs:
+                self._event_subscribers.pop(task_id, None)
+                # 마지막 구독자 해제 시 버퍼도 정리
+                self._event_buffer.pop(task_id, None)
 
     async def _publish_progress(self, task_id: str, event_type: str, data: dict):
         """인메모리 이벤트 큐로 진행 상황 전파 + 버퍼 저장"""
         event = {"event": event_type, "task_id": task_id, **data}
 
-        # 버퍼에 저장 (구독자 없을 때 유실 방지)
-        if task_id not in self._event_buffer:
-            self._event_buffer[task_id] = []
-        buf = self._event_buffer[task_id]
-        buf.append(event)
-        if len(buf) > 100:
-            buf[:] = buf[-100:]
+        async with self._event_lock:
+            # 버퍼에 저장 (구독자 없을 때 유실 방지)
+            if task_id not in self._event_buffer:
+                self._event_buffer[task_id] = []
+            buf = self._event_buffer[task_id]
+            buf.append(event)
+            if len(buf) > 100:
+                buf[:] = buf[-100:]
 
-        # 구독자에게 전달
-        for q in self._event_subscribers.get(task_id, []):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull as e:
-                logger.debug(f"[BackgroundWorker] 이벤트 큐 가득 참, 이벤트 드롭: {e}")
+            # 구독자에게 전달
+            for q in self._event_subscribers.get(task_id, []):
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull as e:
+                    logger.debug(f"[BackgroundWorker] 이벤트 큐 가득 참, 이벤트 드롭: {e}")
 
     async def _trigger_dependent_tasks(self, completed_task_id: str):
         """체이닝: 선행 작업 완료 시 조건부 분기로 대기 작업 실행

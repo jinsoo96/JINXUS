@@ -183,7 +183,7 @@ class SelfModifier(JinxTool):
         "PROJECT_ROOT(JINXUS 자기 수정) 및 WORKSPACE_ROOT(/home/jinsookim) 내부 경로 허용. "
         "Python(AST)/TS·JS(esbuild)/Rust(rustfmt)/JSON 문법 검증 후 쓰기. "
         "여러 파일 병렬 쓰기 지원(write_files). "
-        "개발 작업 완료 후에는 반드시 docs/dev_notes/YYYY-MM-DD_제목.md 에 작업 노트를 작성할 것. "
+        "업무 완료 후에는 반드시 docs/dev_notes/YYYY-MM-DD_제목.md 에 업무 노트를 작성할 것 (의존 시스템·영향 파일 포함). "
         "actions: list_source, read_file, write_file, write_files, "
         "validate_syntax, restart_backend, git_status, git_commit"
     )

@@ -148,6 +148,12 @@ class GitHubGraphQL(JinxTool):
         """GraphQL 작업 실행"""
         self._start_timer()
 
+        if isinstance(input_data, str):
+            import json as _json
+            try:
+                input_data = _json.loads(input_data)
+            except Exception:
+                return ToolResult(success=False, output=None, error=f"input must be dict, got str: {input_data[:100]}", duration_ms=self._get_duration_ms())
         action = input_data.get("action")
         if not action:
             return ToolResult(

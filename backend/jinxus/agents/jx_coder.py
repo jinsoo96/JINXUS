@@ -142,10 +142,17 @@ JSON으로 답변:
             )
             text = response.content[0].text
 
-            # JSON 추출
+            # JSON 추출 (LLM 출력의 깨진 JSON 복구 시도)
             match = re.search(r'\{[\s\S]*\}', text)
             if match:
-                result = json.loads(match.group())
+                raw = match.group()
+                try:
+                    result = json.loads(raw)
+                except json.JSONDecodeError:
+                    # 흔한 오류 복구: trailing comma, 한국어 주석 등
+                    cleaned = re.sub(r',\s*([}\]])', r'\1', raw)  # trailing comma 제거
+                    cleaned = re.sub(r'//.*', '', cleaned)  # 주석 제거
+                    result = json.loads(cleaned)
                 return result
         except Exception as e:
             logger.warning(f"[JX_CODER] 작업 분해 실패, 직접 처리: {e}")
@@ -174,14 +181,17 @@ JSON으로 답변:
         if self._progress_callback:
             specialist._progress_callback = self._progress_callback
 
-        # 팀 진행 이벤트
-        await self._report_progress(f"[{agent_name}] 작업 시작", agent_name=agent_name)
+        # 전문가 시작 이벤트
+        await self._report_progress(
+            instruction[:100], agent_name=agent_name, event_type="specialist_started"
+        )
 
         try:
             result = await specialist.run(instruction, context)
             status = "완료" if result.get("success") else "실패"
+            output_preview = (result.get("output", "") or "")[:100]
             await self._report_progress(
-                f"[{agent_name}] {status}", agent_name=agent_name
+                f"{status}: {output_preview}", agent_name=agent_name, event_type="specialist_done"
             )
 
             # 전문가 실패 시 직접 처리 fallback
@@ -437,12 +447,7 @@ JSON으로 답변:
         try:
             executor = self._get_executor()
 
-            tool_cb = None
-            if self._progress_callback:
-                cb = self._progress_callback
-                async def tool_cb(tool_name: str, status: str):
-                    if status == "calling":
-                        await cb(f"🔧 [{self.name}] 수정 중: {tool_name}")
+            tool_cb = self._make_tool_callback()
 
             fix_result = await executor.execute(
                 instruction=arbitrate_prompt,
@@ -665,12 +670,7 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
 
             context = f"{memory_str}\n{error_context}" if memory_str or error_context else None
 
-            tool_cb = None
-            if self._progress_callback:
-                cb = self._progress_callback
-                async def tool_cb(tool_name: str, status: str):
-                    if status == "calling":
-                        await cb(f"🔧 [{self.name}] {tool_name} 호출 중...")
+            tool_cb = self._make_tool_callback()
 
             result = await executor.execute(
                 instruction=instruction,
@@ -950,11 +950,18 @@ JSON으로 답해: {{"mcp": "yes/no", "complex": "yes/no"}}"""
                     "exit_code": -1,
                 }
 
-    async def _report_progress(self, detail: str, agent_name: str = None):
-        """SSE 프로그레스 콜백"""
+    async def _report_progress(self, detail: str, agent_name: str = None, event_type: str = "progress"):
+        """SSE 프로그레스 콜백
+
+        event_type: "progress" | "specialist_started" | "specialist_done"
+        """
         if self._progress_callback:
             try:
                 prefix = f"[{agent_name or self.name}]"
-                await self._progress_callback(f"{prefix} {detail}")
+                # 구조화된 이벤트 포맷: {{TYPE:agent}} detail
+                if event_type != "progress":
+                    await self._progress_callback(f"{{{{{event_type}:{agent_name or self.name}}}}} {detail}")
+                else:
+                    await self._progress_callback(f"{prefix} {detail}")
             except Exception as e:
                 logger.debug(f"[JX_CODER] 프로그레스 콜백 실패: {e}")

@@ -1,6 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  // dev 서버에 접근 허용할 외부 오리진 (Tailscale, 커스텀 도메인)
+  allowedDevOrigins: [
+    'jinxus.js-96.com',
+    '100.75.83.105',
+    '192.168.0.102',
+  ],
   async headers() {
     return [
       {
@@ -14,7 +19,7 @@ const nextConfig = {
       {
         source: '/_next/static/:path*',
         headers: [
-          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
         ],
       },
       {
@@ -31,6 +36,10 @@ const nextConfig = {
       {
         source: '/api/:path*',
         destination: `${apiUrl}/:path*`,
+      },
+      {
+        source: '/_matrix/:path*',
+        destination: 'http://localhost:8008/_matrix/:path*',
       },
     ];
   },

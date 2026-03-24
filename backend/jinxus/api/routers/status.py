@@ -48,7 +48,7 @@ async def get_system_status():
 async def clear_completed_tasks():
     """완료된 작업 로그 전체 삭제"""
     memory = get_jinx_memory()
-    count = await memory.meta.clear_all_logs()
+    count = await memory._meta.clear_all_logs()
     return {"success": True, "deleted": count}
 
 

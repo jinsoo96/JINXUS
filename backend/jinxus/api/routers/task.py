@@ -495,7 +495,7 @@ async def stream_task_progress(task_id: str):
                 return
 
         # 이벤트 큐 구독 (BackgroundWorker의 실제 task_id로)
-        event_queue = worker.subscribe_events(subscribe_id)
+        event_queue = await worker.subscribe_events(subscribe_id)
 
         try:
             while True:
@@ -517,7 +517,7 @@ async def stream_task_progress(task_id: str):
                         yield f"event: done\ndata: {json.dumps({'status': task['status'], 'result': task.get('result', '')[:2000]}, ensure_ascii=False)}\n\n"
                         return
         finally:
-            worker.unsubscribe_events(subscribe_id, event_queue)
+            await worker.unsubscribe_events(subscribe_id, event_queue)
 
     return StreamingResponse(
         event_generator(),
