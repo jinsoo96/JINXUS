@@ -15,6 +15,7 @@ from .docker_logs import router as docker_logs_router
 from .channel import router as channel_router
 from .matrix import router as matrix_router
 from .mission import router as mission_router
+from .command import router as command_router
 
 __all__ = [
     "chat_router",
@@ -34,4 +35,5 @@ __all__ = [
     "channel_router",
     "matrix_router",
     "mission_router",
+    "command_router",
 ]

@@ -1,9 +1,8 @@
 """Tool Policy Engine (B-6) — 에이전트별 도구 접근 정책
 
-각 에이전트가 사용할 수 있는 도구를 제한하여:
-1. 불필요한 도구 노출 방지 (LLM 혼동 감소)
-2. 보안 강화 (코드 실행 등 위험 도구 제한)
-3. 비용 절감 (불필요한 MCP 호출 방지)
+v2.1.0: 도구 제한 전면 해제 — 모든 에이전트가 모든 도구를 자율적으로 선택
+각 에이전트에게 모든 도구의 디스크립션을 제공하고, 에이전트가 스스로 판단해 필요한 도구를 사용.
+max_tool_rounds / max_continuations 만 유지하여 리소스 낭비 방지.
 """
 import logging
 from typing import Optional
@@ -12,327 +11,140 @@ logger = logging.getLogger(__name__)
 
 
 # 에이전트별 도구 정책 정의
-# whitelist: 허용 도구 패턴 (None = 모두 허용)
-# blacklist: 차단 도구 패턴 (whitelist보다 우선)
-# max_tool_rounds: 에이전트별 최대 도구 호출 횟수 (None = 기본값 사용)
+# whitelist: None = 모든 도구 허용
+# blacklist: [] = 차단 없음
+# max_tool_rounds: 에이전트별 최대 도구 호출 횟수 (리소스 제어)
+# max_continuations: 컨텍스트 이어받기 최대 횟수
 AGENT_POLICIES: dict[str, dict] = {
     "JX_RESEARCHER": {
-        "whitelist": [
-            "web_searcher", "naver_searcher", "weather",
-            "github_agent",
-            "pdf_reader", "image_analyzer",
-            "rss_reader", "community_monitor",
-            "data_processor",
-            "mcp:brave_search:*", "mcp:fetch:*",
-            "mcp:firecrawl:*", "mcp:playwright:*",
-            "mcp:context7:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*",  # deprecated MCP GitHub 서버 차단 → github_agent 사용
-        ],
-        "max_tool_rounds": 10,
-        "max_continuations": 2,
+        "whitelist": None,
+        "blacklist": [],
+        "max_tool_rounds": 15,
+        "max_continuations": 3,
     },
     "JX_CODER": {
-        "whitelist": [
-            "code_executor", "web_searcher",
-            "github_agent", "github_graphql",
-            "self_modifier",
-            "mcp:filesystem:*", "mcp:git:*",
-            "mcp:fetch:*",
-            "mcp:context7:*",
-        ],
-        "blacklist": [
-            "mcp:github:*",  # deprecated MCP GitHub 서버 차단 → github_agent 사용
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 15,
         "max_continuations": 3,
     },
     "JX_WRITER": {
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "pdf_reader", "image_analyzer",
-            "doc_generator", "data_processor",
-            "mcp:brave_search:*", "mcp:fetch:*",
-            "mcp:slack:*", "mcp:notion:*",
-            "mcp:firecrawl:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-        ],
-        "max_tool_rounds": 8,
-        "max_continuations": 1,
-    },
-    "JX_ANALYST": {
-        "whitelist": [
-            "web_searcher", "naver_searcher", "weather",
-            "pdf_reader", "image_analyzer",
-            "rss_reader", "stock_price", "community_monitor",
-            "data_processor", "doc_generator",
-            "mcp:brave_search:*", "mcp:fetch:*",
-            "mcp:notion:*", "mcp:sqlite:*",
-            "mcp:postgres:*",
-            "mcp:crypto-price:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
+    "JX_ANALYST": {
+        "whitelist": None,
+        "blacklist": [],
+        "max_tool_rounds": 12,
+        "max_continuations": 2,
+    },
     "JX_OPS": {
-        "whitelist": None,  # 모든 도구 허용 (운영 에이전트)
+        "whitelist": None,
         "blacklist": [],
         "max_tool_rounds": 15,
         "max_continuations": 2,
     },
     # === JX_CODER 하위 전문가 팀 ===
     "JX_FRONTEND": {
-        "whitelist": [
-            "code_executor",
-            "mcp:filesystem:*", "mcp:fetch:*",
-            "mcp:context7:*",
-        ],
-        "blacklist": [
-            "mcp:git:*", "mcp:github:*",  # git/github는 JX_CODER가 직접 처리
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 12,
         "max_continuations": 2,
     },
     "JX_BACKEND": {
-        "whitelist": [
-            "code_executor", "web_searcher", "github_agent",
-            "self_modifier",
-            "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
-            "mcp:context7:*",
-        ],
+        "whitelist": None,
         "blacklist": [],
         "max_tool_rounds": 15,
         "max_continuations": 2,
     },
     "JX_INFRA": {
-        "whitelist": [
-            "code_executor",
-            "self_modifier",
-            "mcp:filesystem:*", "mcp:git:*", "mcp:fetch:*",
-            "mcp:docker:*", "mcp:cloudflare:*",
-        ],
-        "blacklist": [
-            "mcp:github:*",  # GitHub 조작은 JX_CODER 경유
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 12,
         "max_continuations": 2,
     },
     "JX_REVIEWER": {
-        "whitelist": [
-            "github_agent", "github_graphql",  # GitHub 레포 읽기
-            "mcp:filesystem:*", "mcp:fetch:*",  # 로컬/원격 코드 읽기
-        ],
-        "blacklist": [
-            "code_executor",  # 리뷰어는 코드 실행 불가
-            "mcp:git:*", "mcp:github:*",  # deprecated MCP GitHub 차단
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 20,
         "max_continuations": 3,
     },
     "JX_TESTER": {
-        "whitelist": [
-            "code_executor",
-            "mcp:filesystem:*",  # 코드 읽기 + 테스트 실행
-        ],
-        "blacklist": [
-            "mcp:git:*", "mcp:github:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 15,
         "max_continuations": 2,
     },
     # === 임원진 (C-Suite) ===
     # JINXUS_CORE(CEO)는 정책 없음 → 전체 도구 허용 (오케스트레이터)
     "JX_CTO": {
-        # 기술 의사결정·아키텍처 리뷰·QA 게이트키퍼. 코드 직접 작성 안 함.
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "github_agent", "github_graphql",
-            "pdf_reader", "image_analyzer",
-            "doc_generator", "data_processor",
-            "mcp:filesystem:*", "mcp:fetch:*", "mcp:git:*",
-            "mcp:sequential-thinking:*",
-            "mcp:sentry:*",
-        ],
-        "blacklist": [
-            "code_executor",
-            "mcp:github:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 12,
         "max_continuations": 2,
     },
     "JX_COO": {
-        # 운영 총괄·프로세스 최적화·팀 간 조율·보고서
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "doc_generator", "data_processor",
-            "scheduler",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:notion:*", "mcp:slack:*",
-            "mcp:sqlite:*",
-            "mcp:sequential-thinking:*",
-            "mcp:memory:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     "JX_CFO": {
-        # 재무 분석·비용 최적화·예산·ROI·재무 보고서
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "stock_price",
-            "data_processor", "doc_generator",
-            "pdf_reader",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:sqlite:*",
-            "mcp:notion:*",
-            "mcp:sequential-thinking:*",
-            "mcp:crypto-price:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     # === 마케팅팀 ===
     "JX_MARKETING": {
-        # 마케팅 전략·캠페인 기획·브랜딩·그로스해킹
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "community_monitor", "rss_reader",
-            "data_processor", "doc_generator",
-            "image_analyzer",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:firecrawl:*",
-            "mcp:notion:*", "mcp:slack:*",
-            "mcp:sequential-thinking:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     "JS_PERSONA": {
-        # 진수 스타일 문서·퍼스널 브랜딩·카피라이팅
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "doc_generator",
-            "pdf_reader", "image_analyzer",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:notion:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 8,
         "max_continuations": 1,
     },
     "JX_SNS": {
-        # SNS 콘텐츠·바이럴·커뮤니티 모니터링·트렌드 분석
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "community_monitor", "rss_reader",
-            "image_analyzer",
-            "data_processor", "doc_generator",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:firecrawl:*",
-            "mcp:playwright:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     # === 기획팀 ===
     "JX_PRODUCT": {
-        # 제품 기획·로드맵·유저 스토리·요구사항 명세
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "pdf_reader", "image_analyzer",
-            "doc_generator", "data_processor",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:firecrawl:*",
-            "mcp:notion:*",
-            "mcp:sequential-thinking:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     "JX_STRATEGY": {
-        # 비즈니스 전략·시장 분석·경쟁사 분석·OKR·투자자 보고서
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "stock_price", "rss_reader", "community_monitor",
-            "pdf_reader", "image_analyzer",
-            "data_processor", "doc_generator",
-            "mcp:fetch:*", "mcp:brave_search:*",
-            "mcp:firecrawl:*",
-            "mcp:notion:*",
-            "mcp:sqlite:*",
-            "mcp:sequential-thinking:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*",
-            "mcp:github:*", "self_modifier",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 12,
         "max_continuations": 2,
     },
     # === JX_RESEARCHER 하위 전문가 팀 ===
     "JX_WEB_SEARCHER": {
-        "whitelist": [
-            "web_searcher", "naver_searcher", "weather",
-            "rss_reader", "community_monitor", "stock_price",
-            "mcp:brave_search:*", "mcp:fetch:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 12,
         "max_continuations": 2,
     },
     "JX_DEEP_READER": {
-        "whitelist": [
-            "pdf_reader", "image_analyzer",
-            "github_agent",
-            "mcp:fetch:*",  # 웹페이지 내용 읽기
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },
     "JX_FACT_CHECKER": {
-        "whitelist": [
-            "web_searcher", "naver_searcher",
-            "github_agent",
-            "mcp:brave_search:*", "mcp:fetch:*",
-        ],
-        "blacklist": [
-            "code_executor", "mcp:filesystem:*", "mcp:git:*", "mcp:github:*",
-        ],
+        "whitelist": None,
+        "blacklist": [],
         "max_tool_rounds": 10,
         "max_continuations": 2,
     },

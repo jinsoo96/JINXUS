@@ -25,6 +25,7 @@ from jinxus.api.routers import (
     channel_router,
     matrix_router,
     mission_router,
+    command_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,37 @@ async def lifespan(app: FastAPI):
         await meta.cleanup_old_background_tasks(days=7)
     except Exception as e:
         logger.debug(f"Interrupted tasks check failed: {e}")
+
+    # 고아 미션 정리 (서버 재시작 시 in_progress 상태로 남은 미션 failed 처리)
+    try:
+        from jinxus.core.mission_executor import get_mission_executor
+        executor = get_mission_executor()
+        await executor.cleanup_orphan_missions()
+        print("Orphan missions cleaned up (v3)")
+    except Exception as e:
+        logger.warning(f"Orphan mission cleanup failed: {e}")
+
+    # v4 CLI 엔진 초기화
+    try:
+        from jinxus.cli_engine.session_manager import get_agent_session_manager
+        from jinxus.tools.tool_loader import load_global_mcp_servers
+
+        session_mgr = get_agent_session_manager()
+        session_mgr.set_defaults(
+            working_dir=settings.workspace_root if hasattr(settings, 'workspace_root') else None,
+            model=settings.claude_model,
+            mcp_config=None,  # MCP는 에이전트 생성 시 개별 빌드
+        )
+        session_mgr.start_idle_monitor()
+        print("CLI Engine: AgentSessionManager initialized")
+
+        # v4 MissionExecutor 고아 정리
+        from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+        executor_v4 = get_mission_executor_v4()
+        await executor_v4.cleanup_orphan_missions()
+        print("CLI Engine: MissionExecutor v4 ready")
+    except Exception as e:
+        logger.warning(f"CLI Engine init failed (v4 features disabled): {e}")
 
     # 스케줄러 초기화 및 복구
     try:
@@ -289,6 +321,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.debug(f"[server] 메트릭 종료 정리 중 오류: {e}")
 
+    # CLI Engine 세션 정리
+    try:
+        from jinxus.cli_engine.session_manager import get_agent_session_manager
+        mgr = get_agent_session_manager()
+        await mgr.stop_idle_monitor()
+        for session in mgr.list_sessions():
+            await session.cleanup()
+        print("CLI Engine: all sessions cleaned up")
+    except Exception as e:
+        logger.debug(f"[server] CLI Engine 종료 중 오류: {e}")
+
     if memory_cleanup_task:
         memory_cleanup_task.cancel()
     if telegram_task:
@@ -335,6 +378,7 @@ def create_app() -> FastAPI:
     app.include_router(channel_router)
     app.include_router(matrix_router)
     app.include_router(mission_router)
+    app.include_router(command_router)
 
     @app.get("/")
     async def root():

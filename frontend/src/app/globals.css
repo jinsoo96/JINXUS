@@ -80,3 +80,45 @@ code {
 .markdown a:hover {
   color: #e6c87a;
 }
+
+/* ── 모바일 터치 최적화 ── */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 모바일 스크롤 성능 */
+.mobile-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* 터치 가능 요소 최소 사이즈 */
+@media (max-width: 639px) {
+  /* 모바일에서 스크롤바 얇게 */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+}
+
+/* 모바일 드로어 오버레이 */
+.drawer-overlay {
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* 모바일 바텀시트 */
+.bottom-sheet-enter {
+  transform: translateY(100%);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.bottom-sheet-enter-active {
+  transform: translateY(0);
+}
+
+/* 모바일 입력창 키보드 대응 */
+@supports (height: 100dvh) {
+  .mobile-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}

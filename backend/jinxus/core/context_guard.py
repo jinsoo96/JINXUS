@@ -5,11 +5,14 @@ Geny 참고: 토큰 추정 + 3단계 모니터링 + 컴팩션 전략
 에이전트 output이 너무 길면 aggregate 시 컨텍스트 한도 초과 또는 과도한 과금 발생.
 이 모듈로 토큰 사용량을 모니터링하고 필요시 컴팩션을 수행한다.
 """
+import logging
 from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 
 from jinxus.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # 모델별 컨텍스트 윈도우 (토큰)
 MODEL_CONTEXT_LIMITS = {
@@ -71,6 +74,8 @@ class ContextWindowGuard:
     def __init__(self, model: str = "default"):
         self.model = model
         self.max_tokens = MODEL_CONTEXT_LIMITS.get(model, MODEL_CONTEXT_LIMITS["default"])
+        self._last_status: Optional[BudgetStatus] = None
+        self._total_tokens_reported: int = 0  # 외부에서 보고된 누적 토큰
 
     def estimate_tokens(self, text: str) -> int:
         """텍스트의 토큰 수 추정
@@ -196,6 +201,25 @@ class ContextWindowGuard:
 
         return messages
 
+    def report_token_usage(self, tokens: int):
+        """외부에서 실제 토큰 사용량을 보고
+
+        Args:
+            tokens: 사용된 토큰 수
+        """
+        self._total_tokens_reported += tokens
+        usage_percent = (self._total_tokens_reported / self.max_tokens) * 100
+        if usage_percent >= self.BLOCK_THRESHOLD * 100:
+            logger.warning(
+                "[ContextGuard] 누적 토큰 사용량 위험: %d / %d (%.1f%%)",
+                self._total_tokens_reported, self.max_tokens, usage_percent,
+            )
+        elif usage_percent >= self.WARN_THRESHOLD * 100:
+            logger.warning(
+                "[ContextGuard] 누적 토큰 사용량 경고: %d / %d (%.1f%%)",
+                self._total_tokens_reported, self.max_tokens, usage_percent,
+            )
+
     def check_and_compact(
         self,
         messages: list[dict],
@@ -212,8 +236,32 @@ class ContextWindowGuard:
         """
         check_result = self.check(messages)
 
+        # 상태 변화 로깅
+        prev_status = self._last_status
+        if prev_status is not None and prev_status != check_result.status:
+            log_msg = (
+                "[ContextGuard] 상태 변경: %s -> %s (%.1f%%, %d/%d tokens)"
+            )
+            log_args = (
+                prev_status.value, check_result.status.value,
+                check_result.usage_percent,
+                check_result.used_tokens, check_result.max_tokens,
+            )
+            if check_result.status in (BudgetStatus.BLOCK, BudgetStatus.OVERFLOW):
+                logger.warning(log_msg, *log_args)
+            elif check_result.status == BudgetStatus.WARN:
+                logger.warning(log_msg, *log_args)
+            else:
+                logger.info(log_msg, *log_args)
+        self._last_status = check_result.status
+
         if check_result.should_compact and auto_compact and check_result.recommended_strategy:
             compacted = self.compact(messages, check_result.recommended_strategy)
+            logger.info(
+                "[ContextGuard] 자동 컴팩션 수행: strategy=%s, messages %d -> %d",
+                check_result.recommended_strategy.value,
+                len(messages), len(compacted),
+            )
             return compacted, check_result
 
         return messages, check_result

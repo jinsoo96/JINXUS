@@ -1,7 +1,8 @@
-"""Mission API v1.0.0 — 미션 CRUD + SSE 스트리밍
+"""Mission API v2.0.0 — 미션 CRUD + SSE 스트리밍
 
-모든 사용자 입력은 미션으로 변환되어 처리된다.
-기존 /chat 엔드포인트를 대체하는 새로운 진입점.
+미션 실행이 백그라운드 태스크로 분리되어 SSE 연결 끊김에도 미션이 계속 진행된다.
+POST /mission → 미션 생성 + 백그라운드 실행 시작 + 이벤트 구독 SSE 반환
+GET /mission/{id}/events → 기존 미션 이벤트 재구독
 
 SSE 이벤트:
 - mission_created: 미션 생성됨
@@ -28,22 +29,23 @@ from sse_starlette.sse import EventSourceResponse
 
 from jinxus.core.mission import MissionStatus, get_mission_store
 from jinxus.core.mission_router import get_mission_router
-from jinxus.core.mission_executor import get_mission_executor
-from jinxus.core.agent_messenger import get_agent_messenger  # events 엔드포인트용
+from jinxus.core.agent_messenger import get_agent_messenger
+
+
+def _get_executor():
+    """v4 executor 우선, 실패 시 v3 fallback"""
+    try:
+        from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+        return get_mission_executor_v4()
+    except Exception:
+        from jinxus.core.mission_executor import get_mission_executor
+        return get_mission_executor()
 
 router = APIRouter(prefix="/mission", tags=["mission"])
 logger = logging.getLogger(__name__)
 
 # 동시 미션 실행 제한
 MAX_CONCURRENT_MISSIONS = 10
-_mission_semaphore: asyncio.Semaphore | None = None
-
-
-def _get_semaphore() -> asyncio.Semaphore:
-    global _mission_semaphore
-    if _mission_semaphore is None:
-        _mission_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MISSIONS)
-    return _mission_semaphore
 
 
 class MissionRequest(BaseModel):
@@ -54,63 +56,66 @@ class MissionRequest(BaseModel):
 
 @router.post("")
 async def create_and_execute_mission(request: MissionRequest):
-    """미션 생성 + 실행 (SSE 스트리밍)
+    """미션 생성 + 백그라운드 실행 시작 + 이벤트 구독 SSE 반환
 
-    사용자 입력 → 미션 변환 → 실행 → 결과 스트리밍
+    미션은 백그라운드 태스크로 실행되므로 클라이언트 연결이 끊겨도 계속 진행된다.
     """
-    sem = _get_semaphore()
-    if sem.locked():
+    executor = _get_executor()
+
+    # 동시 실행 제한
+    active_count = len(executor._active_missions)
+    if active_count >= MAX_CONCURRENT_MISSIONS:
         raise HTTPException(
             status_code=503,
             detail=f"동시 미션 수({MAX_CONCURRENT_MISSIONS}) 초과",
         )
 
     mission_router = get_mission_router()
-    executor = get_mission_executor()
+    messenger = get_agent_messenger()
+    store = get_mission_store()
 
     # 미션 생성
     mission = await mission_router.create_mission(
         request.message, request.session_id
     )
 
-    # 필터링할 이벤트 (Python 로그 등 프론트에 불필요한 것)
-    _SKIP_EVENTS = {"log", "error"}
+    # 이벤트 구독 (백그라운드 태스크 시작 전에 구독해야 이벤트 놓치지 않음)
+    queue = messenger.subscribe(mission.id)
+
+    # 백그라운드 태스크로 미션 실행 시작
+    executor.start_mission(mission)
 
     async def event_generator():
-        async with _get_semaphore():
-            got_done = False
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    evt_name = event.get("event", "")
 
-            try:
-                async for event in executor.execute_stream(mission):
-                    evt_name = event["event"]
                     # Python 로그 이벤트 필터링
-                    if evt_name in _SKIP_EVENTS:
+                    if evt_name in ("log", "error"):
                         continue
+
                     yield {
                         "event": evt_name,
-                        "data": json.dumps(event["data"], ensure_ascii=False),
+                        "data": json.dumps(event.get("data", {}), ensure_ascii=False),
                     }
-                    if evt_name in ("mission_complete", "mission_failed", "mission_cancelled"):
-                        got_done = True
 
-            except asyncio.CancelledError:
-                yield {
-                    "event": "mission_cancelled",
-                    "data": json.dumps({"id": mission.id, "message": "취소됨"}, ensure_ascii=False),
-                }
-                got_done = True
-            except Exception as e:
-                logger.error(f"미션 SSE 에러 {mission.id}: {e}", exc_info=True)
-                yield {
-                    "event": "mission_failed",
-                    "data": json.dumps({"id": mission.id, "error": str(e)[:300]}, ensure_ascii=False),
-                }
-            finally:
-                if not got_done:
-                    yield {
-                        "event": "mission_complete",
-                        "data": json.dumps({"id": mission.id, "title": mission.title}, ensure_ascii=False),
-                    }
+                    # 미션 종료 이벤트면 스트림 종료
+                    if evt_name in ("mission_complete", "mission_failed", "mission_cancelled"):
+                        break
+
+                except asyncio.TimeoutError:
+                    # keepalive 전송 + 미션 상태 확인
+                    yield {"event": "keepalive", "data": "{}"}
+                    m = await store.get(mission.id)
+                    if not m or m.status.value in ("complete", "failed", "cancelled"):
+                        break
+        except asyncio.CancelledError:
+            # 클라이언트 연결 끊김 — 미션은 백그라운드에서 계속 실행됨
+            logger.debug(f"[Mission SSE] 클라이언트 연결 끊김 (mission={mission.id}), 미션은 계속 실행")
+        finally:
+            messenger.unsubscribe(mission.id, queue)
 
     return EventSourceResponse(event_generator())
 
@@ -148,7 +153,7 @@ async def get_mission(mission_id: str):
 @router.post("/{mission_id}/cancel")
 async def cancel_mission(mission_id: str):
     """미션 취소"""
-    executor = get_mission_executor()
+    executor = _get_executor()
     success = await executor.cancel_mission(mission_id)
     if not success:
         raise HTTPException(400, "미션을 취소할 수 없습니다 (이미 완료/취소됨)")
@@ -164,7 +169,7 @@ async def delete_mission(mission_id: str):
         raise HTTPException(404, "미션을 찾을 수 없습니다")
     # 진행 중이면 먼저 취소
     if mission.status.value in ("briefing", "in_progress", "review"):
-        executor = get_mission_executor()
+        executor = _get_executor()
         await executor.cancel_mission(mission_id)
     await store.delete(mission_id)
     return {"success": True, "mission_id": mission_id}
@@ -199,7 +204,7 @@ async def mission_events(mission_id: str):
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
                     yield {
                         "event": event["event"],
                         "data": json.dumps(event["data"], ensure_ascii=False),
@@ -213,7 +218,26 @@ async def mission_events(mission_id: str):
                     m = await store.get(mission_id)
                     if not m or m.status.value in ("complete", "failed", "cancelled"):
                         break
+        except asyncio.CancelledError:
+            logger.debug(f"[Mission SSE] 이벤트 구독 끊김 (mission={mission_id})")
         finally:
             messenger.unsubscribe(mission_id, queue)
 
     return EventSourceResponse(event_generator())
+
+
+@router.post("/{mission_id}/approve")
+async def approve_mission(mission_id: str):
+    """미션 승인 (승인 게이트 통과)"""
+    store = get_mission_store()
+    mission = await store.get(mission_id)
+    if not mission:
+        raise HTTPException(404, "미션을 찾을 수 없습니다")
+
+    # 승인 이벤트 발행 → 오케스트레이터가 감지
+    messenger = get_agent_messenger()
+    await messenger._emit(mission_id, {
+        "event": "mission_approved",
+        "data": {"id": mission_id, "message": "승인됨"},
+    })
+    return {"success": True, "mission_id": mission_id}

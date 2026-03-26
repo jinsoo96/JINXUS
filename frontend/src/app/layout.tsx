@@ -1,10 +1,17 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import ClientProviders from '@/components/ClientProviders';
 import './globals.css';
 
 export const metadata: Metadata = {
   title: 'JINXUS',
   description: 'Autonomous Multi-Agent System',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({

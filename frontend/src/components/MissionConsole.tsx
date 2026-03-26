@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
-import { missionApi, channelApi, type MissionData, type MissionSSEEvent } from '@/lib/api';
+import { missionApi, channelApi, type MissionData, type MissionSSEEvent, type AgentRuntimeStatus } from '@/lib/api';
 import { getFirstName, getPersona } from '@/lib/personas';
 import { useAppStore } from '@/store/useAppStore';
 import MarkdownRenderer from '@/components/MarkdownRenderer';
@@ -9,6 +9,7 @@ import {
   Send, Loader2, Target, CheckCircle2, XCircle,
   Users, ChevronDown, Zap, Swords, Crown,
   Trash2, Square, Activity, ShieldCheck, Ban, Pencil,
+  Menu, X,
 } from 'lucide-react';
 
 // 미션 타입별 아이콘/색상
@@ -92,11 +93,12 @@ const MissionHistoryItem = memo(function MissionHistoryItem({
   return (
     <div
       onClick={onClick}
-      className={`group relative w-full text-left px-3 py-2 rounded-lg border transition-all cursor-pointer ${
+      className={`group relative w-full text-left px-3 py-2.5 sm:py-2 rounded-lg border transition-all cursor-pointer active:bg-white/[0.06] ${
         isSelected
           ? 'bg-white/[0.05] border-zinc-600'
           : 'bg-transparent border-transparent hover:bg-white/[0.03] hover:border-zinc-700/50'
       }`}
+      style={{ minHeight: 44 }}
     >
       <div className="flex items-center gap-1.5 mb-1">
         <TypeIcon size={10} style={{ color: typeConf.color }} />
@@ -128,23 +130,23 @@ const MissionHistoryItem = memo(function MissionHistoryItem({
         )}
       </div>
 
-      {/* 액션 버튼 — hover 시 표시 */}
-      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* 액션 버튼 — 데스크톱: hover 시 표시, 모바일: 항상 표시 */}
+      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex gap-0.5 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         {active && (
           <button
             onClick={onCancel}
-            className="p-1 rounded hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
-            title="미션 중지"
+            className="p-2 sm:p-1 rounded hover:bg-red-500/20 active:bg-red-500/30 text-zinc-600 hover:text-red-400 transition-colors"
+            title="업무 중지"
           >
-            <Square size={12} />
+            <Square size={14} className="sm:w-3 sm:h-3" />
           </button>
         )}
         <button
           onClick={onDelete}
-          className="p-1 rounded hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
-          title="미션 삭제"
+          className="p-2 sm:p-1 rounded hover:bg-red-500/20 active:bg-red-500/30 text-zinc-600 hover:text-red-400 transition-colors"
+          title="업무 삭제"
         >
-          <Trash2 size={12} />
+          <Trash2 size={14} className="sm:w-3 sm:h-3" />
         </button>
       </div>
     </div>
@@ -160,11 +162,11 @@ const LogLine = memo(function LogLine({ entry }: { entry: LogEntry }) {
   });
 
   return (
-    <div className="flex items-start gap-0 text-[11px] leading-relaxed font-mono hover:bg-white/[0.02] px-3 py-0.5">
-      <span className="text-zinc-600 flex-shrink-0 w-[60px]">{time}</span>
-      <span className={`flex-shrink-0 w-[32px] font-bold ${color}`}>{prefix}</span>
+    <div className="flex items-start gap-0 text-[11px] sm:text-[11px] text-xs leading-relaxed font-mono hover:bg-white/[0.02] active:bg-white/[0.04] px-2 sm:px-3 py-1 sm:py-0.5">
+      <span className="text-zinc-600 flex-shrink-0 w-[50px] sm:w-[60px]">{time}</span>
+      <span className={`flex-shrink-0 w-[28px] sm:w-[32px] font-bold ${color}`}>{prefix}</span>
       <span className="flex-shrink-0 mr-1">{entry.emoji}</span>
-      <span className="text-zinc-500 flex-shrink-0 mr-1.5">{entry.agent}</span>
+      <span className="text-zinc-500 flex-shrink-0 mr-1.5 hidden sm:inline">{entry.agent}</span>
       <span className="text-zinc-300 break-words min-w-0">{entry.message}</span>
     </div>
   );
@@ -172,11 +174,12 @@ const LogLine = memo(function LogLine({ entry }: { entry: LogEntry }) {
 
 interface MissionConsoleProps {
   onMissionEvent?: (event: MissionSSEEvent) => void;
+  runtimeMap?: Record<string, AgentRuntimeStatus>;
 }
 
 let _logIdCounter = 0;
 
-export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) {
+export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: MissionConsoleProps) {
   const pushAgentBubble = useAppStore(s => s.pushAgentBubble);
   const [input, setInput] = useState('');
   const [isExecuting, setIsExecuting] = useState(false);
@@ -186,6 +189,10 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
   const [missionHistory, setMissionHistory] = useState<MissionData[]>([]);
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(true);
+  // 모바일 드로어 (sm 이하에서 히스토리 표시)
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // 모바일 키보드 높이 보정
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
   // 승인 게이트
   const [pendingApproval, setPendingApproval] = useState<{
     agents: string[];
@@ -194,12 +201,27 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
   } | null>(null);
   const [approvalFeedback, setApprovalFeedback] = useState('');
   const [showFeedbackInput, setShowFeedbackInput] = useState(false);
+  // 실행 단계 추적
+  const [executionPhase, setExecutionPhase] = useState<string>('');
+  const [pendingTitle, setPendingTitle] = useState<string>('');
 
   const logEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>(`web-${Date.now()}`);
   const autoScrollRef = useRef(true);
   const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // visualViewport API — 키보드 올라올 때 레이아웃 조정
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const handleResize = () => {
+      const offset = window.innerHeight - vv.height;
+      setKeyboardOffset(offset > 50 ? offset : 0);
+    };
+    vv.addEventListener('resize', handleResize);
+    return () => vv.removeEventListener('resize', handleResize);
+  }, []);
 
   // 로그 추가 헬퍼
   const pushLog = useCallback((agent: string, message: string, type: LogEntry['type']) => {
@@ -226,11 +248,14 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
     }).catch(() => {});
   }, []);
 
-  // 로그 자동 스크롤 (스크롤이 바닥 근처일 때만)
+  // 로그 자동 스크롤 — 쓰로틀링 (100ms) + behavior: auto (연속 이벤트 jank 방지)
+  const logScrollThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (autoScrollRef.current) {
-      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+    if (!autoScrollRef.current || logScrollThrottleRef.current) return;
+    logScrollThrottleRef.current = setTimeout(() => {
+      logEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      logScrollThrottleRef.current = null;
+    }, 100);
   }, [logEntries, responseText]);
 
   // 스크롤 위치 감지 — 바닥에서 벗어나면 자동스크롤 비활성화
@@ -242,15 +267,39 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
   }, []);
 
   // 미션 실행
-  const executeMission = useCallback(async () => {
-    if (!input.trim() || isExecuting) return;
+  const executeMission = useCallback(async (directMessage?: string) => {
+    const message = (directMessage || input).trim();
+    if (!message) return;
 
-    const message = input.trim();
+    // 이전 SSE 연결이 열려있으면 취소
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
+    const isFollowup = message.startsWith('[후속]');
+
     setInput('');
     setIsExecuting(true);
-    setResponseText('');
-    setLogEntries([]);
-    setCurrentMission(null);
+
+    if (isFollowup) {
+      // 후속 지시: 기존 로그/결과 유지, 아래에 이어붙이기
+      setExecutionPhase('후속 지시 처리 중...');
+      setResponseText(prev => prev ? prev + '\n\n---\n\n' : '');
+      pushLog('SYSTEM', '─── 후속 지시 ───', 'status');
+    } else {
+      // 새 미션: 전부 초기화
+      setResponseText('');
+      setLogEntries([]);
+      setCurrentMission(null);
+      setExecutionPhase('난이도 분류 중...');
+    }
+
+    // pendingTitle: 후속은 유저 입력만, 새 미션은 전체 메시지
+    const displayTitle = isFollowup
+      ? message.replace(/^\[후속\]\s*/, '').split('\n')[0]
+      : message;
+    setPendingTitle(displayTitle.length > 40 ? displayTitle.slice(0, 40) + '...' : displayTitle);
     autoScrollRef.current = true;
 
     const abort = new AbortController();
@@ -268,6 +317,8 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
               const data = event.data as unknown as MissionData;
               setCurrentMission(data);
               setSelectedMissionId(data.id);
+              setExecutionPhase('에이전트 배정 중...');
+              setPendingTitle('');
               // 히스토리에 즉시 추가
               setMissionHistory(prev => [data, ...prev.filter(m => m.id !== data.id)]);
               const tc = MISSION_TYPE_CONFIG[data.type];
@@ -277,6 +328,10 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
             case 'mission_status': {
               const newStatus = (event.data.status as MissionData['status']);
               const newAgents = (event.data.agents as string[]);
+              if (newStatus === 'briefing') setExecutionPhase('브리핑 중...');
+              else if (newStatus === 'in_progress') setExecutionPhase('작업 수행 중');
+              else if (newStatus === 'review') setExecutionPhase('리뷰 중...');
+              else if (newStatus === 'complete' || newStatus === 'failed') setExecutionPhase('');
               setCurrentMission(prev => prev ? {
                 ...prev,
                 status: newStatus || prev.status,
@@ -303,6 +358,17 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
                 pushLog(from, msg, type);
                 pushAgentBubble(from, msg);
               }
+              // v4: agent_report에 도구/파일 변경 정보 포함
+              if (event.event === 'agent_report') {
+                const toolCalls = event.data.tool_calls as Array<{name: string}> | undefined;
+                const fileChanges = event.data.file_changes as Array<{file: string; op: string}> | undefined;
+                if (toolCalls?.length) {
+                  pushLog(from, `📦 도구 ${toolCalls.length}개: ${toolCalls.map(t => t.name).join(', ')}`, 'thinking');
+                }
+                if (fileChanges?.length) {
+                  pushLog(from, `📝 파일 ${fileChanges.length}개 변경: ${fileChanges.map(f => `${f.file}(${f.op})`).join(', ')}`, 'thinking');
+                }
+              }
               break;
             }
             case 'mission_agent_activity': {
@@ -328,10 +394,23 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
               const step = event.data.step as string;
               const from = (event.data.from as string) || 'JINXUS_CORE';
               if (detail) {
-                // agent_progress 중 도구 관련은 'dm' 스타일로, 나머지는 'thinking'
-                const isToolRelated = /도구|tool|실행|호출|execute/i.test(detail);
-                const logType = step === 'agent_progress' && isToolRelated ? 'dm' : 'thinking';
+                // v4 CLI 엔진: 도구 사용 프리뷰 (🔧로 시작하거나 ✓로 시작)
+                const isToolLog = detail.startsWith('🔧') || detail.startsWith('✓');
+                const logType = isToolLog ? 'dm' : (step === 'agent_progress' ? 'thinking' : 'thinking');
                 pushLog(from, detail, logType);
+                // 도구 로그면 Pixel Office 말풍선에도 표시
+                if (isToolLog) {
+                  pushAgentBubble(from, detail);
+                }
+              }
+              break;
+            }
+            case 'mission_tool_calls': {
+              // v4: 에이전트 도구 사용 내역
+              const agent = event.data.agent as string;
+              const tools = event.data.tools as Array<{name: string; input?: Record<string, unknown>}>;
+              if (agent && tools?.length) {
+                pushLog(agent, `도구 ${tools.length}개 사용: ${tools.map(t => t.name).join(', ')}`, 'dm');
               }
               break;
             }
@@ -387,13 +466,19 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
         },
         (error) => {
           console.error('[MissionConsole] SSE error:', error);
-          setCurrentMission(prev => prev ? { ...prev, status: 'failed', error: error.message } : prev);
-          pushLog('SYSTEM', `오류: ${error.message}`, 'status');
+          const isNetworkErr = error.message === 'Failed to fetch' || error.message.toLowerCase().includes('network');
+          const userMsg = isNetworkErr
+            ? '서버 연결 실패 — 서버가 재시작 중일 수 있습니다. 잠시 후 다시 시도해주세요.'
+            : error.message;
+          setCurrentMission(prev => prev ? { ...prev, status: 'failed', error: userMsg } : prev);
+          pushLog('SYSTEM', `오류: ${userMsg}`, 'status');
         },
         abort,
       );
     } finally {
       setIsExecuting(false);
+      setExecutionPhase('');
+      setPendingTitle('');
       abortRef.current = null;
     }
   }, [input, isExecuting, onMissionEvent, pushLog, pushAgentBubble]);
@@ -493,59 +578,126 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
   const typeConf = currentMission ? MISSION_TYPE_CONFIG[currentMission.type] : null;
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#0a0a0f]">
-      {/* 미션 입력 */}
-      <div className="flex-shrink-0 p-2 border-b border-zinc-800/50"
-        style={{ background: 'linear-gradient(0deg, #0d0d14, transparent)' }}>
+    <div className="flex flex-col h-full min-h-0 bg-[#0a0a0f] relative">
+      {/* 미션 입력 — 모바일: 하단 고정 (sticky), 데스크톱: 상단 */}
+      <div
+        className="flex-shrink-0 p-2 pt-3 sm:pt-6 border-b sm:border-b border-t sm:border-t-0 border-zinc-800/50 order-first sm:order-first mobile-safe-bottom"
+        style={{
+          background: 'linear-gradient(0deg, #0d0d14, transparent)',
+          ...(keyboardOffset > 0 ? { paddingBottom: keyboardOffset } : {}),
+        }}
+      >
         <div className="flex gap-2">
+          {/* 모바일: 히스토리 드로어 토글 버튼 */}
           <button
-            onClick={() => setShowHistory(!showHistory)}
-            className="flex-shrink-0 p-2 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+            onClick={() => {
+              // 모바일에서는 드로어 토글, 데스크톱에서는 히스토리 토글
+              if (window.innerWidth < 640) {
+                setMobileDrawerOpen(o => !o);
+              } else {
+                setShowHistory(!showHistory);
+              }
+            }}
+            className="flex-shrink-0 p-2.5 sm:p-2 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 active:bg-zinc-700/50 transition-colors"
             title={showHistory ? '히스토리 숨기기' : '히스토리 보기'}
+            style={{ minWidth: 44, minHeight: 44 }}
           >
-            <ChevronDown size={16} className={`transition-transform ${showHistory ? 'rotate-90' : '-rotate-90'}`} />
+            <Menu size={18} className="sm:hidden" />
+            <ChevronDown size={16} className={`hidden sm:block transition-transform ${showHistory ? 'rotate-90' : '-rotate-90'}`} />
           </button>
           <div className="flex-1 relative">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="미션을 입력하세요... (Shift+Enter: 줄바꿈)"
+              placeholder="업무를 입력하세요..."
               rows={1}
-              disabled={isExecuting}
-              className="w-full px-4 py-2 pr-12 rounded-xl bg-zinc-900/50 border border-zinc-700/50 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 resize-none disabled:opacity-50 transition-colors"
-              style={{ minHeight: 36, maxHeight: 120 }}
+              className="w-full px-4 py-2.5 sm:py-2 pr-14 sm:pr-12 rounded-xl bg-zinc-900/50 border border-zinc-700/50 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 resize-none transition-colors"
+              style={{ minHeight: 44, maxHeight: 120 }}
             />
             {isExecuting ? (
-              <button
-                onClick={cancelMission}
-                className="absolute right-2 top-1/2 -translate-y-1/2 z-10 p-2 rounded-lg bg-red-600/30 text-red-400 hover:bg-red-600/50 active:bg-red-600/60 transition-colors cursor-pointer border border-red-500/30"
-                title="미션 취소"
-              >
-                <XCircle size={18} />
-              </button>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-2">
+                {executionPhase && (
+                  <span className="flex items-center gap-1.5 text-[10px] text-blue-400/80 font-mono">
+                    <Loader2 size={11} className="animate-spin" />
+                    {executionPhase}
+                  </span>
+                )}
+                <button
+                  onClick={cancelMission}
+                  className="p-2 sm:p-1.5 rounded-lg text-zinc-500 hover:text-red-400 active:text-red-500 transition-colors cursor-pointer"
+                  title="업무 취소"
+                  style={{ minWidth: 44, minHeight: 44 }}
+                >
+                  <XCircle size={18} className="sm:w-4 sm:h-4" />
+                </button>
+              </div>
             ) : (
               <button
-                onClick={executeMission}
+                data-mission-execute
+                onClick={() => executeMission()}
                 disabled={!input.trim()}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="미션 실행 (Enter)"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 sm:p-1.5 rounded-lg bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 active:bg-blue-600/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                title="업무 실행 (Enter)"
+                style={{ minWidth: 44, minHeight: 44 }}
               >
-                <Send size={16} />
+                <Send size={18} className="sm:w-4 sm:h-4" />
               </button>
             )}
           </div>
         </div>
       </div>
 
+      {/* 모바일 히스토리 드로어 오버레이 */}
+      {mobileDrawerOpen && (
+        <div
+          className="sm:hidden fixed inset-0 z-40 bg-black/60 drawer-overlay"
+          onClick={() => setMobileDrawerOpen(false)}
+        />
+      )}
+
+      {/* 모바일 히스토리 드로어 */}
+      <div className={`sm:hidden fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] flex flex-col transition-transform duration-250 ease-out ${
+        mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'
+      }`} style={{ background: 'linear-gradient(180deg, #0d0d14, #0a0a0f)' }}>
+        <div className="px-3 py-3 border-b border-zinc-800/50 flex items-center justify-between">
+          <span className="text-xs font-bold text-zinc-400 tracking-wider">업무 내역</span>
+          <button
+            onClick={() => setMobileDrawerOpen(false)}
+            className="p-2 rounded-lg text-zinc-500 hover:text-zinc-300 active:bg-zinc-700/50 transition-colors"
+            style={{ minWidth: 44, minHeight: 44 }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5 mobile-scroll">
+          {missionHistory.map(m => (
+            <MissionHistoryItem
+              key={m.id}
+              mission={m}
+              isSelected={selectedMissionId === m.id}
+              onClick={() => {
+                selectMission(m);
+                setMobileDrawerOpen(false);
+              }}
+              onCancel={(e) => handleCancelMission(e, m)}
+              onDelete={(e) => handleDeleteMission(e, m)}
+            />
+          ))}
+          {missionHistory.length === 0 && (
+            <p className="text-xs text-zinc-600 text-center py-8">아직 업무가 없습니다</p>
+          )}
+        </div>
+      </div>
+
       {/* 하단: 히스토리 + 실시간 로그 */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* 좌측: 미션 히스토리 */}
+        {/* 좌측: 미션 히스토리 (데스크톱만) */}
         {showHistory && (
-          <div className="w-56 flex-shrink-0 border-r border-zinc-800/50 flex flex-col"
+          <div className="hidden sm:flex w-56 flex-shrink-0 border-r border-zinc-800/50 flex-col"
             style={{ background: 'linear-gradient(180deg, #0d0d14, #0a0a0f)' }}>
             <div className="px-3 py-2 border-b border-zinc-800/50 flex items-center justify-between">
-              <span className="text-[10px] font-bold text-zinc-400 tracking-wider">MISSIONS</span>
+              <span className="text-[10px] font-bold text-zinc-400 tracking-wider">업무 내역</span>
               <span className="text-[9px] text-zinc-600">{missionHistory.length}</span>
             </div>
             <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5 custom-scrollbar">
@@ -560,7 +712,7 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
                 />
               ))}
               {missionHistory.length === 0 && (
-                <p className="text-xs text-zinc-600 text-center py-8">아직 미션이 없습니다</p>
+                <p className="text-xs text-zinc-600 text-center py-8">아직 업무가 없습니다</p>
               )}
             </div>
           </div>
@@ -568,33 +720,55 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
 
         {/* 우측: 실시간 작업 로그 */}
         <div className="flex-1 flex flex-col min-w-0">
-          {/* 미션 헤더 — 선택된 미션 정보 */}
-          {currentMission && (
+          {/* 미션 헤더 — 선택된 미션 정보 또는 대기 중 표시 */}
+          {(currentMission || (isExecuting && pendingTitle)) && (
             <div className="flex-shrink-0 px-3 py-1.5 border-b border-zinc-800/50 flex items-center gap-2"
               style={{ background: 'linear-gradient(90deg, rgba(0,0,0,0.3), transparent)' }}>
-              {typeConf && <typeConf.icon size={12} style={{ color: typeConf.color }} />}
-              <span className="text-xs font-semibold text-zinc-300 truncate flex-1">{currentMission.title}</span>
-              {statusConf && (
-                <span className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1"
-                  style={{ color: statusConf.color, background: `${statusConf.color}20` }}>
-                  {isActiveStatus(currentMission.status) && (
+              {currentMission ? (
+                <>
+                  {typeConf && <typeConf.icon size={12} style={{ color: typeConf.color }} />}
+                  <span className="text-xs font-semibold text-zinc-300 truncate flex-1">{currentMission.title}</span>
+                  {statusConf && (
+                    <span className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1"
+                      style={{ color: statusConf.color, background: `${statusConf.color}20` }}>
+                      {isActiveStatus(currentMission.status) && (
+                        <Loader2 size={9} className="animate-spin" />
+                      )}
+                      {statusConf.label}
+                    </span>
+                  )}
+                  {currentMission.assigned_agents.length > 0 && (
+                    <div className="flex items-center gap-1 ml-1">
+                      {currentMission.assigned_agents
+                        .filter(a => a !== 'JINXUS_CORE')
+                        .slice(0, 6).map(a => {
+                        const p = getPersona(a);
+                        const rt = runtimeMap[a];
+                        const isWorking = rt?.status === 'working';
+                        return (
+                          <span key={a}
+                            className={`text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 ${
+                              isWorking ? 'bg-blue-500/15 text-blue-300' : 'bg-zinc-800/50 text-zinc-500'
+                            }`}
+                            title={rt?.current_task || a}
+                          >
+                            {p?.emoji || '🤖'}
+                            <span className="hidden sm:inline">{p ? getFirstName(a) : a.replace('JX_', '')}</span>
+                            {isWorking && <Loader2 size={8} className="animate-spin" />}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 text-blue-400/80 bg-blue-500/10">
                     <Loader2 size={9} className="animate-spin" />
-                  )}
-                  {statusConf.label}
-                </span>
-              )}
-              {currentMission.assigned_agents.length > 0 && (
-                <div className="flex items-center gap-0.5 ml-1">
-                  {currentMission.assigned_agents.slice(0, 6).map(a => {
-                    const p = getPersona(a);
-                    return (
-                      <span key={a} className="text-xs" title={a}>{p?.emoji || '🤖'}</span>
-                    );
-                  })}
-                  {currentMission.assigned_agents.length > 6 && (
-                    <span className="text-[9px] text-zinc-500">+{currentMission.assigned_agents.length - 6}</span>
-                  )}
-                </div>
+                    난이도 분류 중
+                  </span>
+                  <span className="text-xs text-zinc-500 truncate flex-1">{pendingTitle}</span>
+                </>
               )}
             </div>
           )}
@@ -647,12 +821,13 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
                     className="w-full mb-2 px-2 py-1.5 rounded bg-zinc-900/50 border border-zinc-700/50 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-500/50 resize-none"
                   />
                 )}
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 sm:gap-1.5 flex-wrap">
                   <button
                     onClick={() => handleApproval('approved')}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded bg-green-600/20 border border-green-500/30 text-green-400 text-[11px] font-medium hover:bg-green-600/30 transition-colors"
+                    className="flex items-center gap-1 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded bg-green-600/20 border border-green-500/30 text-green-400 text-xs sm:text-[11px] font-medium hover:bg-green-600/30 active:bg-green-600/40 transition-colors"
+                    style={{ minHeight: 44 }}
                   >
-                    <CheckCircle2 size={12} /> 승인
+                    <CheckCircle2 size={14} className="sm:w-3 sm:h-3" /> 승인
                   </button>
                   <button
                     onClick={() => {
@@ -662,15 +837,17 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
                         setShowFeedbackInput(true);
                       }
                     }}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded bg-amber-600/20 border border-amber-500/30 text-amber-400 text-[11px] font-medium hover:bg-amber-600/30 transition-colors"
+                    className="flex items-center gap-1 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded bg-amber-600/20 border border-amber-500/30 text-amber-400 text-xs sm:text-[11px] font-medium hover:bg-amber-600/30 active:bg-amber-600/40 transition-colors"
+                    style={{ minHeight: 44 }}
                   >
-                    <Pencil size={12} /> 수정
+                    <Pencil size={14} className="sm:w-3 sm:h-3" /> 수정
                   </button>
                   <button
                     onClick={() => handleApproval('cancelled')}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-400 text-[11px] font-medium hover:bg-red-600/30 transition-colors"
+                    className="flex items-center gap-1 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-400 text-xs sm:text-[11px] font-medium hover:bg-red-600/30 active:bg-red-600/40 transition-colors"
+                    style={{ minHeight: 44 }}
                   >
-                    <Ban size={12} /> 취소
+                    <Ban size={14} className="sm:w-3 sm:h-3" /> 취소
                   </button>
                 </div>
               </div>
@@ -698,6 +875,40 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
               </div>
             )}
 
+            {/* 후속 지시 입력 — 미션 완료 후 이어서 대화 가능 */}
+            {currentMission?.status === 'complete' && responseText && !isExecuting && (
+              <div className="px-3 pt-3 pb-5 mb-2 border-t border-zinc-700/50">
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const followupInput = (e.currentTarget.elements.namedItem('followup') as HTMLInputElement);
+                  const val = followupInput?.value?.trim();
+                  if (!val) return;
+                  // 원본 미션 제목 추출 (중첩 방지: "이전 미션 X 결과 참고하여:" 접두어 제거)
+                  let origTitle = currentMission.title;
+                  const prefixMatch = origTitle.match(/^이전 미션 ["'](.+?)["'] 결과 참고하여/);
+                  if (prefixMatch) origTitle = prefixMatch[1];
+                  const followupText = `[후속] ${val}\n(참고: 이전 미션 "${origTitle}")`;
+                  followupInput.value = '';
+                  executeMission(followupText);
+                }} className="flex gap-2">
+                  <input
+                    name="followup"
+                    type="text"
+                    placeholder="후속 지시..."
+                    className="flex-1 bg-zinc-800/50 border border-zinc-700/50 rounded px-3 sm:px-2 py-2.5 sm:py-1.5 text-xs sm:text-[11px] text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-primary/50"
+                    style={{ minHeight: 44 }}
+                  />
+                  <button
+                    type="submit"
+                    className="px-4 sm:px-3 py-2.5 sm:py-1.5 bg-primary/20 text-primary text-xs sm:text-[10px] font-bold rounded border border-primary/30 hover:bg-primary/30 active:bg-primary/40 transition-colors"
+                    style={{ minHeight: 44 }}
+                  >
+                    이어서 지시
+                  </button>
+                </form>
+              </div>
+            )}
+
             {/* 에러 */}
             {currentMission?.error && !responseText && (
               <div className="mx-3 my-2 p-2 rounded bg-red-950/20 border border-red-900/30">
@@ -709,14 +920,15 @@ export default function MissionConsole({ onMissionEvent }: MissionConsoleProps) 
             {!currentMission && !isExecuting && logEntries.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-center opacity-40">
                 <Activity size={24} className="text-zinc-600 mb-2" />
-                <p className="text-[11px] text-zinc-600">미션을 실행하면 작업 로그가 여기에 표시됩니다</p>
+                <p className="text-[11px] text-zinc-600">업무를 실행하면 작업 로그가 여기에 표시됩니다</p>
               </div>
             )}
 
-            {/* 실행 중 스피너 (로그가 아직 없을 때) */}
+            {/* 실행 중 상태 (로그가 아직 없을 때) */}
             {isExecuting && logEntries.length === 0 && (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 size={18} className="text-blue-400 animate-spin" />
+              <div className="flex flex-col items-center justify-center py-12 gap-3">
+                <Loader2 size={20} className="text-blue-400 animate-spin" />
+                <span className="text-[11px] text-blue-400/80 font-mono">{executionPhase || '난이도 분류 중...'}</span>
               </div>
             )}
 

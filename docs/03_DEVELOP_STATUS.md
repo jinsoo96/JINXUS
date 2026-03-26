@@ -1,6 +1,162 @@
 # JINXUS 개발 현황
 
-## 버전 v2.12.0 (2026-03-24) — PixelOffice 대개편 (Generative Agents 참고)
+## ModelFallbackRunner 구현 (2026-03-25) — API 에러 시 자동 모델 전환
+
+### 개요
+API rate limit, overload, 인증 실패 등 발생 시 자동으로 다른 모델로 전환하는 시스템.
+기존 `model_router.py`의 간단한 ModelFallbackRunner를 `model_fallback.py`로 분리/확장.
+
+### 신규 파일
+| 파일 | 역할 |
+|------|------|
+| `backend/jinxus/core/model_fallback.py` | ModelFallbackRunner 본체. 에러 분류, 차등 대기, 블랙리스트, ModelExhaustedError |
+
+### 핵심 기능
+- **에러 유형별 차등 대기**: RateLimitError 30초, OverloadedError 60초, TimeoutError 10초, AuthenticationError 즉시 전환+블랙리스트
+- **마지막 성공 모델 기억**: 클래스 변수로 프로세스 내 전역 공유, 다음 호출 시 우선 사용
+- **AuthenticationError 시 영구 제거**: 블랙리스트에 추가, 이후 후보에서 제외
+- **모델 동적 추가/제거**: `add_model()`, `remove_model()` 메서드
+- **모든 후보 소진 시 ModelExhaustedError 발생**: `run_or_raise()` 메서드
+- **settings.py 호환**: claude_model, claude_fallback_model, claude_fast_model 3단계 후보
+
+### 변경 파일
+| 파일 | 변경 내용 |
+|------|-----------|
+| `backend/jinxus/core/model_router.py` | 구 ModelFallbackRunner/FallbackResult/ModelExhaustedError 제거, model_fallback.py에서 re-export |
+| `backend/jinxus/core/__init__.py` | ModelFallbackRunner, ModelExhaustedError, get_model_fallback_runner export 추가 |
+
+---
+
+## 아키텍처 종합 검토 (2026-03-25) — 전체 시스템 리뷰
+
+재원(백엔드) · 예린(프론트엔드) · 수빈(크로스리뷰) → 민준 종합.
+상세 보고서: `docs/08_ARCHITECTURE_REVIEW.md`
+
+**핵심 발견:**
+- [H-1] MissionExecutor v3/v4 공존 → v3 deprecated 처리 필요
+- [H-2] tool_policy 전면 비활성 (whitelist=None) → 활성화 또는 제거 결정 필요
+- [H-3] PixelOffice.tsx 2,000줄 모놀리스 → 서브컴포넌트 분리 필요
+- [M-4] SSE 재연결 로직 채널별 불일치 → consumeSSE() 통합 필요
+- [M-6] /agents/runtime/all 폴링 → SSE 단일 스트림 전환 검토
+
+---
+
+## 버전 v4.0.0 (2026-03-25) — CLI 기반 에이전트 런타임 전환 (v4 아키텍처)
+
+### 개요
+
+LangGraph 중심의 v3 구조에서 **Claude CLI 직접 실행 기반 v4 구조**로 전환.
+에이전트를 독립 프로세스로 실행하고 stdio 스트림을 실시간 파싱하는 새로운 런타임 계층 도입.
+난이도 분류기로 Easy/Medium/Hard 자동 판별 후 실행 전략을 분기하는 v4 미션 엔진 추가.
+
+---
+
+### 신규 파일 — CLI Engine (에이전트 런타임 인프라)
+
+| # | 파일 | 역할 | 줄 수 |
+|---|------|------|-------|
+| 1 | `cli_engine/models.py` | 공유 데이터 모델 (`SessionStatus`, `SessionInfo`, `ExecutionResult`, `StreamEvent`, `LogEntry`) | ~173 |
+| 2 | `cli_engine/session_manager.py` | 세션 중앙 관리자 — 에이전트 생성/조회/삭제, 유휴 모니터 (`AgentSessionManager`) | ~329 |
+| 3 | `cli_engine/agent_session.py` | 에이전트 세션 생명주기 — `ClaudeProcess` 래퍼, 페르소나+프롬프트 주입 (`AgentSession`) | ~226 |
+| 4 | `cli_engine/session_logger.py` | 세션 로그 3계층 (메모리 캐시 → 파일 → DB), 200ms 폴링용 캐시 (`SessionLogger`) | ~443 |
+| 5 | `cli_engine/process_manager.py` | Claude CLI 프로세스 관리 — stdio 스트림 파싱, 명령어 빌드 (`ClaudeProcess`) | ~409 |
+| 6 | `cli_engine/stream_parser.py` | Claude CLI `--output-format stream-json` JSON 이벤트 파싱 (`StreamParser`) | ~252 |
+| 7 | `cli_engine/prompt_builder.py` | 에이전트/CORE용 시스템 프롬프트 빌더 (`build_agent_prompt`, `build_core_prompt`) | ~148 |
+| 8 | `cli_engine/__init__.py` | 모듈 초기화 | ~31 |
+
+**의존 관계:** `agent_session` → `process_manager` → `stream_parser` → `models`
+`session_manager` → `agent_session`, `session_logger`
+
+---
+
+### 신규 파일 — Core (v4 실행 엔진)
+
+| # | 파일 | 역할 | 줄 수 |
+|---|------|------|-------|
+| 1 | `core/agent_executor.py` | **에이전트 실행 단일 진입점** — 동기 `execute_command()` + 비동기 `start_command_background()`. 모든 에이전트 실행이 이 모듈을 통과 | ~254 |
+| 2 | `core/difficulty_router.py` | **난이도 자동 분류** — `Difficulty` enum (EASY/MEDIUM/HARD), 규칙 기반 + LLM fallback. 미션 엔진 v4의 입력 | ~111 |
+| 3 | `core/mission_executor_v4.py` | **v4 미션 엔진** — 난이도별 실행 전략 분기 (EASY: CORE 직답, MEDIUM: 단일 에이전트, HARD: 병렬 에이전트) | ~664 |
+
+**의존 관계:** `mission_executor_v4` → `agent_executor` + `difficulty_router`
+`agent_executor` → `cli_engine/session_manager`
+
+---
+
+### 신규 파일 — API Routers
+
+| # | 파일 | 역할 | 줄 수 |
+|---|------|------|-------|
+| 1 | `api/routers/command.py` | **에이전트 직접 커맨드 API** — `POST /command/{agent_name}/execute`, `POST /command/{agent_name}/execute/stream`, `POST /command/batch`, `GET /command/sessions` | ~294 |
+
+**의존 관계:** `command.py` → `core/agent_executor`
+
+---
+
+### 신규 파일 — Tools (MCP 인프라)
+
+| # | 파일 | 역할 | 줄 수 |
+|---|------|------|-------|
+| 1 | `tools/mcp_proxy_server.py` | **MCP 프록시 서버** — JINXUS 네이티브 도구를 MCP 프로토콜로 외부 노출 (`create_mcp_server`, `build_proxy_mcp_config`) | ~136 |
+| 2 | `tools/tool_loader.py` | **에이전트 세션용 MCP 설정 빌더** — `build_session_mcp_config()`, `load_global_mcp_servers()`. 에이전트 실행 시 MCP 서버 목록 조립 | ~93 |
+
+**의존 관계:** `agent_session.py` → `tool_loader` → `mcp_proxy_server`
+
+---
+
+### v4 아키텍처 실행 흐름
+
+```
+사용자 입력
+    ↓
+[API] POST /command/{agent}/execute  또는  POST /missions
+    ↓
+[Routers] command.py  또는  mission.py
+    ↓
+[Core] agent_executor.execute_command()          ← 동기 단일 실행
+      agent_executor.start_command_background()  ← 비동기 백그라운드
+    │
+    ├─ [Core] difficulty_router.classify_difficulty()
+    │       → EASY / MEDIUM / HARD
+    │
+    └─ [Core] mission_executor_v4 (난이도별 전략)
+            ├─ EASY  : CORE 직접 API 호출 (Anthropic)
+            ├─ MEDIUM: 단일 에이전트 CLI 선택
+            └─ HARD  : 복수 에이전트 병렬 CLI 실행
+    ↓
+[CLI Engine] 에이전트 세션 생성
+    ├─ SessionManager.create_session(agent_name)
+    ├─ AgentSession.create()
+    │       └─ prompt_builder → 시스템 프롬프트 조립
+    │       └─ tool_loader   → MCP 서버 설정 조립
+    │       └─ ClaudeProcess → `claude --output-format stream-json` 실행
+    └─ StreamParser.parse()  → LogEntry 생성
+    ↓
+[Logger] SessionLogger (3계층)
+    ├─ 메모리 캐시 (200ms 폴링)
+    ├─ 파일 로그
+    └─ DB (SQLite 메타)
+    ↓
+[API] event_generator() → SSE 스트림 → 프론트엔드
+    ↓
+[FE] PixelOffice.tsx 실시간 시각화
+```
+
+---
+
+### 레거시 대비 변경점
+
+| 항목 | v3 (구) | v4 (신) |
+|------|---------|---------|
+| 에이전트 실행 | LangGraph 노드 + Python 함수 호출 | Claude CLI 독립 프로세스 |
+| 실행 진입점 | `jinx_loop.py` → `JinxusCore` | `agent_executor.py` 단일 게이트 |
+| 난이도 분기 | 없음 | `difficulty_router` (EASY/MEDIUM/HARD) |
+| 미션 엔진 | `mission_executor.py` (v3) | `mission_executor_v4.py` |
+| MCP 탑재 | 전역 설정 | `tool_loader`가 세션별 동적 조립 |
+| 로그 | `state_tracker` 이벤트 버스 | `session_logger` 3계층 캐시 |
+
+---
+
+## 버전 v3.0.0 (2026-03-24) — PixelOffice 대개편 & 조직 현실화 & HR 강화
 
 ### 아키텍처 대개편 (1323줄 모놀리스 → 15개 모듈)
 
@@ -20,7 +176,7 @@
 | 12 | `map/mapData.ts` | 60x40 맵 레이아웃 (실내 8실 + 야외 6구역) | ~269 |
 | 13 | `render/emoji.ts` | 활동→이모지 매핑 + 머리 위 표시 | ~87 |
 | 14 | `poi/poiManager.ts` | POI 상태 추적 (용량, 대기열) | ~57 |
-| 15 | `PixelOffice.tsx` | React 셸 + 게임 루프 + 이벤트 | ~813 |
+| 15 | `PixelOffice.tsx` | React 셸 + 게임 루프 + 이벤트 | ~952 |
 
 ### 맵 확장 (30x18 → 60x40)
 
@@ -63,45 +219,42 @@
 
 - 마우스 드래그로 뷰포트 이동
 - 휠로 줌 인/아웃 (0.3x~2.0x)
-- 미니맵 지원 준비
+- 줌 잔상 버그 수정 (clearRect 전체 캔버스 초기화)
 
----
-
-## 버전 v2.11.0 (2026-03-24) — 조직 현실화 & 버그 수정 & 미션 피드
-
-### 조직도 현실화 (한국 IT 기업 기준)
+### 조직 현실화
 
 | # | 항목 | 설명 |
 |---|------|------|
-| ORG-1 | 부서명 현실화 | 프로덕트개발팀→개발팀, 그로스팀→마케팅팀, 경영지원→경영지원팀 |
-| ORG-2 | 직급명 현실화 | CEO비서실장→실장, 개발팀 리드→개발팀장, 그로스팀 리드→마케팅팀장, 테크 리드→플랫폼팀장, UX 리서처 리드→프로덕트팀장, IT 운영 매니저→시스템 운영, QA 리서처→리서치 QA, 프로덕트 매니저→PM |
-| ORG-3 | 채널 동기화 | GROWTH enum→MARKETING, growth채널→marketing채널 |
-| ORG-4 | HR 매니저 동기화 | 동적 고용 팀/채널 매핑 현실 부서명으로 업데이트 |
-| ORG-5 | 프론트엔드 전체 동기화 | TEAM_CONFIG, STATIC_PERSONA_MAP, ROOMS, DESKS, TEAM_ORDER 전부 새 부서명으로 변경 |
+| ORG-1 | 부서명 | 프로덕트개발팀→개발팀, 그로스팀→마케팅팀, 경영지원→경영지원팀 |
+| ORG-2 | 직급 | 개발팀장, 플랫폼팀장, 프로덕트팀장, 마케팅팀장, PM, 시스템 운영 등 |
+| ORG-3 | 채널 | GROWTH→MARKETING, growth→marketing 전체 동기화 |
 
-### 아키텍처 개선
+### HR 시스템 강화
 
 | # | 항목 | 설명 |
 |---|------|------|
-| ARCH-1 | TeamConfig 중앙 관리 | `personas.ts`에 `TEAM_CONFIG` 단일 소스 — 팀 변경 시 여기만 수정하면 전체 자동 반영 |
-| ARCH-2 | AgentsTab 하드코딩 제거 | `TEAM_COLOR`, `TEAM_LABEL_COLOR` 삭제 → `getTeamConfig()` import |
-| ARCH-3 | PixelOffice 하드코딩 제거 | `SHIRT`, `TEAM_EN`, `ROOM_FLOORS` → `TEAM_CONFIG`에서 자동 파생 |
-| ARCH-4 | CompanyChat 채널 동적화 | 하드코딩된 `CHANNELS` 배열 삭제 → `getChannelList()` 자동 생성 |
+| HR-1 | 해고 UI 버튼 | JINXUS_CORE 제외 전 에이전트 해고 가능 (🗑️ 아이콘) |
+| HR-2 | 재고용 복구 | 에이전트 인스턴스 + 페르소나 재생성 (기존: record만 활성화) |
 
 ### 버그 수정
 
 | # | 항목 | 설명 |
 |---|------|------|
-| BUG-1 | 작업로그 삭제 안 되는 버그 | 벌크 삭제 `DELETE /logs` → `POST /logs/bulk-delete`로 변경, 개별 삭제 `DELETE /logs/{id}` 라우트 충돌 해소 |
-| BUG-2 | 업무노트 자동생성 실패 | `self._store.get_conversations()` (존재하지 않는 메서드) → `mission.agent_conversations` 직접 참조 |
+| BUG-1 | 작업로그 삭제 | DELETE /logs 라우트 충돌 → POST /logs/bulk-delete |
+| BUG-2 | 업무노트 자동생성 | get_conversations() → mission.agent_conversations |
+| BUG-3 | 줌 잔상 | 카메라 변환 전 clearRect 추가 |
 
 ### UI 개선
 
 | # | 항목 | 설명 |
 |---|------|------|
-| UI-1 | OFFICE FEED 사이드바 토글 | `PanelRightClose`/`PanelRightOpen` 버튼으로 접기/펼치기 (w-64 ↔ w-8), 모바일 대응 |
-| UI-2 | 미션 실시간 피드 | 도구 호출 이벤트(`mission_tool_calls`) 추가 — OFFICE FEED에 "🔧 도구 호출: tool1, tool2" 표시 |
-| UI-3 | 미션 피드 흐름 | 에이전트 작업시작 → 도구 호출 → 작업완료 → 보고 순서로 OFFICE FEED에 실시간 표시 |
+| UI-1 | 탭 이름 영어화 | Office, Corporation, Projects, Memory, Logs, Tools, Notes, Settings |
+| UI-2 | 채팅 탭 제거 | 기능 Office 탭으로 흡수 |
+| UI-3 | muteChat 전역화 | Office/Corporation 동시 적용 |
+| UI-4 | OFFICE FEED 토글 | 사이드바 접기/펼치기 (모바일 대응) |
+| UI-5 | 미션 실시간 피드 | mission_tool_calls 이벤트, 도구 호출 표시 |
+| UI-6 | 뒤로가기 버튼 | 에이전트 채팅 뷰에 ← 추가 |
+| UI-7 | 옛 팀명 제거 | matrix.ts, CompanyChat.tsx 채널 ID 정합성 |
 
 ---
 

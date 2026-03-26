@@ -8,7 +8,7 @@ import Sidebar from '@/components/Sidebar';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { systemApi } from '@/lib/api';
 
-// MissionTab(Office)은 항상 마운트 (기본 탭)
+// MissionTab(Office)은 항상 마운트 (기본 탭) — 서브탭으로 근무 환경/업무 포함
 const MissionTab = dynamic(() => import('@/components/tabs/MissionTab'), { ssr: false });
 // 자주 쓰는 탭은 항상 마운트 유지 — 탭 전환 시 로딩 없음
 const TeamTab = dynamic(() => import('@/components/tabs/TeamTab'), { ssr: false });

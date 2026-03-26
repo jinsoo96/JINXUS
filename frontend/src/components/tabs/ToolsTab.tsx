@@ -448,21 +448,21 @@ export default function ToolsTab() {
       <h2 className="text-2xl font-bold mb-6">Tools</h2>
 
       {/* 탭 네비게이션 */}
-      <div className="flex gap-2 mb-6 border-b border-dark-border pb-3">
+      <div className="flex gap-1.5 sm:gap-2 mb-4 sm:mb-6 border-b border-dark-border pb-3 overflow-x-auto scrollbar-none -mx-1 px-1">
         {tabs.map(tab => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 rounded-lg text-xs sm:text-sm transition-colors whitespace-nowrap flex-shrink-0 min-h-[44px] active:scale-95 ${
                 activeTab === tab.id
                   ? 'bg-primary text-white'
                   : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'
               }`}
             >
               <Icon size={16} />
-              {tab.label}
+              <span className="hidden sm:inline">{tab.label}</span>
               {tab.count !== undefined && (
                 <span className={`px-1.5 py-0.5 text-xs rounded-full ${
                   activeTab === tab.id ? 'bg-white/20' : 'bg-zinc-700'
@@ -478,8 +478,8 @@ export default function ToolsTab() {
       {/* ═══ MCP 서버 탭 ═══ */}
       {activeTab === 'mcp' && (
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-4 text-sm text-zinc-500">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+            <div className="flex items-center gap-3 sm:gap-4 text-xs sm:text-sm text-zinc-500 flex-wrap">
               {mcpStatus && (
                 <>
                   <span className="flex items-center gap-1">
@@ -513,26 +513,26 @@ export default function ToolsTab() {
           {showAddMCP && (
             <div className="bg-dark-card border border-primary/30 rounded-xl p-4 mb-4">
               <h4 className="text-sm font-semibold text-white mb-3">MCP 서버 추가</h4>
-              <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div>
                   <label className="text-zinc-500 block mb-1">서버 이름 *</label>
                   <input value={newMCP.name} onChange={e => setNewMCP(p => ({...p, name: e.target.value}))}
-                    placeholder="예: firecrawl" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                    placeholder="예: firecrawl" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-2.5 sm:py-1.5 text-white min-h-[44px] sm:min-h-0" />
                 </div>
                 <div>
                   <label className="text-zinc-500 block mb-1">npm 패키지 / 명령 *</label>
                   <input value={newMCP.args} onChange={e => setNewMCP(p => ({...p, args: e.target.value}))}
-                    placeholder="예: firecrawl-mcp" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                    placeholder="예: firecrawl-mcp" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-2.5 sm:py-1.5 text-white min-h-[44px] sm:min-h-0" />
                 </div>
                 <div>
                   <label className="text-zinc-500 block mb-1">환경변수 (KEY=VALUE, 쉼표 구분)</label>
                   <input value={newMCP.env} onChange={e => setNewMCP(p => ({...p, env: e.target.value}))}
-                    placeholder="예: API_KEY=sk-xxx" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                    placeholder="예: API_KEY=sk-xxx" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-2.5 sm:py-1.5 text-white min-h-[44px] sm:min-h-0" />
                 </div>
                 <div>
                   <label className="text-zinc-500 block mb-1">허용 에이전트 (쉼표 구분, 비우면 전체)</label>
                   <input value={newMCP.allowed_agents} onChange={e => setNewMCP(p => ({...p, allowed_agents: e.target.value}))}
-                    placeholder="예: 김지은, 배태양" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-1.5 text-white" />
+                    placeholder="예: 김지은, 배태양" className="w-full bg-zinc-900 border border-dark-border rounded px-2 py-2.5 sm:py-1.5 text-white min-h-[44px] sm:min-h-0" />
                 </div>
                 <div className="col-span-2">
                   <label className="text-zinc-500 block mb-1">설명</label>
@@ -626,11 +626,11 @@ export default function ToolsTab() {
                           <Wrench size={14} />
                           사용 가능한 도구
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                           {server.tools.map((tool) => (
                             <div
                               key={tool.name}
-                              className="px-3 py-2 text-sm bg-zinc-800/50 rounded-lg text-zinc-300 hover:bg-zinc-700/50 cursor-default"
+                              className="px-3 py-2.5 sm:py-2 text-sm bg-zinc-800/50 rounded-lg text-zinc-300 hover:bg-zinc-700/50 cursor-default min-h-[44px] sm:min-h-0"
                               title={tool.description}
                             >
                               <div className="font-medium truncate">{tool.name}</div>
@@ -1075,7 +1075,7 @@ export default function ToolsTab() {
             ) : (
               <div className="space-y-3">
                 {/* 요약 카드 */}
-                <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
                   <div className="bg-dark-card border border-dark-border rounded-xl p-4 text-center">
                     <div className="text-2xl font-bold text-primary">{analytics.total_calls.toLocaleString()}</div>
                     <div className="text-xs text-zinc-500 mt-1">총 호출 횟수</div>

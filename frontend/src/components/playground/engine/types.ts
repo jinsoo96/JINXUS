@@ -37,6 +37,10 @@ export interface CharState {
   poiTarget: string | null;
   socialTarget: string | null;
   socialTimer: number;
+  // Smoking effect
+  smokingTimer: number;  // >0 means currently smoking
+  smokeAnchorCol: number;  // 흡연 시작 위치 (서성이기 범위 제한용)
+  smokeAnchorRow: number;
 }
 
 // ── Map layout types ──

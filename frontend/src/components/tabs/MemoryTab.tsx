@@ -112,7 +112,7 @@ export default function MemoryTab() {
       </div>
 
       {/* 통계 카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-shrink-0">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 flex-shrink-0">
         {/* 총 장기기억 */}
         <div className="bg-dark-card border border-dark-border rounded-xl p-3">
           <div className="flex items-center gap-2 mb-1">
@@ -168,14 +168,14 @@ export default function MemoryTab() {
 
       {/* 검색 폼 */}
       <form onSubmit={handleSearch} className="flex-shrink-0">
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
           {/* 커스텀 드롭다운 — 스크롤 지원 */}
-          <div ref={dropdownRef} className="relative min-w-[200px]">
+          <div ref={dropdownRef} className="relative w-full sm:min-w-[200px] sm:w-auto">
             <button
               type="button"
               onClick={() => setDropdownOpen(!dropdownOpen)}
               aria-label="에이전트 선택"
-              className="w-full bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary transition-colors flex items-center justify-between gap-2 text-left"
+              className="w-full bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary transition-colors flex items-center justify-between gap-2 text-left min-h-[44px]"
             >
               <span className={selectedAgent ? 'text-white' : 'text-zinc-500'}>
                 {selectedAgent ? agentLabel(selectedAgent) : '에이전트 선택'}
@@ -188,7 +188,7 @@ export default function MemoryTab() {
                 <button
                   type="button"
                   onClick={() => { setSelectedAgent(''); setResults([]); setHasSearched(false); setDropdownOpen(false); }}
-                  className={`w-full text-left px-4 py-2.5 text-sm hover:bg-zinc-800 transition-colors rounded-t-xl ${!selectedAgent ? 'text-primary' : 'text-zinc-400'}`}
+                  className={`w-full text-left px-4 py-3 sm:py-2.5 text-sm hover:bg-zinc-800 active:bg-zinc-700 transition-colors rounded-t-xl min-h-[44px] ${!selectedAgent ? 'text-primary' : 'text-zinc-400'}`}
                 >
                   에이전트 선택
                 </button>
@@ -196,7 +196,7 @@ export default function MemoryTab() {
                 <button
                   type="button"
                   onClick={() => { setSelectedAgent('JINXUS_CORE'); setResults([]); setHasSearched(false); setDropdownOpen(false); }}
-                  className={`w-full text-left px-4 py-2.5 text-sm hover:bg-zinc-800 transition-colors ${selectedAgent === 'JINXUS_CORE' ? 'text-primary bg-zinc-800/50' : 'text-white'}`}
+                  className={`w-full text-left px-4 py-3 sm:py-2.5 text-sm hover:bg-zinc-800 active:bg-zinc-700 transition-colors min-h-[44px] ${selectedAgent === 'JINXUS_CORE' ? 'text-primary bg-zinc-800/50' : 'text-white'}`}
                 >
                   {getPersona('JINXUS_CORE')?.emoji ?? '🧠'} {getDisplayName('JINXUS_CORE')}
                 </button>
@@ -206,7 +206,7 @@ export default function MemoryTab() {
                     type="button"
                     key={agent.name}
                     onClick={() => { setSelectedAgent(agent.name); setResults([]); setHasSearched(false); setDropdownOpen(false); }}
-                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-zinc-800 transition-colors ${idx === agents.length - 1 ? 'rounded-b-xl' : ''} ${selectedAgent === agent.name ? 'text-primary bg-zinc-800/50' : 'text-white'}`}
+                    className={`w-full text-left px-4 py-3 sm:py-2.5 text-sm hover:bg-zinc-800 active:bg-zinc-700 transition-colors min-h-[44px] ${idx === agents.length - 1 ? 'rounded-b-xl' : ''} ${selectedAgent === agent.name ? 'text-primary bg-zinc-800/50' : 'text-white'}`}
                   >
                     {agentLabel(agent.name)}
                   </button>
@@ -221,13 +221,13 @@ export default function MemoryTab() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="기억 검색 (예: 코드 리뷰, 에러 수정...)"
             aria-label="메모리 검색어"
-            className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary transition-colors"
+            className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
           />
 
           <button
             type="submit"
             disabled={!selectedAgent || !query.trim() || isSearching}
-            className="px-5 py-2.5 bg-primary hover:bg-primary/90 text-black rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+            className="px-5 py-2.5 bg-primary hover:bg-primary/90 active:bg-primary/80 text-black rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium min-h-[44px]"
           >
             {isSearching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
             검색

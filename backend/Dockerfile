@@ -39,12 +39,15 @@ WORKDIR /app
 ENV TZ=Asia/Seoul
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 런타임 의존성: Node.js 22 + curl (healthcheck) + git (mcp-git)
+# 런타임 의존성: Node.js 22 + curl (healthcheck) + git (mcp-git) + docker-cli
 RUN apt-get update && apt-get install -y \
     curl \
     git \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Python 패키지 설치
@@ -56,6 +59,9 @@ RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requiremen
 # MCP 패키지 복사
 COPY --from=builder /build/npm /usr/local
 ENV NODE_PATH=/usr/local/lib/node_modules
+
+# Claude Code CLI 설치 (v4 미션 실행 엔진 — 에이전트 서브프로세스 필수)
+RUN npm install -g @anthropic-ai/claude-code
 
 # Playwright 브라우저 설치
 RUN npx playwright install --with-deps chromium

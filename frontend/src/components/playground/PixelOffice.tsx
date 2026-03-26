@@ -36,6 +36,16 @@ import { initPOIStates } from './poi/poiManager';
 export type { ActivityLogEntry } from './engine/types';
 export type { PixelOfficeProps } from './engine/types';
 
+// ── 싱글톤 GameState: Office/Corporation 탭 간 캐릭터 상태 공유 ──
+let _sharedGame: GameState | null = null;
+let _sharedGameOwners = 0; // 마운트된 PixelOffice 수
+function getSharedGame(): GameState {
+  if (!_sharedGame) {
+    _sharedGame = { chars: new Map(), lastT: 0, rafId: 0, deskMap: new Map() };
+  }
+  return _sharedGame;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper functions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -57,8 +67,10 @@ function assignDesks(hired: Set<string>): Map<string, DeskDef> {
   const agents: Record<string, string[]> = {};
   Array.from(hired).forEach(code => {
     const p = getPersona(code); if (!p) return;
-    if (!agents[p.team]) agents[p.team] = [];
-    agents[p.team].push(code);
+    // JINXUS_CORE -> CEO Room 전용 데스크
+    const team = code === 'JINXUS_CORE' ? 'CEO Room' : p.team;
+    if (!agents[team]) agents[team] = [];
+    agents[team].push(code);
   });
   for (const [team, codes] of Object.entries(agents)) {
     codes.sort(sortByRank);
@@ -86,12 +98,92 @@ function initChar(code: string, desk: DeskDef): CharState {
     idleTimer: 0.5 + Math.random() * 2, typeFrame: 0,
     speechBubble: null, speechBubbleTimer: 0,
     prevStatus: null,
-    activity: '출근 중', poiTarget: null, socialTarget: null, socialTimer: 0,
+    activity: '출근 중', poiTarget: null, socialTarget: null, socialTimer: 0, smokingTimer: 0,
+    smokeAnchorCol: 0, smokeAnchorRow: 0,
   };
+}
+
+// CEO Room bounds (interior walkable area)
+const CEO_ROOM = { x1: 49, y1: 7, x2: 58, y2: 16 };
+const CEO_SMOKING_POI = { col: 53, row: 12 };
+const JINXUS_SMOKE_INTERVAL = 20; // ~20초마다 흡연
+const JINXUS_SMOKE_DURATION_MIN = 15;
+const JINXUS_SMOKE_DURATION_MAX = 25;
+
+// JINXUS_CORE idle timer for smoking (module-level)
+let _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 5;
+
+function isInCEORoom(col: number, row: number): boolean {
+  return col >= CEO_ROOM.x1 && col <= CEO_ROOM.x2 && row >= CEO_ROOM.y1 && row <= CEO_ROOM.y2;
 }
 
 function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: number) {
   const status = runtime?.status || 'idle';
+  const isJinxusCore = c.code === 'JINXUS_CORE';
+
+  // Working 상태면 흡연/사교 즉시 취소하고 자리로 복귀
+  if (status === 'working') {
+    if (c.smokingTimer > 0) { c.smokingTimer = 0; c.poiTarget = null; }
+    if (c.socialTimer > 0) { c.socialTarget = null; c.socialTimer = 0; }
+    // Reset smoke countdown so it starts fresh after work ends
+    if (isJinxusCore) _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 5;
+  }
+
+  // JINXUS_CORE smoking logic: when idle, countdown to smoke
+  if (isJinxusCore && status !== 'working' && c.smokingTimer <= 0 && c.state === 'idle' && !c.poiTarget) {
+    _jinxusSmokeCountdown -= dt;
+    if (_jinxusSmokeCountdown <= 0) {
+      _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 10;
+      // Walk to CEO Room ashtray
+      const p = bfs(c.col, c.row, CEO_SMOKING_POI.col, CEO_SMOKING_POI.row);
+      if (p.length > 0) {
+        c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+        c.poiTarget = 'ceo_smoking'; c.activity = '담배 피우러 가는 중';
+        c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = 3;
+      }
+    }
+  }
+
+  // 흡연 중: 흡연장 POI 주변 3x3 내에서 서성이거나 멈추기, 끝나면 자리 복귀
+  if (c.smokingTimer > 0) {
+    c.smokingTimer -= dt;
+    if (c.smokingTimer <= 0) {
+      c.smokingTimer = 0;
+      c.activity = '자리로 돌아가는 중';
+      const deskPath = bfs(c.col, c.row, c.deskCol, c.deskRow);
+      if (deskPath.length > 0) {
+        c.path = deskPath; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+        c.idleTimer = 2 + Math.random() * 3;
+      } else {
+        c.idleTimer = 1;
+      }
+    } else if (c.state === 'idle') {
+      c.idleTimer -= dt;
+      if (c.idleTimer <= 0) {
+        c.idleTimer = 2 + Math.random() * 4;
+        // 50% 확률로 서성이기, 50% 그냥 서있기
+        if (Math.random() < 0.5) {
+          const grid = getGrid();
+          // smokeAnchor 기준 3x3 내에서만 서성이기 (사무실 진입 방지)
+          const ax = c.smokeAnchorCol || c.col;
+          const ay = c.smokeAnchorRow || c.row;
+          for (let i = 0; i < 8; i++) {
+            const tx = ax + Math.floor(Math.random() * 3) - 1;
+            const ty = ay + Math.floor(Math.random() * 3) - 1;
+            if (tx >= 0 && tx < MAP_W && ty >= 0 && ty < MAP_H && grid[ty]?.[tx]) {
+              // 앵커에서 2칸 이내만 허용 (사무실 진입 방지)
+              if (Math.abs(tx - ax) > 2 || Math.abs(ty - ay) > 2) continue;
+              const p = bfs(c.col, c.row, tx, ty);
+              if (p.length > 0 && p.length <= 3) {
+                c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   // Speech bubble timer
   if (c.speechBubble) {
@@ -119,6 +211,7 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
 
   // Working state
   if (status === 'working') {
+    // 이미 업무 애니메이션 중이면 계속
     if (c.state === 'type' || c.state === 'read' || c.state === 'think' || c.state === 'search') {
       if (c.state !== workState) { c.state = workState; c.animT = 0; c.typeFrame = 0; }
       const frameDur = c.state === 'read' ? READ_FRAME_DUR
@@ -129,14 +222,23 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
       if (c.animT >= frameDur) { c.animT -= frameDur; c.typeFrame = (c.typeFrame + 1) % 2; }
       return;
     }
+    // 자리에 도착했으면 업무 시작
     if (c.col === c.deskCol && c.row === c.deskRow) {
       c.state = workState; c.dir = c.deskDir; c.animT = 0; c.typeFrame = 0;
       return;
     }
-    if (c.state !== 'walk' || c.pathIdx >= c.path.length) {
+    // 자리로 이동 중인지 확인: 현재 경로의 최종 목적지가 자기 자리인지 체크
+    const isWalkingToDesk = c.state === 'walk' && c.pathIdx < c.path.length &&
+      c.path.length > 0 && c.path[c.path.length - 1][0] === c.deskCol && c.path[c.path.length - 1][1] === c.deskRow;
+    if (isWalkingToDesk) {
+      // 자리로 가는 중 → 걷기 계속 (fall through to walk handler)
+    } else {
+      // 자리 외 다른 곳으로 이동 중이거나 정지 상태 → 자리로 경로 재설정
+      c.poiTarget = null;
       const p = bfs(c.col, c.row, c.deskCol, c.deskRow);
       if (p.length) { c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0; }
-      return;
+      else if (c.state !== 'walk') { return; }
+      // BFS 실패 + 이미 걷는 중이면 현재 걷기 계속 (가다보면 경로 찾을 수 있음)
     }
   } else if (c.state === 'type' || c.state === 'read' || c.state === 'think' || c.state === 'search') {
     c.state = 'idle'; c.idleTimer = 1 + Math.random() * 3;
@@ -150,6 +252,18 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
         const poi = POI_LIST.find(p => p.name === c.poiTarget);
         if (poi) c.activity = poi.action;
         c.idleTimer = 5 + Math.random() * 8;
+        // 흡연 구역 도착 → 흡연 타이머 시작
+        if (c.poiTarget === 'ceo_smoking' && c.code === 'JINXUS_CORE') {
+          // JINXUS_CORE만 CEO Room 흡연: 15~25초
+          c.smokingTimer = JINXUS_SMOKE_DURATION_MIN + Math.random() * (JINXUS_SMOKE_DURATION_MAX - JINXUS_SMOKE_DURATION_MIN);
+          c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = c.smokingTimer;
+          c.smokeAnchorCol = c.col; c.smokeAnchorRow = c.row;
+        } else if (c.poiTarget.startsWith('smoking') && c.poiTarget !== 'ceo_smoking') {
+          // 일반 에이전트: 실외 흡연장에서만 흡연 (smoking, smoking_b, smoking_c)
+          c.smokingTimer = 27 + Math.random() * 6; // 27~33초 흡연
+          c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = c.smokingTimer;
+          c.smokeAnchorCol = c.col; c.smokeAnchorRow = c.row;
+        }
         c.poiTarget = null;
       } else {
         c.idleTimer = 2 + Math.random() * 5;
@@ -187,10 +301,60 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
       const kstHour = new Date(Date.now() + 9 * 3600000).getUTCHours();
       const behavior = getIdleBehavior(kstHour);
 
+      // JINXUS_CORE: CEO Room 안에서만 활동
+      if (isJinxusCore) {
+        // CEO Room 내부 POI만 사용 (meeting_a, meeting_b, ceo_smoking)
+        if (behavior === 'poi') {
+          const ceoPoIs = POI_LIST.filter(p => isInCEORoom(p.col, p.row));
+          if (ceoPoIs.length > 0) {
+            const poi = ceoPoIs[Math.floor(Math.random() * ceoPoIs.length)];
+            // ceo_smoking은 별도 흡연 로직에서 처리하므로 skip
+            if (poi.name !== 'ceo_smoking') {
+              const p = bfs(c.col, c.row, poi.col, poi.row);
+              if (p.length > 0) {
+                c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+                c.poiTarget = poi.name; c.activity = poi.action;
+                c.idleTimer = 6 + Math.random() * 8;
+                return;
+              }
+            }
+          }
+        }
+
+        if (behavior === 'desk') {
+          const p = bfs(c.col, c.row, c.deskCol, c.deskRow);
+          if (p.length > 0) {
+            c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+            c.activity = '자리로 돌아가는 중';
+            c.idleTimer = 3 + Math.random() * 5;
+            return;
+          }
+        }
+
+        // Default: CEO Room 내에서만 서성이기
+        c.idleTimer = 4 + Math.random() * 8;
+        c.activity = getIdleActivity(c.code);
+        for (let i = 0; i < 8; i++) {
+          const tx = CEO_ROOM.x1 + Math.floor(Math.random() * (CEO_ROOM.x2 - CEO_ROOM.x1 + 1));
+          const ty = CEO_ROOM.y1 + Math.floor(Math.random() * (CEO_ROOM.y2 - CEO_ROOM.y1 + 1));
+          const grid = getGrid();
+          if (grid[ty]?.[tx]) {
+            const p = bfs(c.col, c.row, tx, ty);
+            if (p.length > 0 && p.length <= 12) {
+              c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+              break;
+            }
+          }
+        }
+      } else {
+        // Normal agents: original behavior
       if (behavior === 'poi') {
-        const poi = POI_LIST[Math.floor(Math.random() * POI_LIST.length)];
+        // 일반 에이전트는 ceo_smoking 제외 (CEO Room 흡연은 사장 전용)
+        const available = POI_LIST.filter(p => p.name !== 'ceo_smoking');
+        const poi = available[Math.floor(Math.random() * available.length)];
         const p = bfs(c.col, c.row, poi.col, poi.row);
-        if (p.length > 0 && p.length <= 30) {
+        const maxDist = poi.type === 'outdoor' ? 60 : 30;
+        if (p.length > 0 && p.length <= maxDist) {
           c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
           c.poiTarget = poi.name; c.activity = poi.action;
           c.idleTimer = 6 + Math.random() * 8;
@@ -223,6 +387,7 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
           }
         }
       }
+      } // end normal agents
     }
   }
 }
@@ -469,6 +634,56 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
       drawActivityEmoji(ctx, c.activity, c.x, c.y, DSH);
     }
 
+    // Smoking effect: cigarette in hand + white smoke rising
+    if (c.smokingTimer > 0) {
+      const fadeIn = Math.min(1, c.smokingTimer / 2); // 마지막 2초 페이드아웃
+      // ── 담배 (손 위치에 흰 막대 + 오렌지 불) ──
+      const isLeft = c.dir === 1;
+      const handOffX = (isLeft ? -5 : 5) * SCALE;
+      const cigX = Math.round(c.x + handOffX);
+      const cigY = Math.round(c.y + 1 * SCALE); // 몸통 중간쯤
+      // 담배 몸통 (흰색 막대)
+      ctx.fillStyle = '#e8e8e8';
+      const cigLen = 3 * SCALE, cigThick = 1 * SCALE;
+      if (isLeft) {
+        ctx.fillRect(cigX - cigLen, cigY, cigLen, cigThick);
+      } else {
+        ctx.fillRect(cigX, cigY, cigLen, cigThick);
+      }
+      // 필터 (갈색 부분)
+      ctx.fillStyle = '#c2884a';
+      const filterLen = 1 * SCALE;
+      if (isLeft) {
+        ctx.fillRect(cigX - filterLen, cigY, filterLen, cigThick);
+      } else {
+        ctx.fillRect(cigX + cigLen - filterLen, cigY, filterLen, cigThick);
+      }
+      // 불빛 (오렌지-빨강 끝)
+      const tipX = isLeft ? cigX - cigLen : cigX + cigLen;
+      const glowPulse = 0.7 + 0.3 * Math.sin(Date.now() / 200);
+      ctx.fillStyle = `rgba(255,100,20,${glowPulse})`;
+      ctx.fillRect(tipX - 0.5 * SCALE, cigY - 0.5 * SCALE, 1.5 * SCALE, 2 * SCALE);
+
+      // ── 연기 (하얀색, 크게, 위로 올라감) ──
+      const smokeT = Date.now() / 1000;
+      const smokeBaseX = tipX;
+      const smokeBaseY = cigY - 1 * SCALE;
+      for (let i = 0; i < 6; i++) {
+        const age = (smokeT * 0.8 + i * 0.9) % 3.5; // 0~3.5초 사이클
+        const rise = age * 5 * SCALE; // 위로 올라가는 거리
+        const drift = Math.sin(smokeT * 0.6 + i * 1.3) * (1 + age) * SCALE; // 좌우 흔들림
+        const sx = smokeBaseX + drift;
+        const sy = smokeBaseY - rise;
+        const r = (1.2 + age * 1.5) * SCALE; // 올라갈수록 커짐
+        const alpha = fadeIn * Math.max(0, 0.55 - age * 0.15); // 올라갈수록 투명
+        if (alpha <= 0) continue;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     // Name + activity
     ctx.textAlign = 'center';
     ctx.fillStyle = isWorking ? '#93c5fd' : isError ? '#fca5a5' : '#d4d4d8';
@@ -511,15 +726,34 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
     }
   }
 
-  // LAYER 10: Clock (KST)
+  // LAYER 10: Clock (KST) — 상단 중앙, 크게
   ctx.imageSmoothingEnabled = true;
-  const clkX = CW - 3 * TILE, clkY = 1 * SCALE;
-  ctx.fillStyle = '#1e1e2e'; ctx.fillRect(clkX, clkY, 11 * SCALE, 7 * SCALE);
-  ctx.strokeStyle = '#3f3f46'; ctx.lineWidth = 0.5 * SCALE; ctx.strokeRect(clkX, clkY, 11 * SCALE, 7 * SCALE);
+  const clkW = 22 * SCALE, clkH = 11 * SCALE;
+  const clkX = Math.round(CW / 2 - clkW / 2), clkY = 2 * SCALE;
+  // 배경
+  ctx.fillStyle = 'rgba(15, 15, 25, 0.85)';
+  ctx.beginPath();
+  const clkR = 2 * SCALE;
+  ctx.moveTo(clkX + clkR, clkY);
+  ctx.lineTo(clkX + clkW - clkR, clkY);
+  ctx.quadraticCurveTo(clkX + clkW, clkY, clkX + clkW, clkY + clkR);
+  ctx.lineTo(clkX + clkW, clkY + clkH - clkR);
+  ctx.quadraticCurveTo(clkX + clkW, clkY + clkH, clkX + clkW - clkR, clkY + clkH);
+  ctx.lineTo(clkX + clkR, clkY + clkH);
+  ctx.quadraticCurveTo(clkX, clkY + clkH, clkX, clkY + clkH - clkR);
+  ctx.lineTo(clkX, clkY + clkR);
+  ctx.quadraticCurveTo(clkX, clkY, clkX + clkR, clkY);
+  ctx.fill();
+  ctx.strokeStyle = nightAlpha > 0.1 ? '#3b82f640' : '#3f3f4660';
+  ctx.lineWidth = 0.5 * SCALE; ctx.stroke();
+  // 시간 텍스트
   const kstMin = new Date(Date.now() + 9 * 3600000).getUTCMinutes();
-  ctx.fillStyle = nightAlpha > 0.1 ? '#60a5fa' : '#a1a1aa';
-  ctx.font = `${3.5 * SCALE}px monospace`;
-  ctx.fillText(`${String(kstHour).padStart(2, '0')}:${String(kstMin).padStart(2, '0')}`, clkX + 1.5 * SCALE, clkY + 5 * SCALE);
+  const timeStr = `${String(kstHour).padStart(2, '0')}:${String(kstMin).padStart(2, '0')}`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = nightAlpha > 0.1 ? '#60a5fa' : '#e4e4e7';
+  ctx.font = `bold ${7 * SCALE}px monospace`;
+  ctx.fillText(timeStr, CW / 2, clkY + 8.5 * SCALE);
+  ctx.textAlign = 'left';
   ctx.imageSmoothingEnabled = false;
 
   ctx.restore(); // pop camera transform
@@ -573,35 +807,44 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
       clampCamera(cameraRef.current);
     };
     resize();
-    // Center on office area (rooms are y6-17, center around y=12 x=30)
-    centerOn(cameraRef.current, 30 * TILE, 12 * TILE);
+    // 초기 뷰: 맵 전체가 viewport에 딱 맞게 fit + 중앙
+    const mapPxW = MAP_W * TILE;
+    const mapPxH = MAP_H * TILE;
+    const cam = cameraRef.current;
+    cam.zoom = Math.min(cam.viewportW / mapPxW, cam.viewportH / mapPxH);
+    centerOn(cam, mapPxW / 2, mapPxH / 2);
     const ro = new ResizeObserver(resize);
     ro.observe(container);
     return () => ro.disconnect();
   }, []);
 
-  // Game loop
+  // Game loop — 싱글톤 GameState로 Office/Corporation 공유
   useEffect(() => {
-    const game: GameState = { chars: new Map(), lastT: 0, rafId: 0, deskMap: new Map() };
+    const game = getSharedGame();
     gameRef.current = game;
+    _sharedGameOwners++;
+    const isUpdateOwner = _sharedGameOwners === 1; // 첫 번째 마운트만 업데이트 담당
 
     const loop = (ts: number) => {
-      const dt = game.lastT ? Math.min((ts - game.lastT) / 1000, 0.1) : 0.016;
-      game.lastT = ts;
       const { runtimeMap: rm, hiredSet: hs, agentBubbles: bubbles } = propsRef.current;
 
-      // Sync agents
-      const newDeskMap = assignDesks(hs);
-      Array.from(hs).forEach(code => {
-        if (!game.chars.has(code)) {
-          const desk = newDeskMap.get(code);
-          if (desk) game.chars.set(code, initChar(code, desk));
-        }
-      });
-      Array.from(game.chars.keys()).forEach(code => {
-        if (!hs.has(code)) game.chars.delete(code);
-      });
-      game.deskMap = newDeskMap;
+      // 업데이트 담당 인스턴스만 game state 변경 (이중 업데이트 방지)
+      if (isUpdateOwner) {
+        const dt = game.lastT ? Math.min((ts - game.lastT) / 1000, 0.1) : 0.016;
+        game.lastT = ts;
+
+        // Sync agents
+        const newDeskMap = assignDesks(hs);
+        Array.from(hs).forEach(code => {
+          if (!game.chars.has(code)) {
+            const desk = newDeskMap.get(code);
+            if (desk) game.chars.set(code, initChar(code, desk));
+          }
+        });
+        Array.from(game.chars.keys()).forEach(code => {
+          if (!hs.has(code)) game.chars.delete(code);
+        });
+        game.deskMap = newDeskMap;
 
       // Update
       game.chars.forEach((ch, code) => {
@@ -661,15 +904,19 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
           }
         }
       });
+      } // end isUpdateOwner
 
-      // Render
+      // Render (모든 인스턴스가 자기 canvas에 그림)
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) render(game, ctx, rm, cameraRef.current);
 
       game.rafId = requestAnimationFrame(loop);
     };
     game.rafId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(game.rafId);
+    return () => {
+      cancelAnimationFrame(game.rafId);
+      _sharedGameOwners--;
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mouse handlers
@@ -680,8 +927,14 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
     return [e.clientX - rect.left, e.clientY - rect.top];
   }, []);
 
-  const findChar = useCallback((e: React.MouseEvent) => {
-    const [sx, sy] = getCanvasCoords(e);
+  const getCanvasCoordsFromTouch = useCallback((touch: React.Touch): [number, number] => {
+    const canvas = canvasRef.current;
+    if (!canvas) return [0, 0];
+    const rect = canvas.getBoundingClientRect();
+    return [touch.clientX - rect.left, touch.clientY - rect.top];
+  }, []);
+
+  const findCharAt = useCallback((sx: number, sy: number) => {
     const cam = cameraRef.current;
     const [wx, wy] = screenToWorld(cam, sx, sy);
     const game = gameRef.current;
@@ -691,7 +944,12 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
       if (!found && Math.abs(wx - ch.x) < 8 * SCALE && Math.abs(wy - ch.y) < 10 * SCALE) found = code;
     });
     return found;
-  }, [getCanvasCoords]);
+  }, []);
+
+  const findChar = useCallback((e: React.MouseEvent) => {
+    const [sx, sy] = getCanvasCoords(e);
+    return findCharAt(sx, sy);
+  }, [getCanvasCoords, findCharAt]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -731,6 +989,77 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
     const [sx, sy] = getCanvasCoords(e);
     applyZoom(cameraRef.current, e.deltaY, sx, sy);
   }, [getCanvasCoords]);
+
+  // Touch handlers — 1-finger drag pan, 2-finger pinch zoom, tap to select
+  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const pinchStartDistRef = useRef<number>(0);
+  const pinchStartZoomRef = useRef<number>(1);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      const [sx, sy] = getCanvasCoordsFromTouch(e.touches[0]);
+      startDrag(cameraRef.current, sx, sy);
+      touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() };
+    } else if (e.touches.length === 2) {
+      // Pinch zoom start
+      endDrag(cameraRef.current);
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDistRef.current = Math.sqrt(dx * dx + dy * dy);
+      pinchStartZoomRef.current = cameraRef.current.zoom;
+    }
+  }, [getCanvasCoordsFromTouch]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 1 && cameraRef.current.isDragging) {
+      const [sx, sy] = getCanvasCoordsFromTouch(e.touches[0]);
+      updateDrag(cameraRef.current, sx, sy);
+    } else if (e.touches.length === 2) {
+      // Pinch zoom
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (pinchStartDistRef.current > 0) {
+        const scale = dist / pinchStartDistRef.current;
+        const cam = cameraRef.current;
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const rect = canvas.getBoundingClientRect();
+          const sx = midX - rect.left;
+          const sy = midY - rect.top;
+          const [wx, wy] = screenToWorld(cam, sx, sy);
+          cam.zoom = Math.max(0.3, Math.min(2.0, pinchStartZoomRef.current * scale));
+          cam.x = wx - sx / cam.zoom;
+          cam.y = wy - sy / cam.zoom;
+          clampCamera(cam);
+        }
+      }
+    }
+  }, [getCanvasCoordsFromTouch]);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    const cam = cameraRef.current;
+    endDrag(cam);
+    // Tap detection: short duration, small movement
+    if (e.changedTouches.length === 1 && touchStartRef.current) {
+      const touch = e.changedTouches[0];
+      const dt = Date.now() - touchStartRef.current.time;
+      const dx = Math.abs(touch.clientX - touchStartRef.current.x);
+      const dy = Math.abs(touch.clientY - touchStartRef.current.y);
+      if (dt < 300 && dx < 10 && dy < 10) {
+        const [sx, sy] = getCanvasCoordsFromTouch(touch);
+        const code = findCharAt(sx, sy);
+        if (code) propsRef.current.onSelectAgent(code);
+      }
+    }
+    touchStartRef.current = null;
+    pinchStartDistRef.current = 0;
+  }, [getCanvasCoordsFromTouch, findCharAt]);
 
   const hp = hovered ? getPersona(hovered) : null;
   const hr = hovered ? runtimeMap[hovered] : undefined;
@@ -772,7 +1101,10 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
           onMouseUp={handleMouseUp}
           onMouseLeave={() => { setHovered(null); endDrag(cameraRef.current); }}
           onWheel={handleWheel}
-          style={{ cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab' }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          style={{ cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab', touchAction: 'none' }}
         />
       </div>
 
@@ -811,7 +1143,7 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
       {/* Footer */}
       <div className="flex-shrink-0 px-3 py-1 text-center"
         style={{ fontSize: 8, color: '#3f3f46', fontFamily: 'monospace', background: '#0a0a0e', borderTop: '1px solid #1e1e26' }}>
-        드래그로 이동 · 스크롤로 줌 · 캐릭터 클릭으로 대화
+        드래그로 이동 · 스크롤/핀치로 줌 · 캐릭터 클릭/탭으로 대화
       </div>
     </div>
   );

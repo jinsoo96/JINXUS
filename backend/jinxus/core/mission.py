@@ -229,9 +229,9 @@ class MissionStore:
             "type": msg_type,  # dm / huddle / broadcast / report
             "timestamp": datetime.now().isoformat(),
         })
-        # 최대 100개 대화만 유지
-        if len(mission.agent_conversations) > 100:
-            mission.agent_conversations = mission.agent_conversations[-100:]
+        # 최대 200개 대화만 유지 (도구 사용 로그 포함)
+        if len(mission.agent_conversations) > 200:
+            mission.agent_conversations = mission.agent_conversations[-200:]
         await self.save(mission)
 
     async def close(self) -> None:

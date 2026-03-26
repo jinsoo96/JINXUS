@@ -11,7 +11,6 @@ MCP 도구 포함 모든 도구를 자동으로 활용 가능.
 import asyncio
 import json
 import logging
-import re
 import threading
 import time as _time
 from typing import Optional, Callable
@@ -24,12 +23,11 @@ from .base import JinxTool
 
 logger = logging.getLogger(__name__)
 
-# Guard-Post 완료 시그널 패턴 (Geny 패턴 참고)
-_COMPLETION_PATTERNS = [
-    (re.compile(r'\[TASK_COMPLETE\]', re.IGNORECASE), 'complete'),
-    (re.compile(r'\[BLOCKED:\s*(.+?)\]', re.IGNORECASE), 'blocked'),
-    (re.compile(r'\[ERROR:\s*(.+?)\]', re.IGNORECASE), 'error'),
-]
+# Guard-Post 완료 시그널: completion_signals 모듈로 통합 관리
+from jinxus.core.completion_signals import (
+    parse_completion_signal, strip_signal_from_text,
+    SIGNAL_COMPLETE, SIGNAL_BLOCKED, SIGNAL_ERROR, SIGNAL_CONTINUE,
+)
 
 # 컨텍스트 압축 임계값 (대략 80k 토큰 = 240k 글자)
 _CTX_COMPRESS_THRESHOLD_CHARS = 240_000
@@ -495,29 +493,37 @@ class DynamicToolExecutor:
 
             # 도구 호출이 없으면 완료
             if not tool_uses:
-                # Guard-Post 완료 시그널 감지
-                for pattern, signal_type in _COMPLETION_PATTERNS:
-                    m = pattern.search(final_text)
-                    if m:
-                        clean_text = pattern.sub('', final_text).strip()
-                        if signal_type == 'complete':
-                            logger.info(f"[{self._agent_name}] 완료 시그널 [TASK_COMPLETE] 감지")
-                            return ExecutionResult(
-                                success=True,
-                                output=clean_text or final_text,
-                                tool_calls=all_tool_calls,
-                                raw_results=all_raw_results,
-                            )
-                        elif signal_type in ('blocked', 'error'):
-                            reason = m.group(1) if m.lastindex else signal_type
-                            logger.warning(f"[{self._agent_name}] 차단 시그널 [{signal_type.upper()}] 감지: {reason}")
-                            return ExecutionResult(
-                                success=False,
-                                output=clean_text or final_text,
-                                tool_calls=all_tool_calls,
-                                raw_results=all_raw_results,
-                                error=f"{signal_type.upper()}: {reason}",
-                            )
+                # Guard-Post 완료 시그널 감지 (completion_signals 모듈)
+                signal = parse_completion_signal(final_text)
+                if signal:
+                    clean_text = strip_signal_from_text(final_text)
+                    if signal.type == SIGNAL_COMPLETE:
+                        logger.info(f"[{self._agent_name}] 완료 시그널 [TASK_COMPLETE] 감지")
+                        return ExecutionResult(
+                            success=True,
+                            output=clean_text or final_text,
+                            tool_calls=all_tool_calls,
+                            raw_results=all_raw_results,
+                        )
+                    elif signal.type == SIGNAL_CONTINUE:
+                        logger.info(f"[{self._agent_name}] 계속 시그널 [CONTINUE] 감지: {signal.detail}")
+                        # CONTINUE는 성공으로 처리하되 detail을 포함
+                        return ExecutionResult(
+                            success=True,
+                            output=clean_text or final_text,
+                            tool_calls=all_tool_calls,
+                            raw_results=all_raw_results,
+                            error=f"CONTINUE: {signal.detail}",
+                        )
+                    elif signal.type in (SIGNAL_BLOCKED, SIGNAL_ERROR):
+                        logger.warning(f"[{self._agent_name}] 차단 시그널 [{signal.type.upper()}] 감지: {signal.detail}")
+                        return ExecutionResult(
+                            success=False,
+                            output=clean_text or final_text,
+                            tool_calls=all_tool_calls,
+                            raw_results=all_raw_results,
+                            error=f"{signal.type.upper()}: {signal.detail}",
+                        )
 
                 logger.debug(f"[{self._agent_name}] 도구 호출 없음, 텍스트 응답 {len(final_text)}자 반환")
                 return ExecutionResult(

@@ -36,7 +36,7 @@ function EmployeeCard({ agentCode, runtime, onSelect, onGoChannel }: EmployeeCar
   return (
     <div
       onClick={() => onSelect(agentCode)}
-      className="bg-dark-card border border-dark-border rounded-xl p-3 flex flex-col gap-2 hover:border-zinc-600 transition-colors cursor-pointer"
+      className="bg-dark-card border border-dark-border rounded-xl p-3 flex flex-col gap-2 hover:border-zinc-600 active:border-zinc-500 transition-colors cursor-pointer min-h-[44px]"
     >
       {/* 상단: 아바타 + 이름 + 상태 */}
       <div className="flex items-start gap-2.5">
@@ -133,6 +133,7 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [showOrgChart, setShowOrgChart] = useState(false);
+  const [mobileAgentListOpen, setMobileAgentListOpen] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -293,6 +294,7 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
     setChatAgent(agentName);
     setDirectMessages([]);
     setChatInput('');
+    setMobileAgentListOpen(false);
   };
 
   const handleSendDirect = async (e?: React.FormEvent) => {
@@ -443,10 +445,23 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
   );
 
   return (
-    <div className="flex gap-4 h-full min-h-0">
+    <div className="flex flex-col sm:flex-row gap-0 sm:gap-4 h-full min-h-0">
+
+      {/* 모바일 에이전트 목록 토글 */}
+      <button
+        onClick={() => setMobileAgentListOpen(!mobileAgentListOpen)}
+        className={`sm:hidden flex items-center justify-between px-3 py-2.5 bg-dark-card border border-dark-border rounded-xl mb-2 min-h-[44px] ${forcedSubTab ? 'hidden' : ''}`}
+      >
+        <span className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
+          <Users size={14} />
+          에이전트 ({hiredSet.size})
+          {chatAgent && <span className="text-primary text-xs">- {getDisplayName(chatAgent)}</span>}
+        </span>
+        <ChevronDown size={14} className={`text-zinc-500 transition-transform ${mobileAgentListOpen ? 'rotate-180' : ''}`} />
+      </button>
 
       {/* ── 왼쪽 패널: 에이전트 목록 + 관리 (TeamTab에서는 숨김) ── */}
-      <div className={`w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 min-h-0 ${forcedSubTab ? 'hidden' : ''}`}>
+      <div className={`w-full sm:w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 min-h-0 ${forcedSubTab ? 'hidden' : ''} ${mobileAgentListOpen ? '' : 'hidden sm:flex'}`}>
 
         {/* 헤더 */}
         <div className="flex items-center justify-between flex-shrink-0">
@@ -477,10 +492,10 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
               <div key={agent.name} className="border-b border-dark-border last:border-0">
                 <div
                   onClick={() => handleSelectAgent(agent.name)}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
+                  className={`flex items-center gap-2 px-3 py-2.5 sm:py-2 cursor-pointer transition-colors min-h-[44px] sm:min-h-0 ${
                     isSelected
                       ? 'bg-primary/10 border-l-2 border-primary'
-                      : 'hover:bg-zinc-800/40 border-l-2 border-transparent'
+                      : 'hover:bg-zinc-800/40 active:bg-zinc-800/60 border-l-2 border-transparent'
                   }`}
                 >
                   {getStatusDot(runtime?.status)}
@@ -687,7 +702,7 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
                           </span>
                           <span className="text-[10px] text-zinc-600">{members.length}명</span>
                         </div>
-                        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
                           {members.map(code => (
                             <EmployeeCard
                               key={code}

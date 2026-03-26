@@ -40,11 +40,11 @@ const LogListItem = memo(function LogListItem({
           : 'border-dark-border hover:border-zinc-600'
       }`}
     >
-      <div className="flex items-start justify-between gap-4 p-4">
+      <div className="flex items-start justify-between gap-2 sm:gap-4 p-3 sm:p-4">
         {/* 체크박스 */}
         <button
           onClick={() => onToggleSelect(log.id)}
-          className="flex-shrink-0 mt-0.5 text-zinc-500 hover:text-zinc-300"
+          className="flex-shrink-0 mt-0.5 text-zinc-500 hover:text-zinc-300 p-1 -m-1 min-w-[28px] min-h-[28px] flex items-center justify-center"
           aria-label={isSelected ? '선택 해제' : '선택'}
         >
           {isSelected ? (
@@ -328,12 +328,12 @@ export default function LogsTab() {
   return (
     <div className="h-full flex flex-col">
       {/* 헤더 */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 sm:mb-6 gap-3">
         <div>
-          <h2 className="text-xl font-semibold">작업 로그</h2>
+          <h2 className="text-lg sm:text-xl font-semibold">작업 로그</h2>
           <p className="text-sm text-zinc-500">총 {total}개의 작업 기록</p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap justify-end">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-start sm:justify-end">
           {/* 상태 필터 토글 */}
           <div className="flex bg-zinc-900 rounded-lg p-0.5 text-xs" role="group" aria-label="상태 필터">
             {([
@@ -346,7 +346,7 @@ export default function LogsTab() {
                 onClick={() => setStatusFilter(s.id)}
                 aria-label={`상태 필터: ${s.label}`}
                 aria-pressed={statusFilter === s.id}
-                className={`px-3 py-1.5 rounded-md transition-colors ${
+                className={`px-3 py-1.5 rounded-md transition-colors min-h-[36px] sm:min-h-0 ${
                   statusFilter === s.id
                     ? s.id === 'success' ? 'bg-green-600/30 text-green-400'
                       : s.id === 'failure' ? 'bg-red-600/30 text-red-400'
@@ -371,7 +371,7 @@ export default function LogsTab() {
                 onClick={() => setToolFilter(t.id)}
                 aria-label={`도구 필터: ${t.label}`}
                 aria-pressed={toolFilter === t.id}
-                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                className={`px-2.5 py-1.5 rounded-md transition-colors min-h-[36px] sm:min-h-0 ${
                   toolFilter === t.id ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >

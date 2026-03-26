@@ -88,4 +88,9 @@ def create_jinxus_core() -> JinxusCore:
     for agent in agents.values():
         core.register_agent(agent)
 
+    # 수직 위임: 임원 에이전트에게 팀원 인스턴스 주입
+    for agent in agents.values():
+        if hasattr(agent, "set_team") and callable(agent.set_team):
+            agent.set_team(agents)
+
     return core

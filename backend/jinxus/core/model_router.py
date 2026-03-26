@@ -6,12 +6,10 @@ Geny 참고: 에러 분류 + 복구 가능성 판단 + 폴백 체인 + 재시도
 단순한 작업 → sonnet (비용 절감)
 에러 발생 시 → 폴백 모델로 자동 전환
 """
-import asyncio
 import logging
 import re
 from enum import Enum
-from dataclasses import dataclass
-from typing import Optional, Callable, Any
+from typing import Optional
 
 from jinxus.config import get_settings
 
@@ -94,17 +92,6 @@ RETRY_DELAYS = {
 }
 
 
-@dataclass
-class FallbackResult:
-    """폴백 실행 결과"""
-    success: bool
-    result: Any
-    model_used: str
-    attempts: int
-    failure_reason: Optional[FailureReason] = None
-    error: Optional[str] = None
-
-
 def classify_error(error_message: str) -> FailureReason:
     """에러 메시지를 FailureReason으로 분류"""
     error_lower = error_message.lower()
@@ -122,130 +109,14 @@ def is_recoverable(reason: FailureReason) -> bool:
     return reason in RECOVERABLE_ERRORS
 
 
-class ModelFallbackRunner:
-    """모델 폴백 실행기 (Geny 패턴)
-
-    주 모델 실패 시 폴백 모델로 자동 전환.
-    재시도 + 지수 백오프 지원.
-
-    _last_success_model은 클래스 변수로 같은 프로세스 내
-    모든 인스턴스(세션)에서 성공 모델 정보를 공유한다.
-    """
-
-    # 클래스 레벨: 프로세스 내 세션 간 성공 모델 공유
-    _last_success_model: Optional[str] = None
-
-    def __init__(
-        self,
-        models: list[str] = None,
-        max_retries: int = 2,
-        on_fallback: Optional[Callable[[str, str, FailureReason], None]] = None,
-    ):
-        """
-        Args:
-            models: 시도할 모델 목록 (우선순위 순)
-            max_retries: 모델당 최대 재시도 횟수
-            on_fallback: 폴백 발생 시 콜백 (from_model, to_model, reason)
-        """
-        settings = get_settings()
-        self.models = models or [
-            settings.claude_model,
-            settings.claude_fallback_model,
-        ]
-        self.max_retries = max_retries
-        self.on_fallback = on_fallback
-
-    def get_model_priority(self, preferred_model: Optional[str] = None) -> list[str]:
-        """우선순위 기반 모델 순서 반환
-
-        1. 마지막 성공 모델 (세션 메모리)
-        2. 선호 모델
-        3. 나머지 후보군
-        """
-        priority = []
-
-        # 1. 마지막 성공 모델 (클래스 변수에서 읽기)
-        if ModelFallbackRunner._last_success_model and ModelFallbackRunner._last_success_model in self.models:
-            priority.append(ModelFallbackRunner._last_success_model)
-
-        # 2. 선호 모델
-        if preferred_model and preferred_model in self.models:
-            if preferred_model not in priority:
-                priority.append(preferred_model)
-
-        # 3. 나머지
-        for model in self.models:
-            if model not in priority:
-                priority.append(model)
-
-        return priority
-
-    async def run(
-        self,
-        call_fn: Callable[[str], Any],
-        preferred_model: Optional[str] = None,
-    ) -> FallbackResult:
-        """폴백 지원 실행
-
-        Args:
-            call_fn: 모델 ID를 받아 실행하는 함수 (async)
-            preferred_model: 선호 모델 (optional)
-
-        Returns:
-            FallbackResult
-        """
-        models = self.get_model_priority(preferred_model)
-        total_attempts = 0
-
-        for model in models:
-            for attempt in range(self.max_retries):
-                total_attempts += 1
-
-                try:
-                    result = await call_fn(model)
-                    ModelFallbackRunner._last_success_model = model
-                    return FallbackResult(
-                        success=True,
-                        result=result,
-                        model_used=model,
-                        attempts=total_attempts,
-                    )
-
-                except Exception as e:
-                    error_msg = str(e)
-                    reason = classify_error(error_msg)
-
-                    logger.warning(
-                        f"Model {model} failed (attempt {attempt + 1}): {reason.value} - {error_msg[:100]}"
-                    )
-
-                    # 복구 불가능한 에러면 다음 모델로
-                    if not is_recoverable(reason):
-                        break
-
-                    # 재시도 전 대기
-                    delay = RETRY_DELAYS.get(reason, 1.0) * (attempt + 1)  # 지수 백오프
-                    await asyncio.sleep(delay)
-
-            # 폴백 콜백 호출
-            if self.on_fallback and models.index(model) < len(models) - 1:
-                next_model = models[models.index(model) + 1]
-                self.on_fallback(model, next_model, reason)
-
-        # 모든 모델 실패
-        return FallbackResult(
-            success=False,
-            result=None,
-            model_used=models[-1],
-            attempts=total_attempts,
-            failure_reason=reason,
-            error=f"All models exhausted after {total_attempts} attempts",
-        )
-
-
-class ModelExhaustedError(Exception):
-    """모든 모델이 실패했을 때 발생"""
-    pass
+# ModelFallbackRunner, ModelExhaustedError, FallbackResult는
+# model_fallback.py로 이전됨. 하위 호환을 위해 re-export.
+from jinxus.core.model_fallback import (  # noqa: F401
+    ModelFallbackRunner,
+    ModelExhaustedError,
+    FallbackResult,
+    get_model_fallback_runner as get_fallback_runner,
+)
 
 
 # === 기존 호환 함수들 ===
@@ -313,16 +184,3 @@ def get_model_info(model_id: str) -> dict:
         "is_main_model": is_main,
         "tier": "primary" if is_main else "fallback",
     }
-
-
-# === 폴백 헬퍼 ===
-
-_fallback_runner: Optional[ModelFallbackRunner] = None
-
-
-def get_fallback_runner() -> ModelFallbackRunner:
-    """전역 ModelFallbackRunner 인스턴스 반환"""
-    global _fallback_runner
-    if _fallback_runner is None:
-        _fallback_runner = ModelFallbackRunner()
-    return _fallback_runner

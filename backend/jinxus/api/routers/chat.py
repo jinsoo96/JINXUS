@@ -385,92 +385,112 @@ async def cancel_stream(task_id: str):
 async def chat_with_agent(agent_name: str, request: ChatRequest):
     """특정 에이전트와 직접 대화 (JINXUS_CORE 우회)
 
+    v4: CLI 엔진으로 실행. 에이전트가 실제로 파일을 읽고 쓰고 명령 실행.
+
     SSE 이벤트:
     - start: 시작
-    - tool_call: 도구 호출 중
+    - log: 실시간 도구 사용 로그
     - message: 최종 응답
     - done: 완료
     - error: 에러
     """
-    from pathlib import Path
-    from jinxus.config import get_settings
-    from jinxus.tools import get_dynamic_executor
-
-    settings = get_settings()
-
-    # 에이전트명 정규화 (대문자, JX_ 접두사 보장)
+    # 에이전트명 정규화
     normalized = agent_name.upper()
     if not normalized.startswith(("JX_", "JS_", "JINXUS_")):
         normalized = f"JX_{normalized}"
 
-    # 시스템 프롬프트 로드 (없으면 기본값)
-    prompt_key = normalized.lower()  # JX_RESEARCHER → jx_researcher
-    prompt_file = settings.prompts_dir / prompt_key / "system.md"
-    if prompt_file.exists():
-        system_prompt = prompt_file.read_text(encoding="utf-8")
-    else:
-        system_prompt = f"너는 {normalized}다. 주어진 지시를 성실히 수행한다."
-
     async def event_generator():
         import time
-        import uuid
         got_done = False
-        start_ts = time.time()
         try:
             yield {
                 "event": "start",
                 "data": json.dumps({"agent": normalized}, ensure_ascii=False),
             }
 
-            executor = get_dynamic_executor(normalized)
+            # v4 CLI 엔진으로 실행
+            from jinxus.core.agent_executor import (
+                execute_command, start_command_background,
+                AgentNotFoundError, AgentNotAliveError, AlreadyExecutingError,
+            )
+            from jinxus.cli_engine.session_manager import get_agent_session_manager
+            from jinxus.cli_engine.session_logger import get_session_logger
 
-            tool_events = []
-            used_tools: list[str] = []
+            mgr = get_agent_session_manager()
 
-            async def tool_cb(tool_name: str, status: str):
-                tool_events.append(json.dumps({"tool": tool_name, "status": status}, ensure_ascii=False))
-                if status == "calling":
-                    used_tools.append(tool_name)
+            # 세션 확보 (없으면 생성)
+            session = mgr.get_session_by_name(normalized)
+            if not session:
+                session = await mgr.create_session(normalized)
 
-            # 에이전트 직접 실행
-            result = await executor.execute(
-                instruction=request.message,
-                system_prompt=system_prompt,
-                tool_callback=tool_cb,
+            # 백그라운드 실행 시작
+            holder = await start_command_background(
+                session_id=session.session_id,
+                prompt=request.message,
             )
 
-            duration_ms = int((time.time() - start_ts) * 1000)
+            # 실시간 로그 폴링 (200ms)
+            sl = get_session_logger(session.session_id, create_if_missing=False)
+            cursor = sl.get_cache_length() if sl else 0
+            heartbeat_interval = 5.0
+            last_hb = time.time()
 
-            # 태스크 로그 기록 (LogsTab / Dashboard에 표시)
-            try:
-                from jinxus.memory.meta_store import get_meta_store
-                await get_meta_store().log_task(
-                    main_task_id=str(uuid.uuid4()),
-                    agent_name=normalized,
-                    instruction=request.message,
-                    success=result.success,
-                    success_score=0.8 if result.success else 0.0,
-                    duration_ms=duration_ms,
-                    output=result.output,
-                    tool_calls=used_tools or None,
-                )
-            except Exception as log_err:
-                logger.warning(f"직접 채팅 로그 저장 실패: {log_err}")
+            while not holder.get("done", False):
+                if sl:
+                    new_entries, cursor = sl.get_cache_entries_since(cursor)
+                    for entry in new_entries:
+                        yield {
+                            "event": "log",
+                            "data": json.dumps(entry.to_dict(), ensure_ascii=False),
+                        }
 
-            # 도구 호출 이벤트 방출
-            for ev in tool_events:
-                yield {"event": "tool_call", "data": ev}
+                now = time.time()
+                if now - last_hb >= heartbeat_interval:
+                    yield {"event": "keepalive", "data": "{}"}
+                    last_hb = now
+
+                await asyncio.sleep(0.2)
+
+            # 최종 로그 플러시
+            if sl:
+                new_entries, cursor = sl.get_cache_entries_since(cursor)
+                for entry in new_entries:
+                    yield {
+                        "event": "log",
+                        "data": json.dumps(entry.to_dict(), ensure_ascii=False),
+                    }
+
+            # 결과
+            result = holder.get("result", {})
+            output = result.get("output", "")
 
             yield {
                 "event": "message",
-                "data": json.dumps({"message": result.output}, ensure_ascii=False),
+                "data": json.dumps({"message": output}, ensure_ascii=False),
             }
             got_done = True
             yield {
                 "event": "done",
-                "data": json.dumps({"agent": normalized, "success": result.success}, ensure_ascii=False),
+                "data": json.dumps({
+                    "agent": normalized,
+                    "success": result.get("success", False),
+                    "tool_calls": result.get("tool_calls", []),
+                    "file_changes": result.get("file_changes", []),
+                    "cost_usd": result.get("cost_usd", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                }, ensure_ascii=False),
             }
 
+        except (AgentNotFoundError, AgentNotAliveError) as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)[:300]}, ensure_ascii=False),
+            }
+        except AlreadyExecutingError:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": f"{normalized}이(가) 이미 실행 중입니다"}, ensure_ascii=False),
+            }
         except Exception as e:
             logger.error(f"직접 에이전트 채팅 오류 [{normalized}]: {e}", exc_info=True)
             yield {
@@ -483,9 +503,6 @@ async def chat_with_agent(agent_name: str, request: ChatRequest):
                     "event": "done",
                     "data": json.dumps({"agent": normalized, "success": False}, ensure_ascii=False),
                 }
-            # [FIX #2] 스트리밍 완료/오류 시 tool_events 버퍼 명시적 해제 — 응답 축적 누수 방지
-            tool_events.clear()
-            used_tools.clear()
 
     return EventSourceResponse(event_generator())
 

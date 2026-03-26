@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { devNotesApi, type DevNote } from '@/lib/api';
 import {
   FileText, Plus, Trash2, Edit3, Check, X,
-  RefreshCw, Loader2, Calendar, Clock, BookOpen,
+  RefreshCw, Loader2, Calendar, Clock, BookOpen, ChevronDown,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -47,6 +47,7 @@ export default function NotesTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
+  const [mobileNoteListOpen, setMobileNoteListOpen] = useState(false);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -69,6 +70,7 @@ export default function NotesTab() {
     setSelectedId(id);
     setEditMode(false);
     setNoteLoading(true);
+    setMobileNoteListOpen(false);
     try {
       const note = await devNotesApi.get(id);
       setSelectedNote(note);
@@ -143,10 +145,23 @@ export default function NotesTab() {
   };
 
   return (
-    <div className="h-full flex gap-4 min-h-0">
+    <div className="h-full flex flex-col sm:flex-row gap-0 sm:gap-4 min-h-0">
+
+      {/* 모바일 노트 목록 토글 */}
+      <button
+        onClick={() => setMobileNoteListOpen(!mobileNoteListOpen)}
+        className="sm:hidden flex items-center justify-between px-3 py-2.5 bg-dark-card border border-dark-border rounded-xl mb-2 min-h-[44px]"
+      >
+        <span className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
+          <FileText size={14} />
+          업무 노트 ({notes.length})
+          {selectedNote && <span className="text-primary text-xs truncate max-w-[120px]">- {selectedNote.title}</span>}
+        </span>
+        <ChevronDown size={14} className={`text-zinc-500 transition-transform ${mobileNoteListOpen ? 'rotate-180' : ''}`} />
+      </button>
 
       {/* ── 왼쪽: 노트 목록 ── */}
-      <div className="w-48 md:w-64 flex-shrink-0 flex flex-col gap-3">
+      <div className={`w-full sm:w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 ${mobileNoteListOpen ? '' : 'hidden sm:flex'}`}>
 
         {/* 헤더 */}
         <div className="flex items-center justify-between">
@@ -187,10 +202,10 @@ export default function NotesTab() {
               <div
                 key={note.id}
                 onClick={() => handleSelect(note.id)}
-                className={`px-3 py-2.5 cursor-pointer transition-colors relative group ${
+                className={`px-3 py-3 sm:py-2.5 cursor-pointer transition-colors relative group min-h-[44px] ${
                   selectedId === note.id
                     ? 'bg-primary/10 border-l-2 border-l-primary'
-                    : 'hover:bg-zinc-800/40 border-l-2 border-l-transparent'
+                    : 'hover:bg-zinc-800/40 active:bg-zinc-800/60 border-l-2 border-l-transparent'
                 }`}
               >
                 <p className="text-sm font-medium text-zinc-200 truncate pr-6">{note.title}</p>

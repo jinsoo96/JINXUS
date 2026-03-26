@@ -1,17 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { Building2, Gamepad2, Users } from 'lucide-react';
+import { Building2, Users } from 'lucide-react';
 import dynamic from 'next/dynamic';
 
 const CompanyChat = dynamic(() => import('./CompanyChat'), { ssr: false });
 const AgentsTab = dynamic(() => import('./AgentsTab'), { ssr: false });
 
-type SubTab = 'channel' | 'playground' | 'status';
+type SubTab = 'channel' | 'status';
 
 const SUB_TABS: { id: SubTab; label: string; icon: typeof Building2 }[] = [
   { id: 'channel', label: '팀 채널', icon: Building2 },
-  { id: 'playground', label: '플레이그라운드', icon: Gamepad2 },
   { id: 'status', label: '직원 현황', icon: Users },
 ];
 
@@ -49,11 +48,11 @@ export default function TeamTab({ isActive = true }: { isActive?: boolean }) {
           <CompanyChat isActive={isActive && subTab === 'channel'} />
         </div>
 
-        {/* 플레이그라운드 + 직원 현황 — AgentsTab에 initialSubTab 전달 */}
-        <div className={subTab === 'playground' || subTab === 'status' ? 'h-full' : 'hidden'}>
+        {/* 직원 현황 */}
+        <div className={subTab === 'status' ? 'h-full' : 'hidden'}>
           <AgentsTab
             isActive={isActive}
-            forcedSubTab={subTab === 'status' ? 'status' : 'playground'}
+            forcedSubTab="status"
           />
         </div>
       </div>

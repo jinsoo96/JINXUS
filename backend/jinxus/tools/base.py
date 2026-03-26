@@ -60,10 +60,12 @@ class JinxTool(ABC):
         return int((time.time() - self._start_time) * 1000)
 
     def is_allowed(self, agent_name: str) -> bool:
-        """에이전트가 이 도구를 사용할 수 있는지 확인"""
-        if not self.allowed_agents:
-            return True  # 빈 리스트면 모든 에이전트 허용
-        return agent_name in self.allowed_agents
+        """에이전트가 이 도구를 사용할 수 있는지 확인
+
+        v2.1.0: 도구 레벨 제한 해제 — 모든 에이전트에게 모든 도구 개방.
+        접근 제어는 Tool Policy Engine(tool_policy.py)에서 일원화.
+        """
+        return True
 
     @abstractmethod
     async def run(self, input_data: dict) -> ToolResult:

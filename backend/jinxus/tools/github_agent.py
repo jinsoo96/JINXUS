@@ -54,6 +54,8 @@ class GitHubAgent(JinxTool):
 - list_commits: 최근 커밋 목록 조회 (repo 파라미터, 예: "owner/repo", branch 선택, limit 선택)
 - get_contents: 파일/디렉토리 내용 조회 (repo, path 파라미터. 디렉토리면 파일 목록, 파일이면 내용 반환)
 - get_file: 특정 파일의 전체 내용 조회 (repo, path 파라미터)
+- get_tree_recursive: 레포 전체 파일 트리를 재귀적으로 조회 (repo 파라미터, branch 선택)
+- read_all_files: 레포의 모든 소스 파일을 재귀적으로 읽어 내용 반환 (repo 파라미터, path 선택, branch 선택. 바이너리/거대 파일 자동 제외)
 - rate_limit: 현재 rate limit 상태 확인"""
     allowed_agents = ["JX_OPS", "JX_RESEARCHER", "JX_CODER", "JX_REVIEWER"]
 
@@ -68,7 +70,9 @@ class GitHubAgent(JinxTool):
                     "list_commits", "list_branches", "create_branch",
                     "commit_file", "create_pr", "list_prs",
                     "create_issue", "list_issues", "delete_branch",
-                    "get_contents", "get_file", "rate_limit",
+                    "get_contents", "get_file",
+                    "get_tree_recursive", "read_all_files",
+                    "rate_limit",
                 ],
             },
             "repo": {"type": "string", "description": "owner/repo 형식 (예: jinsoo96/JINXUS)"},
@@ -215,7 +219,7 @@ class GitHubAgent(JinxTool):
 
         # 캐시 확인 (읽기 전용 작업만)
         use_cache = input_data.get("use_cache", True)
-        read_only_actions = ["get_repo", "list_branches", "list_prs", "list_issues", "list_user_repos", "search_repos", "list_commits", "get_contents", "get_file"]
+        read_only_actions = ["get_repo", "list_branches", "list_prs", "list_issues", "list_user_repos", "search_repos", "list_commits", "get_contents", "get_file", "get_tree_recursive", "read_all_files"]
 
         if use_cache and action in read_only_actions:
             cache_key = self._cache_key(action, input_data)
@@ -289,6 +293,14 @@ class GitHubAgent(JinxTool):
             elif action == "get_file":
                 result = await loop.run_in_executor(
                     None, self._get_file, input_data
+                )
+            elif action == "get_tree_recursive":
+                result = await loop.run_in_executor(
+                    None, self._get_tree_recursive, input_data
+                )
+            elif action == "read_all_files":
+                result = await loop.run_in_executor(
+                    None, self._read_all_files, input_data
                 )
             else:
                 return ToolResult(
@@ -670,6 +682,162 @@ class GitHubAgent(JinxTool):
                 duration_ms=self._get_duration_ms(),
             )
         return self._get_contents(input_data)
+
+    # 재귀 탐색 시 무시할 확장자/디렉토리
+    _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".next", "dist", "build", ".venv", "venv", "vendor", ".cache"}
+    _BINARY_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2", ".ttf", ".eot",
+                    ".mp3", ".mp4", ".zip", ".tar", ".gz", ".bin", ".exe", ".dll", ".so", ".pyc",
+                    ".lock", ".pack", ".idx"}
+    _MAX_FILE_SIZE = 50000  # 50KB 이상 파일은 내용 생략
+
+    def _get_tree_recursive(self, input_data: dict) -> ToolResult:
+        """레포 전체 파일 트리를 재귀적으로 조회 (Git Tree API 사용, API 1회)"""
+        repo_name = input_data.get("repo")
+        branch = input_data.get("branch")
+
+        if not repo_name:
+            return ToolResult(
+                success=False, output=None,
+                error="repo is required (예: jinsoo96/Prompt_Foundry)",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        client = self._get_client()
+        try:
+            repo = client.get_repo(repo_name)
+            ref = branch or repo.default_branch
+            # Git Tree API — recursive=True로 전체 트리 한 번에 조회
+            tree = repo.get_git_tree(ref, recursive=True)
+
+            files = []
+            dirs = set()
+            for item in tree.tree:
+                # 무시할 디렉토리 내부 파일 스킵
+                parts = item.path.split("/")
+                if any(p in self._SKIP_DIRS for p in parts):
+                    continue
+
+                if item.type == "blob":
+                    files.append({
+                        "path": item.path,
+                        "size": item.size,
+                        "sha": item.sha[:7],
+                    })
+                elif item.type == "tree":
+                    dirs.add(item.path)
+
+            return ToolResult(
+                success=True,
+                output={
+                    "repo": repo_name,
+                    "branch": ref,
+                    "total_files": len(files),
+                    "total_dirs": len(dirs),
+                    "files": files,
+                    "truncated": tree.truncated,
+                },
+                duration_ms=self._get_duration_ms(),
+            )
+
+        except GithubException as e:
+            return ToolResult(
+                success=False, output=None,
+                error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
+
+    def _read_all_files(self, input_data: dict) -> ToolResult:
+        """레포의 모든 소스 파일을 재귀적으로 읽어 내용 반환
+
+        바이너리, 거대 파일, node_modules 등은 자동 제외.
+        path 파라미터로 특정 디렉토리만 읽기 가능.
+        """
+        repo_name = input_data.get("repo")
+        base_path = input_data.get("path", "")
+        branch = input_data.get("branch")
+        limit = input_data.get("limit", 100)  # 최대 파일 수
+
+        if not repo_name:
+            return ToolResult(
+                success=False, output=None,
+                error="repo is required (예: jinsoo96/Prompt_Foundry)",
+                duration_ms=self._get_duration_ms(),
+            )
+
+        client = self._get_client()
+        try:
+            repo = client.get_repo(repo_name)
+            ref = branch or repo.default_branch
+
+            # 1. 전체 트리 조회
+            tree = repo.get_git_tree(ref, recursive=True)
+
+            # 2. 소스 파일 필터링
+            import os
+            target_files = []
+            for item in tree.tree:
+                if item.type != "blob":
+                    continue
+                # base_path 필터
+                if base_path and not item.path.startswith(base_path):
+                    continue
+                # 무시할 디렉토리
+                parts = item.path.split("/")
+                if any(p in self._SKIP_DIRS for p in parts):
+                    continue
+                # 바이너리 확장자
+                ext = os.path.splitext(item.path)[1].lower()
+                if ext in self._BINARY_EXTS:
+                    continue
+                # 크기 제한
+                if item.size and item.size > self._MAX_FILE_SIZE:
+                    continue
+
+                target_files.append(item)
+
+                if len(target_files) >= limit:
+                    break
+
+            # 3. 파일 내용 읽기
+            file_contents = []
+            skipped = 0
+            for item in target_files:
+                try:
+                    blob = repo.get_git_blob(item.sha)
+                    import base64
+                    if blob.encoding == "base64":
+                        content = base64.b64decode(blob.content).decode("utf-8", errors="replace")
+                    else:
+                        content = blob.content
+
+                    file_contents.append({
+                        "path": item.path,
+                        "size": item.size,
+                        "content": content,
+                    })
+                except Exception as e:
+                    skipped += 1
+                    logger.debug(f"Failed to read {item.path}: {e}")
+
+            return ToolResult(
+                success=True,
+                output={
+                    "repo": repo_name,
+                    "branch": ref,
+                    "base_path": base_path or "/",
+                    "files_read": len(file_contents),
+                    "files_skipped": skipped,
+                    "files": file_contents,
+                },
+                duration_ms=self._get_duration_ms(),
+            )
+
+        except GithubException as e:
+            return ToolResult(
+                success=False, output=None,
+                error=f"GitHub API error: {e.data.get('message', str(e))}",
+                duration_ms=self._get_duration_ms(),
+            )
 
     def _list_commits(self, input_data: dict) -> ToolResult:
         """최근 커밋 목록 조회"""

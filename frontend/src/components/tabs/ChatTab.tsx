@@ -761,8 +761,8 @@ export default function ChatTab() {
   return (
     <div className="h-full flex flex-col">
       {/* 채팅 헤더 */}
-      <div className="flex items-center justify-between mb-4 pb-3 border-b border-dark-border">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-2 sm:mb-4 pb-2 sm:pb-3 border-b border-dark-border">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           {/* 세션 선택 드롭다운 */}
           <div className="relative">
             <button
@@ -770,13 +770,13 @@ export default function ChatTab() {
                 setShowSessions(!showSessions);
                 if (!showSessions) loadSessions();
               }}
-              className="flex items-center gap-2 px-3 py-2 bg-dark-card border border-dark-border rounded-lg hover:border-zinc-600 transition-colors"
+              className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 bg-dark-card border border-dark-border rounded-lg hover:border-zinc-600 transition-colors min-h-[44px]"
             >
               <MessageSquare size={16} />
-              <span className="text-sm">
+              <span className="text-sm truncate max-w-[100px] sm:max-w-none">
                 {sessionId ? `세션: ${sessionId.slice(0, 8)}...` : '새 대화'}
               </span>
-              <ChevronDown size={14} className={`transition-transform ${showSessions ? 'rotate-180' : ''}`} />
+              <ChevronDown size={14} className={`transition-transform flex-shrink-0 ${showSessions ? 'rotate-180' : ''}`} />
             </button>
 
             {showSessions && (
@@ -859,22 +859,22 @@ export default function ChatTab() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2">
           {messages.length > 0 && (
             <button
               onClick={handleClearChat}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-red-600/10 transition-colors"
+              className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-red-600/10 active:bg-red-600/20 transition-colors min-h-[44px] min-w-[44px] justify-center"
               title="현재 채팅 삭제"
             >
               <Trash2 size={14} />
-              삭제
+              <span className="hidden sm:inline">삭제</span>
             </button>
           )}
 
           {/* 하단 패널 토글 */}
           <button
             onClick={() => setBottomPanelOpen(!bottomPanelOpen)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+            className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-sm transition-colors min-h-[44px] min-w-[44px] justify-center ${
               bottomPanelOpen
                 ? 'bg-zinc-700 text-zinc-200'
                 : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
@@ -968,16 +968,16 @@ export default function ChatTab() {
         </div>
 
         {/* 입력 폼 */}
-        <form onSubmit={handleSubmit} className="mt-4 flex-shrink-0">
-          <div className="flex gap-3">
+        <form onSubmit={handleSubmit} className="mt-2 sm:mt-4 flex-shrink-0">
+          <div className="flex gap-2 sm:gap-3">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="메시지를 입력하세요... (Enter 전송 / Shift+Enter 줄바꿈)"
+              placeholder="메시지를 입력하세요..."
               aria-label="메시지 입력"
               disabled={isLoading}
               rows={1}
-              className="flex-1 bg-dark-card border border-dark-border rounded-xl px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50 resize-none overflow-hidden min-h-[48px] max-h-[160px]"
+              className="flex-1 bg-dark-card border border-dark-border rounded-xl px-3 sm:px-4 py-3 focus:outline-none focus:border-primary transition-colors disabled:opacity-50 resize-none overflow-hidden min-h-[44px] max-h-[160px] text-base sm:text-sm"
               onInput={(e) => {
                 const el = e.currentTarget;
                 el.style.height = 'auto';
@@ -993,7 +993,7 @@ export default function ChatTab() {
             <button
               type="submit"
               disabled={!input.trim() || isLoading}
-              className="px-6 py-3 bg-primary hover:bg-primary-hover rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
+              className="px-4 sm:px-6 py-3 bg-primary hover:bg-primary-hover active:bg-primary/80 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end min-w-[44px] min-h-[44px] flex items-center justify-center"
               title="전송 (Enter)"
               aria-label="메시지 전송"
             >

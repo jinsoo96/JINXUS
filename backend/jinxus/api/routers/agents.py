@@ -214,7 +214,11 @@ async def stream_runtime_status(request: Request):
 
 @router.get("/runtime/all")
 async def get_all_runtime_status():
-    """모든 에이전트 실시간 상태 조회"""
+    """모든 에이전트 실시간 상태 조회
+
+    v3 state_tracker + v4 CLI 세션 상태를 병합.
+    CLI 세션이 executing이면 v3 상태를 덮어씀 (CLI가 더 정확).
+    """
     from jinxus.agents.state_tracker import get_state_tracker, AgentRuntimeState, AgentStatus
 
     orchestrator = get_orchestrator()
@@ -222,30 +226,81 @@ async def get_all_runtime_status():
 
     # orchestrator에서 등록된 에이전트 목록 + JINXUS_CORE
     registered_agents = orchestrator.get_agents() if orchestrator.is_initialized else []
-    # JINXUS_CORE를 맨 앞에 추가
     all_agents = ["JINXUS_CORE"] + registered_agents
 
-    # 상태 추적기에 없는 에이전트는 기본 상태로 추가
+    # v4 CLI 세션 상태 수집
+    cli_status_map = {}
+    try:
+        from jinxus.cli_engine.session_manager import get_agent_session_manager
+        from jinxus.cli_engine.session_logger import get_session_logger, extract_thinking_preview
+        from jinxus.core.agent_executor import is_executing
+
+        session_mgr = get_agent_session_manager()
+        for session in session_mgr.list_sessions():
+            agent_name = session.agent_name
+            executing = is_executing(session.session_id)
+
+            # 최근 도구 사용 로그에서 프리뷰 추출
+            current_task = None
+            current_tools = []
+            sl = get_session_logger(session.session_id, create_if_missing=False)
+            if sl and executing:
+                entries, _ = sl.get_cache_entries_since(max(0, sl.get_cache_length() - 5))
+                for entry in reversed(entries):
+                    preview = extract_thinking_preview(entry)
+                    if preview:
+                        current_task = preview
+                        break
+                    meta = entry.metadata or {}
+                    tool_name = meta.get("tool_name")
+                    if tool_name and tool_name not in current_tools:
+                        current_tools.append(tool_name)
+
+            cli_status_map[agent_name] = {
+                "status": "working" if executing else ("idle" if session.is_alive() else "error"),
+                "current_task": current_task,
+                "current_tools": current_tools[:5],
+                "session_id": session.session_id,
+            }
+    except Exception:
+        pass  # CLI 엔진 미초기화 시 무시
+
+    # 상태 병합
     result_agents = []
+    working_count = 0
     for agent_name in all_agents:
+        # v3 상태
         state = tracker.get_state(agent_name)
-        if state:
-            result_agents.append(state.to_dict())
-        else:
-            # 기본 idle 상태 반환
-            result_agents.append({
-                "name": agent_name,
-                "status": "idle",
-                "current_node": None,
-                "current_task": None,
-                "current_tools": [],
-                "last_update": None,
-                "error_message": None,
-            })
+        base = state.to_dict() if state else {
+            "name": agent_name,
+            "status": "idle",
+            "current_node": None,
+            "current_task": None,
+            "current_tools": [],
+            "last_update": None,
+            "error_message": None,
+        }
+
+        # v4 CLI 상태로 덮어쓰기 (CLI가 더 정확)
+        cli = cli_status_map.get(agent_name)
+        if cli:
+            if cli["status"] == "working":
+                base["status"] = "working"
+                if cli["current_task"]:
+                    base["current_task"] = cli["current_task"]
+                if cli["current_tools"]:
+                    base["current_tools"] = cli["current_tools"]
+            elif cli["status"] == "error" and base["status"] == "idle":
+                base["status"] = "error"
+
+        if base["status"] == "working":
+            working_count += 1
+
+        result_agents.append(base)
 
     return {
         "agents": result_agents,
-        "working_count": len(tracker.get_working_agents()),
+        "working_count": working_count,
     }
 
 
@@ -328,3 +383,39 @@ async def get_agent_graph(agent_name: str):
         "edges": edges,
         "current_node": current_node,
     }
+
+
+@router.get("/performance")
+async def get_agent_performance():
+    """에이전트 성과 프로파일 조회 — 전체 통계
+
+    에이전트별 task_type 단위 성공률, 평균 소요시간, 성공/실패 횟수를 반환한다.
+    decompose 시 에이전트 배정 근거로 활용된다.
+    """
+    from jinxus.core.agent_performance import get_performance_tracker
+
+    tracker = get_performance_tracker()
+    stats = await tracker.get_all_stats()
+    recommendation = await tracker.get_recommendation_prompt()
+
+    return {
+        "agents": stats,
+        "recommendation_prompt": recommendation,
+    }
+
+
+@router.get("/performance/{agent_name}")
+async def get_agent_performance_detail(agent_name: str):
+    """특정 에이전트 성과 프로파일 상세 조회"""
+    from jinxus.core.agent_performance import get_performance_tracker
+
+    tracker = get_performance_tracker()
+    stats = await tracker.get_agent_stats(agent_name)
+
+    if stats["total_tasks"] == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"성과 데이터 없음: {agent_name}",
+        )
+
+    return stats

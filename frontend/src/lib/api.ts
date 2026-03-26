@@ -1344,7 +1344,7 @@ export interface MissionData {
 }
 
 export const missionApi = {
-  // 미션 생성 + 실행 (SSE 스트리밍)
+  // 미션 생성 + 실행 (SSE 스트리밍) — SSE 끊기면 자동 재연결
   streamMission: async (
     message: string,
     sessionId: string | undefined,
@@ -1352,6 +1352,23 @@ export const missionApi = {
     onError: (error: Error) => void,
     abortController?: AbortController,
   ): Promise<void> => {
+    let missionId: string | null = null;
+    let completed = false;
+
+    const { consumeSSE } = await import('./sse-parser');
+
+    const handleEvent = (event: string, data: unknown) => {
+      const evt = { event: event as MissionSSEEvent['event'], data: data as MissionSSEEvent['data'] };
+      if (event === 'mission_created' && (data as Record<string, unknown>)?.id) {
+        missionId = (data as Record<string, unknown>).id as string;
+      }
+      if (event === 'mission_complete' || event === 'mission_failed') {
+        completed = true;
+      }
+      onEvent(evt);
+    };
+
+    // 1단계: POST로 미션 생성 + 초기 스트림
     try {
       const response = await fetch(`${API_BASE}/mission`, {
         method: 'POST',
@@ -1361,13 +1378,71 @@ export const missionApi = {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const { consumeSSE } = await import('./sse-parser');
-      await consumeSSE(response, (event, data) => {
-        onEvent({ event: event as MissionSSEEvent['event'], data: data as MissionSSEEvent['data'] });
-      }, abortController?.signal);
+      await consumeSSE(response, handleEvent, abortController?.signal);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
-      onError(error instanceof Error ? error : new Error('Mission stream error'));
+      // 연결이 끊겼지만 mission_complete 못 받았으면 재연결 시도
+      if (!completed && missionId) {
+        console.warn(`[Mission SSE] 연결 끊김, 재연결 시도: ${missionId}`);
+      } else {
+        onError(error instanceof Error ? error : new Error('Mission stream error'));
+        return;
+      }
+    }
+
+    // 2단계: 끊긴 경우 GET /{missionId}/events 로 재연결 (최대 5회)
+    if (!completed && missionId) {
+      let retries = 0;
+      const MAX_RETRIES = 5;
+
+      while (!completed && retries < MAX_RETRIES && !abortController?.signal.aborted) {
+        retries++;
+        const backoff = Math.min(1000 * Math.pow(2, retries - 1), 10000);
+        await new Promise(r => setTimeout(r, backoff));
+
+        try {
+          console.log(`[Mission SSE] 재연결 #${retries}: ${missionId}`);
+          const resubResponse = await fetch(`${API_BASE}/mission/${missionId}/events`, {
+            signal: abortController?.signal,
+          });
+          if (!resubResponse.ok) {
+            // 미션이 이미 완료됐으면 상태 직접 조회
+            if (resubResponse.status === 404) {
+              const mission = await missionApi.getMission(missionId);
+              if (mission.status === 'complete' || mission.status === 'failed') {
+                onEvent({
+                  event: mission.status === 'complete' ? 'mission_complete' : 'mission_failed',
+                  data: mission as unknown as MissionSSEEvent['data'],
+                });
+                completed = true;
+              }
+              break;
+            }
+            continue;
+          }
+          await consumeSSE(resubResponse, handleEvent, abortController?.signal);
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') return;
+          console.warn(`[Mission SSE] 재연결 #${retries} 실패:`, error);
+        }
+      }
+
+      // 재연결도 다 실패하면 현재 상태 직접 조회
+      if (!completed && missionId) {
+        try {
+          const mission = await missionApi.getMission(missionId);
+          if (mission.status === 'complete' || mission.status === 'failed') {
+            onEvent({
+              event: mission.status === 'complete' ? 'mission_complete' : 'mission_failed',
+              data: mission as unknown as MissionSSEEvent['data'],
+            });
+          } else {
+            onError(new Error('SSE 연결을 복구하지 못했습니다. 미션은 백그라운드에서 진행 중입니다.'));
+          }
+        } catch {
+          onError(new Error('SSE 연결을 복구하지 못했습니다.'));
+        }
+      }
     }
   },
 
