@@ -117,7 +117,7 @@ const MissionHistoryItem = memo(function MissionHistoryItem({
           </span>
         )}
       </div>
-      <p className="text-xs text-zinc-300 truncate pr-10">{mission.title}</p>
+      <p className="text-xs text-zinc-300 pr-10 truncate">{mission.title}</p>
       <div className="flex items-center gap-2 mt-1">
         <span className="text-[9px] text-zinc-500">
           {new Date(mission.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
@@ -160,14 +160,16 @@ const LogLine = memo(function LogLine({ entry }: { entry: LogEntry }) {
   const time = new Date(entry.timestamp).toLocaleTimeString('ko-KR', {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
+  // thinking(도구 로그)만 한줄, 나머지는 전체 표시
+  const isLong = entry.type !== 'thinking';
 
   return (
-    <div className="flex items-start gap-0 text-[11px] sm:text-[11px] text-xs leading-relaxed font-mono hover:bg-white/[0.02] active:bg-white/[0.04] px-2 sm:px-3 py-1 sm:py-0.5">
-      <span className="text-zinc-600 flex-shrink-0 w-[50px] sm:w-[60px]">{time}</span>
-      <span className={`flex-shrink-0 w-[28px] sm:w-[32px] font-bold ${color}`}>{prefix}</span>
-      <span className="flex-shrink-0 mr-1">{entry.emoji}</span>
-      <span className="text-zinc-500 flex-shrink-0 mr-1.5 hidden sm:inline">{entry.agent}</span>
-      <span className="text-zinc-300 break-words min-w-0">{entry.message}</span>
+    <div className={`flex items-start gap-0 text-[11px] leading-relaxed font-mono hover:bg-white/[0.02] active:bg-white/[0.04] px-2 sm:px-3 py-1 sm:py-0.5 ${isLong ? '' : 'whitespace-nowrap'}`}>
+      <span className="text-zinc-600 flex-shrink-0 w-[50px] sm:w-[60px] whitespace-nowrap">{time}</span>
+      <span className={`flex-shrink-0 w-[28px] sm:w-[32px] font-bold whitespace-nowrap ${color}`}>{prefix}</span>
+      <span className="flex-shrink-0 mr-1 whitespace-nowrap">{entry.emoji}</span>
+      <span className="text-zinc-500 flex-shrink-0 mr-1.5 whitespace-nowrap">{entry.agent}</span>
+      <span className={`text-zinc-300 min-w-0 ${isLong ? 'whitespace-pre-wrap break-words' : ''}`}>{entry.message}</span>
     </div>
   );
 });
@@ -204,6 +206,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
   // 실행 단계 추적
   const [executionPhase, setExecutionPhase] = useState<string>('');
   const [pendingTitle, setPendingTitle] = useState<string>('');
+  const [titleExpanded, setTitleExpanded] = useState(false);
 
   const logEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -248,14 +251,16 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
     }).catch(() => {});
   }, []);
 
-  // 로그 자동 스크롤 — 쓰로틀링 (100ms) + behavior: auto (연속 이벤트 jank 방지)
-  const logScrollThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 로그 자동 스크롤 — rAF 배치로 jank 방지
+  const logScrollRafRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!autoScrollRef.current || logScrollThrottleRef.current) return;
-    logScrollThrottleRef.current = setTimeout(() => {
-      logEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      logScrollThrottleRef.current = null;
-    }, 100);
+    if (!autoScrollRef.current) return;
+    if (logScrollRafRef.current) return;
+    logScrollRafRef.current = requestAnimationFrame(() => {
+      logScrollRafRef.current = null;
+      const el = logContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   }, [logEntries, responseText]);
 
   // 스크롤 위치 감지 — 바닥에서 벗어나면 자동스크롤 비활성화
@@ -292,6 +297,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
       setResponseText('');
       setLogEntries([]);
       setCurrentMission(null);
+      setTitleExpanded(false);
       setExecutionPhase('난이도 분류 중...');
     }
 
@@ -299,7 +305,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
     const displayTitle = isFollowup
       ? message.replace(/^\[후속\]\s*/, '').split('\n')[0]
       : message;
-    setPendingTitle(displayTitle.length > 40 ? displayTitle.slice(0, 40) + '...' : displayTitle);
+    setPendingTitle(displayTitle);
     autoScrollRef.current = true;
 
     const abort = new AbortController();
@@ -722,12 +728,13 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
         <div className="flex-1 flex flex-col min-w-0">
           {/* 미션 헤더 — 선택된 미션 정보 또는 대기 중 표시 */}
           {(currentMission || (isExecuting && pendingTitle)) && (
-            <div className="flex-shrink-0 px-3 py-1.5 border-b border-zinc-800/50 flex items-center gap-2"
-              style={{ background: 'linear-gradient(90deg, rgba(0,0,0,0.3), transparent)' }}>
+            <div className="flex-shrink-0 px-3 py-1.5 border-b border-zinc-800/50 flex items-start gap-2 cursor-pointer"
+              style={{ background: 'linear-gradient(90deg, rgba(0,0,0,0.3), transparent)' }}
+              onClick={() => setTitleExpanded(e => !e)}>
               {currentMission ? (
                 <>
-                  {typeConf && <typeConf.icon size={12} style={{ color: typeConf.color }} />}
-                  <span className="text-xs font-semibold text-zinc-300 truncate flex-1">{currentMission.title}</span>
+                  {typeConf && <typeConf.icon size={12} style={{ color: typeConf.color }} className="mt-0.5 flex-shrink-0" />}
+                  <span className="text-xs font-semibold text-zinc-300 flex-1 whitespace-pre-wrap break-words">{currentMission.title}</span>
                   {statusConf && (
                     <span className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1"
                       style={{ color: statusConf.color, background: `${statusConf.color}20` }}>
@@ -767,7 +774,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
                     <Loader2 size={9} className="animate-spin" />
                     난이도 분류 중
                   </span>
-                  <span className="text-xs text-zinc-500 truncate flex-1">{pendingTitle}</span>
+                  <span className="text-xs text-zinc-500 flex-1 whitespace-pre-wrap break-words">{pendingTitle}</span>
                 </>
               )}
             </div>
@@ -777,7 +784,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
           <div
             ref={logContainerRef}
             onScroll={handleLogScroll}
-            className="flex-1 overflow-y-auto custom-scrollbar"
+            className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar"
             style={{ background: '#07070b' }}
           >
             {/* 로그 엔트리들 */}

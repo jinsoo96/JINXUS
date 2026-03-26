@@ -29,7 +29,7 @@ import { bfs, setGrid, getGrid } from './engine/pathfinding';
 import { CHAT_TEMPLATES, getIdleActivity, getIdleBehavior } from './engine/social';
 import { drawActivityEmoji } from './render/emoji';
 import type { Camera } from './engine/camera';
-import { createCamera, screenToWorld, clampCamera, centerOn, applyZoom, startDrag, updateDrag, endDrag } from './engine/camera';
+import { createCamera, screenToWorld, clampCamera, centerOn, applyZoom, getMinZoom, startDrag, updateDrag, endDrag } from './engine/camera';
 import { initPOIStates } from './poi/poiManager';
 
 // ── Re-exports for consumers (AgentsTab, MissionTab) ──
@@ -138,7 +138,7 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
       const p = bfs(c.col, c.row, CEO_SMOKING_POI.col, CEO_SMOKING_POI.row);
       if (p.length > 0) {
         c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
-        c.poiTarget = 'ceo_smoking'; c.activity = '담배 피우러 가는 중';
+        c.poiTarget = 'ceo_smoking'; c.activity = '니코틴 부족';
         c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = 3;
       }
     }
@@ -356,7 +356,8 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
         const maxDist = poi.type === 'outdoor' ? 60 : 30;
         if (p.length > 0 && p.length <= maxDist) {
           c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
-          c.poiTarget = poi.name; c.activity = poi.action;
+          c.poiTarget = poi.name;
+          c.activity = poi.name.startsWith('smoking') ? '니코틴 부족' : poi.action;
           c.idleTimer = 6 + Math.random() * 8;
           return;
         }
@@ -688,7 +689,7 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
     ctx.textAlign = 'center';
     ctx.fillStyle = isWorking ? '#93c5fd' : isError ? '#fca5a5' : '#d4d4d8';
     ctx.font = `bold ${5 * SCALE}px monospace`;
-    ctx.fillText(getFirstName(c.code), Math.round(c.x), Math.round(c.y + DSH / 2 + 6 * SCALE));
+    ctx.fillText(getDisplayName(c.code), Math.round(c.x), Math.round(c.y + DSH / 2 + 6 * SCALE));
     const activityText = isWorking
       ? (runtime?.current_task ? (runtime.current_task.length > 14 ? runtime.current_task.slice(0, 12) + '..' : runtime.current_task) : '작업 중')
       : c.activity || '';
@@ -945,6 +946,8 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
     });
     return found;
   }, []);
+  const findCharAtRef = useRef(findCharAt);
+  findCharAtRef.current = findCharAt;
 
   const findChar = useCallback((e: React.MouseEvent) => {
     const [sx, sy] = getCanvasCoords(e);
@@ -994,72 +997,101 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const pinchStartDistRef = useRef<number>(0);
   const pinchStartZoomRef = useRef<number>(1);
+  const wasPinchingRef = useRef<boolean>(false);
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    if (e.touches.length === 1) {
-      const [sx, sy] = getCanvasCoordsFromTouch(e.touches[0]);
-      startDrag(cameraRef.current, sx, sy);
-      touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() };
-    } else if (e.touches.length === 2) {
-      // Pinch zoom start
-      endDrag(cameraRef.current);
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      pinchStartDistRef.current = Math.sqrt(dx * dx + dy * dy);
-      pinchStartZoomRef.current = cameraRef.current.zoom;
-    }
-  }, [getCanvasCoordsFromTouch]);
+  // 네이티브 터치 이벤트 — { passive: false }로 등록해야 preventDefault() 작동
+  // React 합성 이벤트는 passive라 브라우저 핀치줌을 막을 수 없음
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    if (e.touches.length === 1 && cameraRef.current.isDragging) {
-      const [sx, sy] = getCanvasCoordsFromTouch(e.touches[0]);
-      updateDrag(cameraRef.current, sx, sy);
-    } else if (e.touches.length === 2) {
-      // Pinch zoom
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (pinchStartDistRef.current > 0) {
-        const scale = dist / pinchStartDistRef.current;
-        const cam = cameraRef.current;
-        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        const canvas = canvasRef.current;
-        if (canvas) {
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      if (e.touches.length === 1 && !wasPinchingRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.touches[0].clientX - rect.left;
+        const sy = e.touches[0].clientY - rect.top;
+        startDrag(cameraRef.current, sx, sy);
+        touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() };
+      } else if (e.touches.length === 2) {
+        wasPinchingRef.current = true;
+        endDrag(cameraRef.current);
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchStartDistRef.current = Math.sqrt(dx * dx + dy * dy);
+        pinchStartZoomRef.current = cameraRef.current.zoom;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      if (e.touches.length === 1 && cameraRef.current.isDragging && !wasPinchingRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.touches[0].clientX - rect.left;
+        const sy = e.touches[0].clientY - rect.top;
+        updateDrag(cameraRef.current, sx, sy);
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (pinchStartDistRef.current > 0) {
+          const scale = dist / pinchStartDistRef.current;
+          const cam = cameraRef.current;
+          const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+          const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
           const rect = canvas.getBoundingClientRect();
           const sx = midX - rect.left;
           const sy = midY - rect.top;
           const [wx, wy] = screenToWorld(cam, sx, sy);
-          cam.zoom = Math.max(0.3, Math.min(2.0, pinchStartZoomRef.current * scale));
+          cam.zoom = Math.max(getMinZoom(cam), Math.min(2.0, pinchStartZoomRef.current * scale));
           cam.x = wx - sx / cam.zoom;
           cam.y = wy - sy / cam.zoom;
           clampCamera(cam);
         }
       }
-    }
-  }, [getCanvasCoordsFromTouch]);
+    };
 
-  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    const cam = cameraRef.current;
-    endDrag(cam);
-    // Tap detection: short duration, small movement
-    if (e.changedTouches.length === 1 && touchStartRef.current) {
-      const touch = e.changedTouches[0];
-      const dt = Date.now() - touchStartRef.current.time;
-      const dx = Math.abs(touch.clientX - touchStartRef.current.x);
-      const dy = Math.abs(touch.clientY - touchStartRef.current.y);
-      if (dt < 300 && dx < 10 && dy < 10) {
-        const [sx, sy] = getCanvasCoordsFromTouch(touch);
-        const code = findCharAt(sx, sy);
-        if (code) propsRef.current.onSelectAgent(code);
+    const onTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      const cam = cameraRef.current;
+
+      if (e.touches.length === 1 && wasPinchingRef.current) {
+        pinchStartDistRef.current = 0;
+        return;
       }
-    }
-    touchStartRef.current = null;
-    pinchStartDistRef.current = 0;
-  }, [getCanvasCoordsFromTouch, findCharAt]);
+
+      endDrag(cam);
+
+      if (!wasPinchingRef.current && e.changedTouches.length === 1 && touchStartRef.current) {
+        const touch = e.changedTouches[0];
+        const dt = Date.now() - touchStartRef.current.time;
+        const tdx = Math.abs(touch.clientX - touchStartRef.current.x);
+        const tdy = Math.abs(touch.clientY - touchStartRef.current.y);
+        if (dt < 300 && tdx < 10 && tdy < 10) {
+          const rect = canvas.getBoundingClientRect();
+          const sx = touch.clientX - rect.left;
+          const sy = touch.clientY - rect.top;
+          const code = findCharAtRef.current?.(sx, sy);
+          if (code) propsRef.current.onSelectAgent(code);
+        }
+      }
+
+      if (e.touches.length === 0) {
+        touchStartRef.current = null;
+        pinchStartDistRef.current = 0;
+        wasPinchingRef.current = false;
+      }
+    };
+
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hp = hovered ? getPersona(hovered) : null;
   const hr = hovered ? runtimeMap[hovered] : undefined;
@@ -1081,9 +1113,6 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
       {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-1.5"
         style={{ background: 'linear-gradient(90deg,#0f0f14,#16161d,#0f0f14)', borderBottom: '2px solid #1e1e26' }}>
-        <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 800, color: '#e4e4e7', letterSpacing: 2 }}>
-          JINXUS CORP.
-        </span>
         <div className="flex gap-2" style={{ fontSize: 9, fontFamily: 'monospace' }}>
           <span style={{ color: '#a1a1aa' }}>{hiredSet.size}명</span>
           {Object.values(runtimeMap).filter(r => r.status === 'working').length > 0 && (
@@ -1101,9 +1130,6 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
           onMouseUp={handleMouseUp}
           onMouseLeave={() => { setHovered(null); endDrag(cameraRef.current); }}
           onWheel={handleWheel}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
           style={{ cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab', touchAction: 'none' }}
         />
       </div>

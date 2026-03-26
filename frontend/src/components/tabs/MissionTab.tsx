@@ -6,7 +6,8 @@ import { useAppStore } from '@/store/useAppStore';
 import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import PixelOffice, { type ActivityLogEntry } from '@/components/playground/PixelOffice';
 import MissionConsole from '@/components/MissionConsole';
-import { MessageSquare, Coffee, Briefcase, MapPin, VolumeX, Volume2, PanelRightClose, PanelRightOpen, Building2, ClipboardList } from 'lucide-react';
+import { MessageSquare, Coffee, Briefcase, MapPin, VolumeX, Volume2, PanelRightClose, PanelRightOpen, Building2, ClipboardList, Terminal } from 'lucide-react';
+import DockerLogPanel from '@/components/DockerLogPanel';
 import { getFirstName, getPersona } from '@/lib/personas';
 
 interface MissionTabProps {
@@ -35,6 +36,7 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
   const [activityFeed, setActivityFeed] = useState<ActivityLogEntry[]>([]);
   const { muteChat, setMuteChat } = useAppStore();
   const [feedOpen, setFeedOpen] = useState(true);
+  const [logPanelOpen, setLogPanelOpen] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const hiredSet = useMemo(() => {
@@ -196,7 +198,7 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
           style={{ minHeight: 44 }}
         >
           <Building2 size={13} />
-          근무 환경
+          Office View
         </button>
 
         <button
@@ -209,12 +211,25 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
           style={{ minHeight: 44 }}
         >
           <ClipboardList size={13} />
-          업무
+          Task
           {workingCount > 0 && (
             <span className="text-[9px] text-blue-400 bg-blue-500/15 px-1.5 py-0.5 rounded-full ml-1">
               {workingCount}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => setLogPanelOpen(o => !o)}
+          className={`ml-auto flex items-center gap-1.5 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition-colors active:bg-zinc-700/80 ${
+            logPanelOpen
+              ? 'bg-zinc-700/60 text-white'
+              : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+          }`}
+          style={{ minHeight: 44 }}
+        >
+          <Terminal size={13} />
+          Log
         </button>
       </div>
 
@@ -306,6 +321,13 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
           <MissionConsole onMissionEvent={handleMissionEvent} runtimeMap={runtimeMap} />
         </div>
       </div>
+
+      {/* 시스템 로그 패널 (하단 슬라이드) */}
+      {logPanelOpen && (
+        <div className="flex-shrink-0 border-t border-zinc-800/50" style={{ height: 280 }}>
+          <DockerLogPanel />
+        </div>
+      )}
     </div>
   );
 }

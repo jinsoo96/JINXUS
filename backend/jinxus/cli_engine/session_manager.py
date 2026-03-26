@@ -186,7 +186,10 @@ class AgentSessionManager:
         return True
 
     async def cleanup_dead_sessions(self):
-        """죽은 세션 정리 — 프레시니스 기반 부활 시도 후 실패하면 제거"""
+        """Geny 철학: 죽은 세션은 바로 삭제하지 않고 부활 시도.
+        부활 실패해도 max_revives(3회) 내에서는 유지.
+        max_revives 초과 시에만 제거.
+        """
         tracker = get_freshness_tracker()
         dead = [
             sid for sid, s in self._sessions.items()
@@ -194,20 +197,23 @@ class AgentSessionManager:
         ]
         for sid in dead:
             session = self._sessions[sid]
-            logger.info("[%s] Dead session detected (%s), attempting revive", sid, session.agent_name)
 
-            # 프레시니스 트래커에서 부활 횟수 체크
+            # 부활 횟수 체크 — 3회 초과 시에만 제거
             if not tracker.try_revive(sid):
                 logger.warning(
-                    "[%s] Session %s exceeded max revives, removing",
-                    sid, session.agent_name,
+                    "[%s] %s: max revives exceeded, removing",
+                    sid[:8], session.agent_name,
                 )
                 await self._remove_session(sid)
                 continue
 
+            # 부활 시도
             revived = await session.revive()
-            if not revived:
-                await self._remove_session(sid)
+            if revived:
+                logger.info("[%s] %s: revived successfully", sid[:8], session.agent_name)
+            else:
+                # 부활 실패해도 아직 max_revives 이내면 유지 (다음 요청 시 재시도)
+                logger.info("[%s] %s: revive failed, keeping for next attempt", sid[:8], session.agent_name)
 
     # ── Batch operations ──────────────────────────────────────────
 
@@ -290,12 +296,12 @@ class AgentSessionManager:
         await tracker.stop_monitor()
 
     def _on_freshness_reset(self, session_id: str):
-        """프레시니스 STALE_RESET 콜백 — 세션 제거 스케줄"""
+        """프레시니스 STALE_RESET 콜백 (24시간 경과) — 세션 제거"""
         session = self._sessions.get(session_id)
         if session:
             logger.info(
-                "[%s] Session %s reached STALE_RESET, scheduling removal",
-                session_id, session.agent_name,
+                "[%s] %s: 24h hard limit reached, removing",
+                session_id[:8], session.agent_name,
             )
             asyncio.ensure_future(self._remove_session(session_id))
 
@@ -303,12 +309,15 @@ class AgentSessionManager:
         while True:
             try:
                 await asyncio.sleep(interval)
+                # IDLE 전환 (Geny: 죽이지 않고 상태만 변경)
                 transitioned = 0
-                for session in self._sessions.values():
+                for session in list(self._sessions.values()):
                     if session.mark_idle():
                         transitioned += 1
                 if transitioned:
                     logger.info("Idle monitor: %d session(s) -> IDLE", transitioned)
+                # dead 세션 부활 시도
+                await self.cleanup_dead_sessions()
             except asyncio.CancelledError:
                 break
             except Exception:

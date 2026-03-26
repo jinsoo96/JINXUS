@@ -63,6 +63,7 @@ shsprompt_ex.md
 
 # Claude Code internal
 .claude/
+.jinxus_sessions/
 
 # Synapse config (contains secrets)
 backend/synapse/

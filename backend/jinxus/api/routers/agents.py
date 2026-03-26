@@ -2,7 +2,9 @@
 import asyncio
 import json
 import logging
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from jinxus.api.models import AgentStatus, AgentListResponse
@@ -13,6 +15,30 @@ from jinxus.memory.meta_store import get_meta_store
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+class RenameRequest(BaseModel):
+    korean_name: str = Field(..., min_length=1, max_length=20)
+    full_name: Optional[str] = Field(None, max_length=20)
+
+
+@router.put("/{agent_code}/rename")
+async def rename_agent(agent_code: str, request: RenameRequest):
+    """에이전트 이름 변경 — 즉시 적용, Redis 영속화, 프론트 자동 반영"""
+    from jinxus.agents.personas import rename_agent as do_rename
+    success = do_rename(
+        agent_code,
+        korean_name=request.korean_name,
+        full_name=request.full_name or request.korean_name,
+    )
+    if not success:
+        raise HTTPException(404, f"에이전트 '{agent_code}'를 찾을 수 없습니다")
+    return {
+        "success": True,
+        "agent": agent_code,
+        "korean_name": request.korean_name,
+        "full_name": request.full_name or request.korean_name,
+    }
 
 
 @router.get("/personas")

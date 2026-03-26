@@ -56,10 +56,10 @@ class FreshnessThresholds:
     - stale_compact: FRESH → STALE_COMPACT
     - stale_reset: FRESH → STALE_RESET
     """
-    stale_warn: float = 600.0       # 10분
-    stale_idle: float = 1200.0      # 20분
-    stale_compact: float = 1800.0   # 30분
-    stale_reset: float = 3600.0     # 60분
+    stale_warn: float = 300.0        # 5분 — idle 경고
+    stale_idle: float = 600.0        # 10분 — IDLE 전환 (죽이지 않음, 자동 부활 대상)
+    stale_compact: float = 43200.0   # 12시간 — 컨텍스트 압축
+    stale_reset: float = 86400.0     # 24시간 — 하드 리셋 (Geny 철학)
 
     def __post_init__(self):
         if not (self.stale_warn < self.stale_idle

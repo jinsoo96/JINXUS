@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     """서버 시작/종료 시 실행"""
     settings = get_settings()
 
+    # 이름 오버라이드 복원 (Redis)
+    from jinxus.agents.personas import load_name_overrides
+    load_name_overrides()
+
     # 시작 시
     orchestrator = get_orchestrator()
     await orchestrator.initialize()

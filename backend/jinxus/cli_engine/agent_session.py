@@ -150,23 +150,31 @@ class AgentSession:
         tracker.touch(self.session_id)
 
         if not self.is_alive():
-            logger.info("[%s] Process not alive, attempting revive", self.session_id)
-            # 부활 횟수 체크
-            if not tracker.try_revive(self.session_id):
+            logger.info("[%s] %s not alive, attempting revive", self.session_id[:8], self.agent_name)
+            # Geny 철학: 부활 횟수 초과해도 재초기화 시도 (idle 세션은 잠자는 것이지 죽은 게 아님)
+            if tracker.try_revive(self.session_id):
+                revived = await self.revive()
+                if revived:
+                    logger.info("[%s] %s revived", self.session_id[:8], self.agent_name)
+            else:
+                # max_revives 초과 — 프로세스 재초기화로 시도
+                logger.info("[%s] %s max revives exceeded, re-initializing", self.session_id[:8], self.agent_name)
+                if self.process:
+                    await self.process.stop()
+                    revived = await self.process.initialize()
+                    if revived:
+                        tracker.touch(self.session_id)  # 카운터 리셋
+                    else:
+                        return ExecutionResult(
+                            success=False,
+                            session_id=self.session_id,
+                            error=f"{self.agent_name} 재초기화 실패",
+                        )
+            if not self.is_alive():
                 return ExecutionResult(
                     success=False,
                     session_id=self.session_id,
-                    error=(
-                        f"Agent {self.agent_name} exceeded max revive attempts "
-                        f"and cannot be revived"
-                    ),
-                )
-            revived = await self.revive()
-            if not revived:
-                return ExecutionResult(
-                    success=False,
-                    session_id=self.session_id,
-                    error=f"Agent {self.agent_name} is not alive and revival failed",
+                    error=f"{self.agent_name} 부활 실패",
                 )
 
         result = await self.process.execute(

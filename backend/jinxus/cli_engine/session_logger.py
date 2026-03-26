@@ -25,8 +25,8 @@ from jinxus.cli_engine.models import LogEntry, LogLevel, StreamEvent, StreamEven
 
 _logger = getLogger(__name__)
 
-# 캐시 최대 엔트리
-MAX_CACHE_SIZE = 500
+# 캐시 최대 엔트리 (Geny: 1000)
+MAX_CACHE_SIZE = 1000
 
 # 로그 파일 디렉토리
 LOG_DIR = Path(os.environ.get("PROJECT_ROOT", "/app")) / "data" / "cli_logs"

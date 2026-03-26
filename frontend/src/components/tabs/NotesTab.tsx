@@ -161,7 +161,7 @@ export default function NotesTab() {
       </button>
 
       {/* ── 왼쪽: 노트 목록 ── */}
-      <div className={`w-full sm:w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 ${mobileNoteListOpen ? '' : 'hidden sm:flex'}`}>
+      <div className={`w-full sm:w-48 md:w-64 flex-shrink-0 flex flex-col gap-3 min-h-0 ${mobileNoteListOpen ? '' : 'hidden sm:flex'}`}>
 
         {/* 헤더 */}
         <div className="flex items-center justify-between">
@@ -187,7 +187,7 @@ export default function NotesTab() {
         </div>
 
         {/* 노트 목록 */}
-        <div className="flex-1 overflow-y-auto border border-dark-border rounded-xl divide-y divide-dark-border">
+        <div className="flex-1 overflow-y-auto border border-dark-border rounded-xl divide-y divide-dark-border scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
           {loading ? (
             <div className="flex items-center justify-center py-10">
               <Loader2 size={20} className="animate-spin text-zinc-500" />
@@ -208,7 +208,7 @@ export default function NotesTab() {
                     : 'hover:bg-zinc-800/40 active:bg-zinc-800/60 border-l-2 border-l-transparent'
                 }`}
               >
-                <p className="text-sm font-medium text-zinc-200 truncate pr-6">{note.title}</p>
+                <p className={`text-sm font-medium text-zinc-200 pr-6 ${selectedId === note.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>{note.title}</p>
                 {note.date && (
                   <p className="text-[10px] text-zinc-500 flex items-center gap-1 mt-0.5">
                     <Calendar size={9} />
@@ -308,7 +308,7 @@ export default function NotesTab() {
             {/* 헤더 */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-dark-border bg-zinc-900/60 flex-shrink-0">
               <div className="flex-1 min-w-0">
-                <h2 className="text-sm font-semibold text-white truncate flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2 flex-wrap">
                   {selectedNote.title}
                   {isUnsaved && (
                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] rounded-full font-normal flex-shrink-0">

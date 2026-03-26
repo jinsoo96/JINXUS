@@ -45,7 +45,7 @@ export default function ProjectsTab() {
 
   // 하단 Docker 로그 패널
   const [bottomPanelOpen, setBottomPanelOpen] = useState(true);
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(220);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(700);
   const isDraggingRef = useRef(false);
   const dragStartYRef = useRef(0);
   const dragStartHeightRef = useRef(0);
@@ -59,7 +59,7 @@ export default function ProjectsTab() {
     const handleMouseMove = (ev: MouseEvent) => {
       if (!isDraggingRef.current) return;
       const delta = dragStartYRef.current - ev.clientY;
-      const newHeight = Math.max(120, Math.min(600, dragStartHeightRef.current + delta));
+      const newHeight = Math.max(120, Math.min(900, dragStartHeightRef.current + delta));
       setBottomPanelHeight(newHeight);
     };
 

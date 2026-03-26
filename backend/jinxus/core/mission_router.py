@@ -142,21 +142,10 @@ class MissionRouter:
         return mission
 
     @staticmethod
-    def _make_title(text: str, max_len: int = 20) -> str:
-        """입력 텍스트에서 미션 제목 생성 (LLM 호출 없이)"""
-        # 첫 줄만 사용
+    def _make_title(text: str) -> str:
+        """입력 텍스트에서 미션 제목 생성 — 첫 줄 전체 사용 (자르지 않음)"""
         first_line = text.split("\n")[0].strip()
-        if len(first_line) <= max_len:
-            return first_line or "미션"
-        # 단어 단위로 잘라서 max_len 이내로
-        words = first_line.split()
-        title = ""
-        for w in words:
-            candidate = f"{title} {w}".strip() if title else w
-            if len(candidate) > max_len:
-                break
-            title = candidate
-        return (title or first_line[:max_len]) + "..."
+        return first_line or "미션"
 
     def _detect_agents(self, lower: str) -> list[str]:
         """입력에서 필요한 에이전트 추론 (패턴 기반)"""

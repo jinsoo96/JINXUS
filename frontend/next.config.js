@@ -34,6 +34,11 @@ const nextConfig = {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:19000';
     return [
       {
+        // /api/sse/* 는 Next.js API Route가 처리 (SSE 프록시)
+        source: '/api/sse/:path*',
+        destination: '/api/sse/:path*',
+      },
+      {
         source: '/api/:path*',
         destination: `${apiUrl}/:path*`,
       },

@@ -1,8 +1,8 @@
 import type { ChatResponse, SystemStatus, MemorySearchResult, AgentInfo } from '@/types';
 
 const API_BASE = '/api';
-// SSE 스트리밍도 Next.js rewrite 프록시 경유 (브라우저→Next.js→백엔드)
-const STREAM_BASE = '/api';
+// SSE 스트리밍: Edge Runtime 프록시 경유 (버퍼링 없음)
+const STREAM_BASE = '/api/sse';
 
 // 재시도 설정
 const RETRY_CONFIG = {
@@ -124,7 +124,7 @@ export const chatApi = {
     abortController?: AbortController
   ): Promise<void> => {
     try {
-      const response = await fetch(`${API_BASE}/chat`, {
+      const response = await fetch(`${STREAM_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, session_id: sessionId }),
@@ -168,7 +168,7 @@ export const chatApi = {
     abortController?: AbortController
   ): Promise<void> => {
     try {
-      const response = await fetch(`${API_BASE}/chat/smart`, {
+      const response = await fetch(`${STREAM_BASE}/chat/smart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, session_id: sessionId }),
@@ -208,7 +208,7 @@ export const chatApi = {
     abortController?: AbortController,
   ): Promise<void> => {
     try {
-      const response = await fetch(`${API_BASE}/chat/agent/${encodeURIComponent(agentName)}`, {
+      const response = await fetch(`${STREAM_BASE}/chat/agent/${encodeURIComponent(agentName)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, session_id: sessionId }),
@@ -555,6 +555,14 @@ export const agentApi = {
 
   getAll: async (): Promise<{ agents: AgentInfo[] }> => {
     return apiCall<{ agents: AgentInfo[] }>('/agents');
+  },
+
+  /** 에이전트 이름 변경 */
+  rename: async (agentCode: string, koreanName: string, fullName?: string): Promise<{ success: boolean }> => {
+    return apiCall(`/agents/${encodeURIComponent(agentCode)}/rename`, {
+      method: 'PUT',
+      body: JSON.stringify({ korean_name: koreanName, full_name: fullName || koreanName }),
+    });
   },
 
   // 에이전트 실시간 상태 조회
@@ -1352,98 +1360,83 @@ export const missionApi = {
     onError: (error: Error) => void,
     abortController?: AbortController,
   ): Promise<void> => {
-    let missionId: string | null = null;
-    let completed = false;
+    // Geny 패턴: POST로 시작 → EventSource GET으로 실시간 수신
+    // POST 응답에서 SSE를 읽지 않으므로 프록시 버퍼링 문제 없음
 
-    const { consumeSSE } = await import('./sse-parser');
-
-    const handleEvent = (event: string, data: unknown) => {
-      const evt = { event: event as MissionSSEEvent['event'], data: data as MissionSSEEvent['data'] };
-      if (event === 'mission_created' && (data as Record<string, unknown>)?.id) {
-        missionId = (data as Record<string, unknown>).id as string;
-      }
-      if (event === 'mission_complete' || event === 'mission_failed') {
-        completed = true;
-      }
-      onEvent(evt);
-    };
-
-    // 1단계: POST로 미션 생성 + 초기 스트림
+    // 1단계: POST로 미션 생성 + 실행 시작 (JSON 즉시 반환)
+    let missionData: Record<string, unknown>;
     try {
-      const response = await fetch(`${API_BASE}/mission`, {
+      const response = await fetch(`${API_BASE}/mission/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, session_id: sessionId }),
         signal: abortController?.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      await consumeSSE(response, handleEvent, abortController?.signal);
+      missionData = await response.json();
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
-      // 연결이 끊겼지만 mission_complete 못 받았으면 재연결 시도
-      if (!completed && missionId) {
-        console.warn(`[Mission SSE] 연결 끊김, 재연결 시도: ${missionId}`);
-      } else {
-        onError(error instanceof Error ? error : new Error('Mission stream error'));
-        return;
-      }
+      onError(error instanceof Error ? error : new Error('Mission start failed'));
+      return;
     }
 
-    // 2단계: 끊긴 경우 GET /{missionId}/events 로 재연결 (최대 5회)
-    if (!completed && missionId) {
-      let retries = 0;
-      const MAX_RETRIES = 5;
+    const missionId = missionData.id as string;
 
-      while (!completed && retries < MAX_RETRIES && !abortController?.signal.aborted) {
-        retries++;
-        const backoff = Math.min(1000 * Math.pow(2, retries - 1), 10000);
-        await new Promise(r => setTimeout(r, backoff));
+    // mission_created 이벤트 즉시 전달
+    onEvent({
+      event: 'mission_created',
+      data: missionData as unknown as MissionSSEEvent['data'],
+    });
 
-        try {
-          console.log(`[Mission SSE] 재연결 #${retries}: ${missionId}`);
-          const resubResponse = await fetch(`${API_BASE}/mission/${missionId}/events`, {
-            signal: abortController?.signal,
-          });
-          if (!resubResponse.ok) {
-            // 미션이 이미 완료됐으면 상태 직접 조회
-            if (resubResponse.status === 404) {
-              const mission = await missionApi.getMission(missionId);
-              if (mission.status === 'complete' || mission.status === 'failed') {
-                onEvent({
-                  event: mission.status === 'complete' ? 'mission_complete' : 'mission_failed',
-                  data: mission as unknown as MissionSSEEvent['data'],
-                });
-                completed = true;
-              }
-              break;
+    // 2단계: EventSource GET으로 실시간 이벤트 수신
+    return new Promise<void>((resolve) => {
+      const evtSource = new EventSource(`${STREAM_BASE}/mission/${missionId}/events`);
+      const cleanup = () => { evtSource.close(); resolve(); };
+
+      // abort 시 정리
+      abortController?.signal.addEventListener('abort', cleanup);
+
+      // 모든 이벤트를 수신하는 핸들러
+      const EVENTS = [
+        'mission_status', 'mission_thinking', 'mission_agent_activity',
+        'mission_message', 'mission_complete', 'mission_failed', 'mission_cancelled',
+        'mission_briefing_message', 'mission_huddle', 'mission_tool_calls',
+        'mission_approval_required', 'agent_dm', 'agent_report', 'keepalive',
+      ];
+
+      for (const evtName of EVENTS) {
+        evtSource.addEventListener(evtName, (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data);
+            onEvent({ event: evtName as MissionSSEEvent['event'], data });
+
+            // 종료 이벤트
+            if (['mission_complete', 'mission_failed', 'mission_cancelled'].includes(evtName)) {
+              cleanup();
             }
-            continue;
-          }
-          await consumeSSE(resubResponse, handleEvent, abortController?.signal);
-        } catch (error) {
-          if (error instanceof Error && error.name === 'AbortError') return;
-          console.warn(`[Mission SSE] 재연결 #${retries} 실패:`, error);
-        }
+          } catch { /* JSON 파싱 실패 무시 */ }
+        });
       }
 
-      // 재연결도 다 실패하면 현재 상태 직접 조회
-      if (!completed && missionId) {
-        try {
-          const mission = await missionApi.getMission(missionId);
-          if (mission.status === 'complete' || mission.status === 'failed') {
-            onEvent({
-              event: mission.status === 'complete' ? 'mission_complete' : 'mission_failed',
-              data: mission as unknown as MissionSSEEvent['data'],
-            });
-          } else {
-            onError(new Error('SSE 연결을 복구하지 못했습니다. 미션은 백그라운드에서 진행 중입니다.'));
-          }
-        } catch {
-          onError(new Error('SSE 연결을 복구하지 못했습니다.'));
+      evtSource.onerror = () => {
+        // EventSource 자동 재연결 시도. readyState CLOSED면 완전 종료
+        if (evtSource.readyState === EventSource.CLOSED) {
+          // 미션 상태 직접 조회
+          missionApi.getMission(missionId).then(mission => {
+            if (mission.status === 'complete' || mission.status === 'failed') {
+              onEvent({
+                event: mission.status === 'complete' ? 'mission_complete' : 'mission_failed',
+                data: mission as unknown as MissionSSEEvent['data'],
+              });
+            } else {
+              onError(new Error('SSE 연결 끊김. 미션은 백그라운드에서 진행 중입니다.'));
+            }
+          }).catch(() => {
+            onError(new Error('SSE 연결 끊김.'));
+          }).finally(resolve);
         }
-      }
-    }
+      };
+    });
   },
 
   // 미션 목록 조회

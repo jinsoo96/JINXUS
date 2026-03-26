@@ -141,7 +141,7 @@ export const POI_LIST: POIDef[] = [
   { name: 'breakroom_b',  col: 32, row: 20, action: '잠깐 쉬는 중', type: 'indoor' },
   { name: 'meeting_a',    col: 52, row: 10, action: '미팅 중', type: 'indoor' },
   { name: 'meeting_b',    col: 55, row: 10, action: '미팅 중', type: 'indoor' },
-  { name: 'ceo_smoking',  col: 53, row: 12, action: '담배 피우는 중', type: 'indoor', capacity: 1 },
+  { name: 'ceo_smoking',  col: 53, row: 12, action: '니코틴 충전 중', type: 'indoor', capacity: 1 },
   { name: 'sofa',         col: 29, row: 20, action: '소파에서 쉬는 중', type: 'indoor' },
   // Hallway
   { name: 'entrance',     col: 30, row: 4,  action: '로비 통과 중', type: 'indoor' },
@@ -149,10 +149,10 @@ export const POI_LIST: POIDef[] = [
   { name: 'hall_walk_b',  col: 45, row: 19, action: '복도 이동 중', type: 'indoor' },
   // Outdoor
   { name: 'parking',      col: 10, row: 2,  action: '주차장에서', type: 'outdoor' },
-  { name: 'smoking_c',    col: 46, row: 35, action: '흡연 중', type: 'outdoor', capacity: 3 },
+  { name: 'smoking_c',    col: 46, row: 37, action: '니코틴 충전 중', type: 'outdoor', capacity: 3 },
   { name: 'garden_a',     col: 48, row: 2,  action: '정원 산책 중', type: 'outdoor' },
   { name: 'garden_b',     col: 52, row: 2,  action: '꽃 구경 중', type: 'outdoor' },
-  { name: 'smoking',      col: 8,  row: 38, action: '흡연 중', type: 'outdoor', capacity: 3 },
+  { name: 'smoking',      col: 8,  row: 38, action: '니코틴 충전 중', type: 'outdoor', capacity: 3 },
   { name: 'smoking_b',    col: 12, row: 38, action: '바람 쐬는 중', type: 'outdoor', capacity: 3 },
   { name: 'terrace_a',    col: 28, row: 38, action: '테라스에서 쉬는 중', type: 'outdoor' },
   { name: 'terrace_b',    col: 32, row: 37, action: '테라스 산책 중', type: 'outdoor' },
@@ -228,9 +228,9 @@ export const FURNITURE: FurniturePlacement[] = [
   { type: 'bench', x: 28, y: 38 },
   { type: 'bench', x: 32, y: 38 },
 
-  // Smoking area near server room (exit hallway)
-  { type: 'ashtray', x: 46, y: 34 },
-  { type: 'bench', x: 48, y: 35 },
+  // Smoking area near server room (outdoor)
+  { type: 'ashtray', x: 46, y: 36 },
+  { type: 'bench', x: 48, y: 37 },
 
   // Garden
   { type: 'bench', x: 50, y: 1 },

@@ -87,25 +87,18 @@ export default function TasksDropdown() {
 
       {/* 드롭다운 메뉴 */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50">
-          <div className="p-3 border-b border-dark-border">
-            <h3 className="font-medium text-white">활성 작업</h3>
-          </div>
-
-          <div className="max-h-80 overflow-y-auto">
+        <div className="absolute right-0 top-full mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50">
+          <div className="max-h-60 overflow-y-auto">
             {loading && tasks.length === 0 ? (
-              <div className="p-4 text-center text-zinc-400">
-                <Loader2 size={20} className="animate-spin mx-auto mb-2" />
-                <span>불러오는 중...</span>
+              <div className="px-3 py-2 text-center text-zinc-500 text-xs">
+                <Loader2 size={12} className="animate-spin mx-auto mb-1" />
+                로딩...
               </div>
             ) : error ? (
-              <div className="p-4 text-center text-red-400">
-                <AlertCircle size={20} className="mx-auto mb-2" />
-                <span>{error}</span>
-              </div>
+              <div className="px-3 py-2 text-center text-red-400 text-xs">{error}</div>
             ) : tasks.length === 0 ? (
-              <div className="p-4 text-center text-zinc-500">
-                현재 실행 중인 작업이 없습니다.
+              <div className="px-3 py-2 text-center text-zinc-600 text-xs">
+                실행 중인 작업 없음
               </div>
             ) : (
               <ul className="divide-y divide-dark-border">

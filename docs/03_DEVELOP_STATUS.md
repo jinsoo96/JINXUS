@@ -1,5 +1,60 @@
 # JINXUS 개발 현황
 
+## v3.1.1 (2026-03-26) — SSE 실시간 스트리밍, Geny 참고 개편, UX 개선
+
+### SSE 실시간 스트리밍 (Geny 패턴 적용)
+- **Next.js SSE 버퍼링 해결**: Edge Runtime SSE 프록시 라우트 (`/api/sse/[...path]`) 추가
+- **Geny 2-Phase 패턴**: POST `/mission/start` (JSON 즉시 반환) → EventSource GET `/mission/{id}/events` (실시간 수신)
+- 기존 POST 응답에서 SSE 읽던 방식 → 브라우저 네이티브 EventSource로 전환
+- 채팅, 스마트 라우터, 에이전트 직접 채팅 모두 SSE 프록시 경유
+
+### 세션/로그 관리 (Geny 철학 적용)
+- **세션 수명 연장**: idle 60분→24시간 하드 리셋, idle 전환만 하고 안 죽임
+- **자동 부활 우선**: dead 세션 즉시 삭제 ❌ → 부활 시도 (max 3회), 초과해도 재초기화 시도
+- **로그 캐시 확대**: 500 → 1000 엔트리
+- `.jinxus_sessions` 정리 + `.gitignore` 추가
+
+### 에이전트 이름 변경 기능
+- `PUT /agents/{code}/rename` API 추가
+- Redis 영속화 (서버 재시작 유지)
+- Corporation 탭 EmployeeCard에서 연필 아이콘 클릭 → 인라인 편집
+- 변경 즉시 전체 UI 반영 (PixelOffice, 미션 로그, 사이드바, 시스템 프롬프트)
+
+### 미션 제목 짤림 수정
+- `_make_title` max_len 20자 → 제한 없음 (첫 줄 전체 사용)
+- 브리핑 메시지 `description[:200]` 제한 제거
+- 미션 헤더: 기본 전체 표시
+- 로그 라인: thinking만 한줄, DM/RPT/MTG 등 전체 표시
+
+### 텔레그램 봇 → 미션 시스템 연동
+- 텔레그램 메시지 → 미션 생성 → Task 탭에 동일하게 표시
+- 완료 시 업무노트(dev_notes) 내용만 텔레그램에 전송
+
+### PixelOffice 개선
+- 캐릭터 이름: 2글자(firstName) → 3글자(fullName) 표시
+- 흡연 텍스트: "흡연 중" → "니코틴 부족" / "니코틴 충전 중"
+- 핀치 줌아웃 수정: React passive listener → 네이티브 `{ passive: false }` 이벤트
+- 모바일 최소 줌: 하드코딩 0.3 → 뷰포트 기반 동적 계산 (맵 전체 보기 가능)
+- "JINXUS CORP." 중복 문구 제거, "Corp. env" → "Office View"
+
+### UI/UX 개선
+- **Sidebar**: Office 탭에 작업중 에이전트 수 뱃지
+- **Docker 로그 색상**: stderr 기반 → 로그 레벨 기반 (ERROR=빨강, WARN=노랑, INFO=초록)
+- **Projects 로그 패널**: 기본 높이 220px → 700px, 최대 900px
+- **MissionTab Log 버튼**: 헤더 오른쪽에 시스템 로그 슬라이드 패널
+- **모바일 로그**: 에이전트 이름 표시 + 수평 스크롤
+- **작업중 드롭다운**: 크기 축소, 빈 상태 한줄 표시
+- **에이전트 직접 채팅**: `event.data.message` 필드 매칭 수정 (답변 안 보이던 버그)
+- **EmployeeCard**: 이름변경 + 채널이동(직접채팅) + 해고 버튼 통합
+- **업무노트**: 선택된 노트 제목 전체 표시, 헤더 truncate 제거
+
+### 인프라
+- Cloudflare Tunnel: `localhost` → `100.75.83.105` (Tailscale IP) 설정
+- `docker compose restart`는 환경변수 안 읽음 → `--force-recreate` 필요
+- MCP memory 서버: npx 캐시 zod 깨짐 → 캐시 제거 후 복구
+
+---
+
 ## ModelFallbackRunner 구현 (2026-03-25) — API 에러 시 자동 모델 전환
 
 ### 개요

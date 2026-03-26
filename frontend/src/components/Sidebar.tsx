@@ -158,6 +158,10 @@ export default function Sidebar() {
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
+              // Office 탭에 작업중 에이전트 수 뱃지
+              const badge = tab.id === 'mission'
+                ? Object.values(runtimeMap).filter(r => r.status === 'working').length
+                : 0;
 
               return (
                 <li key={tab.id}>
@@ -166,7 +170,7 @@ export default function Sidebar() {
                     aria-current={isActive ? 'page' : undefined}
                     title={collapsed ? tab.label : undefined}
                     className={`w-full flex items-center rounded-lg transition-colors ${
-                      collapsed ? 'justify-center p-3' : 'gap-3 px-3 py-2.5'
+                      collapsed ? 'justify-center p-3 relative' : 'gap-3 px-3 py-2.5'
                     } ${
                       isActive
                         ? 'bg-primary/20 text-primary border border-primary/30'
@@ -174,7 +178,21 @@ export default function Sidebar() {
                     }`}
                   >
                     <Icon size={20} className="flex-shrink-0" />
-                    {!collapsed && <span className="text-sm font-medium">{tab.label}</span>}
+                    {!collapsed && (
+                      <>
+                        <span className="text-sm font-medium">{tab.label}</span>
+                        {badge > 0 && (
+                          <span className="ml-auto text-[9px] font-bold text-blue-400 bg-blue-500/15 px-1.5 py-0.5 rounded-full">
+                            {badge}
+                          </span>
+                        )}
+                      </>
+                    )}
+                    {collapsed && badge > 0 && (
+                      <span className="absolute -top-0.5 -right-0.5 w-4 h-4 text-[8px] font-bold text-white bg-blue-500 rounded-full flex items-center justify-center">
+                        {badge}
+                      </span>
+                    )}
                   </button>
                 </li>
               );

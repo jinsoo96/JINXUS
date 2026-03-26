@@ -120,7 +120,7 @@ class MissionExecutorV4:
     async def _execute(self, mission: Mission):
         """미션 전체 실행"""
         try:
-            await self._emit(mission.id, {"event": "mission_created", "data": mission.to_dict()})
+            # mission_created는 API 라우터에서 즉시 전송 (SSE 지연 방지)
 
             mission.status = MissionStatus.BRIEFING
             mission.started_at = datetime.now().isoformat()
@@ -758,7 +758,7 @@ class MissionExecutorV4:
             "topic": f"미션 브리핑: {mission.title}",
         }})
 
-        briefing_msg = f"미션: {mission.title}. {mission.description[:200]}"
+        briefing_msg = f"미션: {mission.title}. {mission.description}"
         await self._store.add_conversation(mission.id, "JINXUS_CORE", None, briefing_msg, "huddle")
 
         await self._emit(mission.id, {"event": "mission_briefing_message", "data": {

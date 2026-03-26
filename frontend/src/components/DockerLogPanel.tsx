@@ -133,7 +133,12 @@ export default function DockerLogPanel({ onClose }: { onClose?: () => void }) {
                 {entry.timestamp.split('T')[1]?.slice(0, 12) || ''}
               </span>
             )}
-            <span className={entry.stream === 'stderr' ? 'text-red-400' : 'text-green-300/80'}>
+            <span className={
+              /\bERROR\b|Traceback|Exception|CRITICAL/i.test(entry.line) ? 'text-red-400' :
+              /\bWARN(ING)?\b/i.test(entry.line) ? 'text-amber-400' :
+              /\bDEBUG\b/i.test(entry.line) ? 'text-zinc-500' :
+              'text-green-300/80'
+            }>
               {entry.line}
             </span>
           </div>

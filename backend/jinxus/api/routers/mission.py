@@ -86,14 +86,19 @@ async def create_and_execute_mission(request: MissionRequest):
     executor.start_mission(mission)
 
     async def event_generator():
+        # mission_created를 즉시 전송 (백그라운드 태스크 스케줄 대기 없이)
+        yield {
+            "event": "mission_created",
+            "data": json.dumps(mission.to_dict(), ensure_ascii=False),
+        }
         try:
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                     evt_name = event.get("event", "")
 
-                    # Python 로그 이벤트 필터링
-                    if evt_name in ("log", "error"):
+                    # Python 로그 이벤트 필터링 + 이미 전송한 mission_created 스킵
+                    if evt_name in ("log", "error", "mission_created"):
                         continue
 
                     yield {
@@ -118,6 +123,24 @@ async def create_and_execute_mission(request: MissionRequest):
             messenger.unsubscribe(mission.id, queue)
 
     return EventSourceResponse(event_generator())
+
+
+@router.post("/start")
+async def start_mission(request: MissionRequest):
+    """Geny 패턴: 미션 생성 + 실행 시작 → JSON 즉시 반환 (SSE는 GET /events로)"""
+    executor = _get_executor()
+
+    active_count = len(executor._active_missions)
+    if active_count >= MAX_CONCURRENT_MISSIONS:
+        raise HTTPException(503, f"동시 미션 수({MAX_CONCURRENT_MISSIONS}) 초과")
+
+    mission_router = get_mission_router()
+    mission = await mission_router.create_mission(
+        request.message, request.session_id
+    )
+    executor.start_mission(mission)
+
+    return mission.to_dict()
 
 
 @router.get("/list")

@@ -76,10 +76,18 @@ export function centerOn(camera: Camera, wx: number, wy: number): void {
   clampCamera(camera);
 }
 
+/** 맵 전체가 뷰포트에 들어오는 최소 줌 계산 */
+export function getMinZoom(camera: Camera): number {
+  const mapPxW = MAP_W * TILE;
+  const mapPxH = MAP_H * TILE;
+  // 맵 전체가 화면에 들어오는 줌 레벨 (모바일에서 0.1 정도까지 가능)
+  return Math.max(0.08, Math.min(0.3, Math.min(camera.viewportW / mapPxW, camera.viewportH / mapPxH)));
+}
+
 /** Apply zoom (centered on screen point) */
 export function applyZoom(camera: Camera, delta: number, sx: number, sy: number): void {
   const [wx, wy] = screenToWorld(camera, sx, sy);
-  const minZoom = 0.3;
+  const minZoom = getMinZoom(camera);
   const maxZoom = 2.0;
   camera.zoom = Math.max(minZoom, Math.min(maxZoom, camera.zoom * (1 - delta * 0.001)));
   // Keep the world point under the cursor

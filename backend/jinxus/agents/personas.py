@@ -813,6 +813,10 @@ PERSONAS: Dict[str, AgentPersona] = {
 # ── 동적 페르소나 (HR 고용 시 자동 등록) ──────────────────────────────────
 _DYNAMIC_PERSONAS: Dict[str, AgentPersona] = {}
 
+# ── 이름 오버라이드 (외부에서 변경한 이름, Redis 영속화) ──────────────────
+_NAME_OVERRIDES: Dict[str, Dict[str, str]] = {}
+# 예: {"JX_CODER": {"korean_name": "민수", "full_name": "김민수"}}
+
 
 def register_dynamic_persona(code: str, persona: AgentPersona) -> None:
     """동적으로 고용된 에이전트의 페르소나를 등록한다.
@@ -827,9 +831,75 @@ def unregister_dynamic_persona(code: str) -> None:
     _DYNAMIC_PERSONAS.pop(code, None)
 
 
+def rename_agent(code: str, korean_name: str, full_name: str = "") -> bool:
+    """에이전트 이름 변경 — 즉시 적용 + Redis 영속화."""
+    import json
+    base = PERSONAS.get(code) or _DYNAMIC_PERSONAS.get(code)
+    if not base:
+        return False
+
+    _NAME_OVERRIDES[code] = {
+        "korean_name": korean_name,
+        "full_name": full_name or korean_name,
+    }
+
+    # KOREAN_TO_AGENT 갱신
+    # 기존 이름 제거
+    old_names = [k for k, v in KOREAN_TO_AGENT.items() if v == code]
+    for k in old_names:
+        del KOREAN_TO_AGENT[k]
+    KOREAN_TO_AGENT[korean_name] = code
+
+    # Redis 영속화 (비동기 환경 밖이라 동기 저장)
+    try:
+        import redis
+        from jinxus.config import get_settings
+        settings = get_settings()
+        r = redis.Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+        r.set("jinxus:name_overrides", json.dumps(_NAME_OVERRIDES, ensure_ascii=False))
+    except Exception:
+        pass  # Redis 없어도 메모리 변경은 적용
+
+    return True
+
+
+def load_name_overrides() -> None:
+    """서버 시작 시 Redis에서 이름 오버라이드 복원."""
+    import json
+    try:
+        import redis
+        from jinxus.config import get_settings
+        settings = get_settings()
+        r = redis.Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+        data = r.get("jinxus:name_overrides")
+        if data:
+            _NAME_OVERRIDES.update(json.loads(data))
+            # KOREAN_TO_AGENT 갱신
+            for code, names in _NAME_OVERRIDES.items():
+                kn = names.get("korean_name")
+                if kn:
+                    old_names = [k for k, v in KOREAN_TO_AGENT.items() if v == code]
+                    for k in old_names:
+                        del KOREAN_TO_AGENT[k]
+                    KOREAN_TO_AGENT[kn] = code
+    except Exception:
+        pass
+
+
 def get_all_personas() -> Dict[str, AgentPersona]:
-    """정적 + 동적 페르소나 전체 반환."""
-    return {**PERSONAS, **_DYNAMIC_PERSONAS}
+    """정적 + 동적 페르소나 전체 반환 (이름 오버라이드 적용)."""
+    merged = {**PERSONAS, **_DYNAMIC_PERSONAS}
+    # 이름 오버라이드 적용
+    for code, overrides in _NAME_OVERRIDES.items():
+        if code in merged:
+            from dataclasses import replace
+            merged[code] = replace(
+                merged[code],
+                korean_name=overrides.get("korean_name", merged[code].korean_name),
+                full_name=overrides.get("full_name", merged[code].full_name),
+                display_name=overrides.get("full_name", merged[code].display_name),
+            )
+    return merged
 
 
 # ── 파생 자료구조 (자동 생성, 하드코딩 금지) ─────────────────────────────

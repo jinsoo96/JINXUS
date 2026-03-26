@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   UserPlus, RotateCcw, Loader2, ChevronDown, ChevronUp, ChevronLeft,
   CheckCircle, XCircle, Clock, Wrench, Send, MessageSquare, Trash2, Users,
-  Building2, RefreshCw, Hash,
+  Building2, RefreshCw, Hash, Pencil,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { agentApi, hrApi, logsApi, chatApi, type AgentRuntimeStatus, type HRAgentRecord, type TaskLog, type SSEEvent } from '@/lib/api';
@@ -23,15 +23,29 @@ interface EmployeeCardProps {
   agentCode: string;
   runtime: AgentRuntimeStatus | undefined;
   onSelect: (code: string) => void;
-  onGoChannel: () => void;
+  onGoChannel: (code: string) => void;
+  onFire?: (code: string) => void;
 }
 
-function EmployeeCard({ agentCode, runtime, onSelect, onGoChannel }: EmployeeCardProps) {
+function EmployeeCard({ agentCode, runtime, onSelect, onGoChannel, onFire }: EmployeeCardProps) {
   const persona = PERSONA_MAP[agentCode];
+  const [renaming, setRenaming] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+  const { loadPersonas } = useAppStore();
   if (!persona) return null;
 
   const isWorking = runtime?.status === 'working';
   const isError = runtime?.status === 'error';
+
+  const handleRename = async () => {
+    if (!nameInput.trim()) { setRenaming(false); return; }
+    try {
+      await agentApi.rename(agentCode, nameInput.trim());
+      await loadPersonas();
+      toast.success(`이름 변경: ${nameInput.trim()}`);
+    } catch { toast.error('이름 변경 실패'); }
+    setRenaming(false);
+  };
 
   return (
     <div
@@ -50,17 +64,51 @@ function EmployeeCard({ agentCode, runtime, onSelect, onGoChannel }: EmployeeCar
               isError ? 'bg-red-500' : 'bg-green-500/70'}`} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-sm text-white leading-tight">{getDisplayName(agentCode)}</p>
-          <p className="text-[11px] text-zinc-500 leading-tight">{getRole(agentCode)}</p>
+          {renaming ? (
+            <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); handleRename(); }}
+              onClick={e => e.stopPropagation()} className="flex items-center gap-1">
+              <input autoFocus value={nameInput} onChange={e => setNameInput(e.target.value)}
+                className="bg-zinc-800 border border-primary/50 rounded px-1.5 py-0.5 text-sm text-white w-20 focus:outline-none"
+                onKeyDown={e => { if (e.key === 'Escape') setRenaming(false); }} />
+              <button type="submit" className="p-0.5 hover:bg-green-500/20 rounded text-green-400"><CheckCircle size={12} /></button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); setRenaming(false); }}
+                className="p-0.5 hover:bg-zinc-700 rounded text-zinc-500"><XCircle size={12} /></button>
+            </form>
+          ) : (
+            <>
+              <p className="font-semibold text-sm text-white leading-tight">{getDisplayName(agentCode)}</p>
+              <p className="text-[11px] text-zinc-500 leading-tight">{getRole(agentCode)}</p>
+            </>
+          )}
         </div>
-        <button
-          onClick={(e) => { e.stopPropagation(); onGoChannel(); }}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 text-[10px] transition-colors flex-shrink-0"
-          title={`#${persona.channel} 채널로 이동`}
-        >
-          <Hash size={9} />
-          {getTeamConfig(persona.team).labelShort || persona.team}
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {!renaming && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setNameInput(persona.firstName || getDisplayName(agentCode)); setRenaming(true); }}
+              className="p-1 rounded hover:bg-zinc-700 text-zinc-600 hover:text-zinc-300 transition-colors"
+              title="이름 변경"
+            >
+              <Pencil size={10} />
+            </button>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onGoChannel(agentCode); }}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 text-[10px] transition-colors"
+            title={`#${persona.channel} 채널로 이동`}
+          >
+            <Hash size={9} />
+            {getTeamConfig(persona.team).labelShort || persona.team}
+          </button>
+          {agentCode !== 'JINXUS_CORE' && onFire && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onFire(agentCode); }}
+              className="p-1 rounded hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
+              title="해고"
+            >
+              <Trash2 size={10} />
+            </button>
+          )}
+        </div>
       </div>
       {isWorking && runtime?.current_task && (
         <div className="px-2 py-1.5 bg-blue-500/10 rounded-lg border border-blue-500/20">
@@ -327,12 +375,13 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
       inputSnapshot,
       undefined,
       (event: SSEEvent) => {
-        if (event.event === 'message' && event.data.content) {
+        const msgContent = event.data.content || event.data.message;
+        if (event.event === 'message' && msgContent) {
           setDirectMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last && last.role === 'assistant') {
               const updated = prev.slice(0, -1);
-              updated.push({ ...last, content: event.data.content! });
+              updated.push({ ...last, content: msgContent });
               return updated;
             }
             return prev;
@@ -413,9 +462,11 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
     }
   };
 
-  const handleGoChannel = useCallback(() => {
-    setActiveTab('team');
-  }, [setActiveTab]);
+  const handleGoChannel = useCallback((agentCode?: string) => {
+    if (agentCode) {
+      setChatAgent(agentCode);
+    }
+  }, []);
 
   const getStatusDot = (status?: string) => {
     if (status === 'working')
@@ -709,7 +760,11 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
                               agentCode={code}
                               runtime={runtimeMap[code]}
                               onSelect={handleSelectAgent}
-                              onGoChannel={handleGoChannel}
+                              onGoChannel={(code) => handleGoChannel(code)}
+                              onFire={(agentCode) => {
+                                const agent = hrAgents.find(a => a.name === agentCode);
+                                if (agent) handleFire(agent.id, getDisplayName(agentCode));
+                              }}
                             />
                           ))}
                         </div>
@@ -792,7 +847,7 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
           </>
         ) : (
           <>
-            {/* 채팅 헤더 */}
+            {/* 채팅 헤더 — 이름 인라인 편집 가능 */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-dark-border bg-zinc-900/60">
               <div className="flex items-center gap-2">
                 <button
@@ -870,7 +925,7 @@ export default function AgentsTab({ isActive = true, forcedSubTab }: { isActive?
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder={`${getDisplayName(chatAgent)}에게 지시...`}
+                  placeholder={`${getDisplayName(chatAgent)}에게 말 걸기...`}
                   disabled={chatLoading}
                   aria-label="에이전트 직접 지시 입력"
                   className="flex-1 bg-zinc-900 border border-dark-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary transition-colors disabled:opacity-50"

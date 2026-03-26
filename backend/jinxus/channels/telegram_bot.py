@@ -107,84 +107,102 @@ class TelegramBot:
         task.add_done_callback(lambda t: logger.error(f"[TelegramBot] 처리 태스크 예외: {t.exception()}") if not t.cancelled() and t.exception() else None)
 
     async def _process_message(self, bot, chat_id: int, user_input: str):
-        """메시지 처리 (백그라운드 태스크)
+        """메시지 처리 → 미션 시스템으로 실행 (Task 탭과 동일)
 
-        task 분류 → Matrix general 공지 → AgentReactor (팀 배분+실행)
-        chat 분류 → JINXUS_CORE 기존 처리
+        텔레그램에서 보낸 메시지가 미션으로 생성되어 웹 UI Task 탭에도 나타남.
+        완료/실패 시 텔레그램으로 결과 보고.
         """
         logger.info(f"[TelegramBot] 처리 시작: chat_id={chat_id}")
 
-        is_task = _classify_as_task(user_input)
+        try:
+            from jinxus.core.mission_router import get_mission_router
+            from jinxus.core.agent_messenger import get_agent_messenger
+            from jinxus.core.mission import get_mission_store
 
-        if is_task:
-            # 1. 즉시 확인 응답
-            await bot.send_message(chat_id, "📢 전사 공지됐습니다. 팀장들이 배분하고 진행할게요.")
+            # 미션 생성
+            mission_router = get_mission_router()
+            mission = await mission_router.create_mission(user_input, f"telegram_{chat_id}")
 
-            # 2. Matrix general에 CEO 공지 게시
-            try:
-                from jinxus.channels.matrix_channel import get_matrix_as
-                matrix_as = get_matrix_as()
-                await matrix_as.send_to_channel(
-                    "JINXUS_CORE", "general",
-                    f"📢 [CEO 진수님 지시] {user_input}"
-                )
-            except Exception as me:
-                logger.debug(f"[TelegramBot] Matrix 공지 게시 실패: {me}")
+            await bot.send_message(
+                chat_id,
+                f"📋 미션 생성: [{mission.type.value.upper()}] {mission.title}\n"
+                f"에이전트 배정 중..."
+            )
 
-            # 3. AgentReactor — 팀장 반응 + 실제 작업 + 텔레그램 보고
-            async def notify_telegram(message: str):
+            # 미션 실행 시작
+            def _get_executor():
                 try:
-                    for i in range(0, len(message), 4000):
-                        await bot.send_message(chat_id, message[i:i+4000])
-                except Exception as e:
-                    logger.warning(f"[TelegramBot] 완료 보고 전송 실패: {e}")
+                    from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+                    return get_mission_executor_v4()
+                except Exception:
+                    from jinxus.core.mission_executor import get_mission_executor
+                    return get_mission_executor()
 
-            from jinxus.hr.agent_reactor import get_agent_reactor
-            reactor = get_agent_reactor()
-            task = asyncio.create_task(
-                reactor.react(user_input, "general", telegram_callback=notify_telegram)
-            )
-            task.add_done_callback(
-                lambda t: logger.error(f"[TelegramBot] AgentReactor 예외: {t.exception()}")
-                if not t.cancelled() and t.exception() else None
-            )
+            executor = _get_executor()
+            executor.start_mission(mission)
 
-        else:
-            # chat → 기존 JINXUS_CORE 처리
-            typing_active = True
-
-            async def keep_typing():
-                while typing_active:
-                    try:
-                        await bot.send_chat_action(chat_id, "typing")
-                    except Exception as e:
-                        logger.debug(f"[TelegramBot] 타이핑 인디케이터 전송 실패: {e}")
-                    await asyncio.sleep(4)
-
-            typing_task = asyncio.create_task(keep_typing())
+            # 이벤트 구독 — 완료/실패 대기
+            messenger = get_agent_messenger()
+            queue = messenger.subscribe(mission.id)
+            store = get_mission_store()
 
             try:
-                if not self._orchestrator:
-                    self._orchestrator = get_orchestrator()
-                    await self._orchestrator.initialize()
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=600)
+                        evt_name = event.get("event", "")
 
-                result = await self._orchestrator.run_task(
-                    user_input=user_input,
-                    session_id=f"telegram_{chat_id}",
-                )
+                        if evt_name == "mission_complete":
+                            # 업무노트 내용만 전송
+                            note_content = await self._get_work_note(mission.title)
+                            if note_content:
+                                msg = f"📋 업무노트\n\n{note_content}"
+                            else:
+                                data = event.get("data", {})
+                                msg = f"✅ 미션 완료: {mission.title}\n\n{data.get('result', '완료')}"
+                            for i in range(0, len(msg), 4000):
+                                await bot.send_message(chat_id, msg[i:i+4000])
+                            break
 
-                response = result["response"]
-                typing_active = False
-                typing_task.cancel()
+                        elif evt_name == "mission_failed":
+                            data = event.get("data", {})
+                            error = data.get("error", "알 수 없는 오류")
+                            await bot.send_message(chat_id, f"❌ 미션 실패: {error[:500]}")
+                            break
 
-                for i in range(0, len(response), 4000):
-                    await bot.send_message(chat_id, response[i:i+4000])
+                        elif evt_name == "mission_cancelled":
+                            await bot.send_message(chat_id, "🚫 미션 취소됨")
+                            break
 
-            except Exception as e:
-                typing_active = False
-                typing_task.cancel()
-                logger.error(f"Telegram message handling error: {e}")
-                await bot.send_message(chat_id, f"오류가 발생했습니다: {str(e)[:200]}")
+                    except asyncio.TimeoutError:
+                        m = await store.get(mission.id)
+                        if not m or m.status.value in ("complete", "failed", "cancelled"):
+                            break
+                        await bot.send_chat_action(chat_id, "typing")
+
+            finally:
+                messenger.unsubscribe(mission.id, queue)
+
+        except Exception as e:
+            logger.error(f"[TelegramBot] 미션 실행 오류: {e}")
+            await bot.send_message(chat_id, f"오류: {str(e)[:300]}")
+
+    async def _get_work_note(self, title: str) -> str | None:
+        """미션 제목으로 최신 업무노트 조회"""
+        try:
+            from jinxus.api.routers.dev_notes import DevNotesManager
+            manager = DevNotesManager()
+            notes = manager.list_notes()
+            # 제목 일부 매칭으로 최신 노트 찾기 (제목이 파일명에 축약되어 있으므로)
+            title_lower = title.lower()[:30]
+            for note in notes:
+                if title_lower in (note.get("title", "") or "").lower():
+                    full = manager.get_note(note["id"])
+                    return full.get("content", "") if full else None
+            return None
+        except Exception as e:
+            logger.debug(f"[TelegramBot] 업무노트 조회 실패: {e}")
+            return None
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/start 명령"""
