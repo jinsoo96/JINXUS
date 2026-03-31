@@ -131,12 +131,8 @@ class TelegramBot:
 
             # 미션 실행 시작
             def _get_executor():
-                try:
-                    from jinxus.core.mission_executor_v4 import get_mission_executor_v4
-                    return get_mission_executor_v4()
-                except Exception:
-                    from jinxus.core.mission_executor import get_mission_executor
-                    return get_mission_executor()
+                from jinxus.core.mission_executor import get_mission_executor
+                return get_mission_executor()
 
             executor = _get_executor()
             executor.start_mission(mission)

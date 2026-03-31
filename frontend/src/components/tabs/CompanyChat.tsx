@@ -411,7 +411,8 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
   useEffect(() => {
     if (!isActive) return;
     const onData = (data: { type: string; message?: import('@/lib/api').ChannelMessage }) => {
-      if (data.type !== 'message' || !data.message) return;
+      if (data.type === 'ping' || !data.message) return;
+      // history + message 모두 처리 (clearedAt 필터 적용)
       const m = data.message;
       const channel = m.channel as ChannelId;
       if (!CHANNEL_IDS.includes(channel)) return;
@@ -434,12 +435,15 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
         if (existing.some(x => x.id === msg.id)) return prev;
         return { ...prev, [channel]: [...existing, msg] };
       });
-      if (channel !== activeChannelRef.current && !msg.isUser) {
+      // history 이벤트는 unread 카운트 증가 안 함
+      if (data.type === 'message' && channel !== activeChannelRef.current && !msg.isUser) {
         setUnread(prev => ({ ...prev, [channel]: (prev[channel] ?? 0) + 1 }));
       }
     };
     const abort = new AbortController();
-    channelApi.streamChannel(onData, abort.signal);
+    // cleared_at를 SSE 스트림에 전달하여 서버 측 필터링
+    const clearedParam = JSON.stringify(clearedAtRef.current);
+    channelApi.streamChannel(onData, abort.signal, undefined, clearedParam);
     return () => abort.abort();
   }, [isActive]);
 

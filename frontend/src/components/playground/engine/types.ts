@@ -41,6 +41,13 @@ export interface CharState {
   smokingTimer: number;  // >0 means currently smoking
   smokeAnchorCol: number;  // 흡연 시작 위치 (서성이기 범위 제한용)
   smokeAnchorRow: number;
+  // Drinking effect (JINXUS_CORE only)
+  drinkingTimer: number;  // >0 means currently drinking
+  drinkAnchorCol: number;
+  drinkAnchorRow: number;
+  // Running effect (JINXUS_CORE only)
+  runningTimer: number;   // >0 means currently running
+  runningTarget: [number, number] | null;  // current running destination
 }
 
 // ── Map layout types ──

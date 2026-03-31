@@ -1,5 +1,204 @@
 # JINXUS 개발 현황
 
+## v4.0.0 (2026-04-01) — AAI 인프라 + Geny/Paperclip 패턴 도입
+
+Geny(자율주행 에이전트)와 Paperclip(회사 시뮬레이션)의 핵심 패턴을 분석하고 JINXUS에 적용.
+Agent-Agent Interaction(AAI) 로드맵의 인프라 기반을 구축.
+
+### 백엔드 신규 모듈 (core/)
+
+| 모듈 | 출처 | 설명 |
+|------|------|------|
+| `structured_output.py` | Geny | Pydantic 스키마 주입 → LLM → 검증 실패 시 correction prompt 2단계 재시도 |
+| `inbox.py` | Geny | Redis 기반 에이전트 간 1:1 비동기 메시지 큐 (deliver/read/mark_read) |
+| `relevance_gate.py` | Geny | 키워드+LLM 2단계 관련성 필터. broadcast 시 관련 에이전트만 반응 |
+| `goals.py` | Paperclip | Goal Hierarchy (company→team→agent→task). 미션에 목적 연결 |
+| `mission_lock.py` | Paperclip | Redis SETNX 기반 Atomic Checkout. 미션 이중 실행 방지 (409 Conflict) |
+| `budget.py` | Paperclip | 에이전트별/월별 API 비용 추적. ok→warning→hard_stop 3단계 |
+| `heartbeat.py` | Paperclip | 에이전트 주기적 깨어남 프로토콜. 체크리스트 기반 자율 실행 |
+| `routine.py` | Paperclip | Cron 기반 반복 미션 자동 생성. skip_if_active/coalesce/always_enqueue |
+| `config_revision.py` | Paperclip | 에이전트 설정 변경 리비전 관리 + 버전 롤백 |
+
+### 기존 모듈 강화
+
+| 모듈 | 변경 |
+|------|------|
+| `autonomous_runner.py` (v1.8.0) | Iteration Gate 3중 체크 (Completion Signal + Context Budget + Iteration Count) |
+| `jinx_memory.py` (v2.1.0) | LLM 게이트 메모리 주입 — haiku로 "필요한가?" 판단 후 Qdrant 검색 |
+| `context_guard.py` | (이미 구현됨) 모델별 context limit, warn/block 2단계, 자동 compaction |
+| `completion_signals.py` | (이미 구현됨) TASK_COMPLETE/BLOCKED/ERROR/CONTINUE 파싱 |
+
+### 에이전트 인격 파일화 (Paperclip SOUL.md 패턴)
+
+- `data/souls/{agent}/SOUL.md` — 성격, 전략적 자세, 소통 스타일
+- `data/souls/{agent}/RULES.md` — 행동 규칙, 금지 사항, 에스컬레이션
+- `agents/soul_loader.py` — 파일 로드 + mtime 캐시 + 런타임 편집 API
+- 6개 에이전트 SOUL.md 작성 (CORE, CODER, RESEARCHER, WRITER, ANALYST, OPS)
+
+### API (routers/aai.py)
+
+`/aai` 접두사로 통합 라우터:
+- Inbox: POST/GET /aai/inbox, /aai/inbox/unread/all
+- Goals: CRUD /aai/goals, /aai/goals/{id}/hierarchy, /aai/goals/link-mission
+- Heartbeat: POST /aai/heartbeat/wake, GET /aai/heartbeat/status
+- Mission Lock: POST /aai/mission-lock/{id}/checkout, /release
+- Budget: POST /aai/budget/record, GET /aai/budget/{agent}, /aai/budget
+- Routine: CRUD /aai/routines, /aai/routines/{id}/runs
+- Config Revision: GET /aai/config-revision/{agent}, POST .../rollback/{version}
+- Soul: GET/POST /aai/souls, /aai/souls/{agent}
+
+### 프론트엔드
+
+- `lib/toast-gate.ts` — 이벤트 폭주 시 카테고리별 10초/3개 rate limiting (Paperclip 패턴)
+
+---
+
+## v3.3.3 (2026-03-30) — UI/UX 접근성 & 인터랙션 일괄 개선
+
+[ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) 레포의 99개 UX 가이드라인 + 44개 React 퍼포먼스 규칙 기반 분석 후 적용.
+
+### 접근성 (WCAG 준수)
+- **뷰포트 줌 차단 해제**: `maximumScale: 1, userScalable: false` 제거 (WCAG 2.1 SC 1.4.4 위반)
+- **Skip link 추가**: 키보드/스크린리더 사용자가 네비게이션 건너뛰고 본문 직행 (`#main-content`)
+- **aria-live 상태 알림**: Header 인프라 상태 영역에 `role="status" aria-live="polite"` 적용
+- **색상 외 텍스트 보조**: 연결 상태에 `sr-only` 텍스트("연결됨"/"연결 끊김") 추가 — 색상만으로 정보 전달 방지
+- **ErrorBoundary role="alert"**: 에러 메시지에 스크린리더 즉시 알림 + 복구 안내 문구 추가
+- **Toast aria 속성**: 에러 토스트에 `role="alert" aria-live="assertive"` 적용
+
+### 모션 & 인터랙션
+- **prefers-reduced-motion 전역 지원**: 모든 애니메이션/트랜지션 0.01ms로 단축 (globals.css)
+- **motion-reduce 클래스**: Skeleton, TasksDropdown 스피너에 `motion-reduce:animate-none` 적용
+- **press-feedback 유틸**: 버튼/카드 클릭 시 `scale(0.97)` 눌림 효과 (150ms ease-out)
+- **focus-ring 유틸**: `focus-visible` 시 primary 컬러 4px 링 (키보드 탐색 시각화)
+- **ESC 키 닫기**: TasksDropdown에 Escape 키 핸들러 추가
+
+### 레이아웃 & 반응형
+- **dvh 적용**: `h-screen` → `h-dvh`, `min-h-screen` → `min-h-dvh` (모바일 주소창 문제 해결)
+- **z-index 스케일 시스템**: dropdown(10), sticky(20), overlay(30), modal(40), popover(50), toast(100)
+- **touch-action: manipulation**: body 전역 적용 — 300ms 탭 딜레이 제거
+- **overscroll-behavior**: body에 `overscroll-behavior-x: none`, 드롭다운에 `scroll-contain`
+
+### 타이포그래피 & 숫자
+- **tabular-nums**: Header 업타임, 작업 수, Sidebar 에이전트 통계 등 숫자 영역에 적용 — 자릿수 흔들림 방지
+- **시맨틱 컬러 토큰**: CSS 변수 10종 추가 (primary, destructive, success, warning, info, muted, surface 등)
+- **font-display: swap**: Inter, Fira Code에 적용 — FOIT(보이지 않는 텍스트) 방지
+- **Google Fonts preconnect**: fonts.googleapis.com, fonts.gstatic.com 선제 연결
+
+### UX 개선
+- **빈 상태 개선**: LogsTab, ProjectsTab 빈 상태에 아이콘 + 제목 + 설명 패턴 적용
+- **EmptyState 공용 컴포넌트**: `EmptyState`, `EmptySearchResult`, `EmptyLogs`, `EmptyMemory` 신규
+- **Toast 자동 닫힘 명시**: 성공 3초, 일반 4초, 에러 6초 (기존: react-hot-toast 기본값)
+- **트랜지션 토큰**: `duration-micro(150ms)`, `duration-normal(250ms)`, `duration-slow(400ms)` + easing 3종
+
+### Tailwind 설정 확장
+- `zIndex`: 6단계 스케일
+- `transitionDuration`: micro/normal/slow 토큰
+- `transitionTimingFunction`: enter(ease-out)/exit(ease-in)/spring 토큰
+- `spacing`: icon-sm(16)/icon-md(20)/icon-lg(24) 토큰
+
+### 미션 고아 정리 버그 수정 (`mission_executor.py`, `mission_executor_v4.py`)
+- **기존**: 서버 재시작 시 IN_PROGRESS 미션을 무조건 FAILED 처리 → 실제 완료된 미션도 "중단" 표시
+- **수정**: `result`가 있거나 서브태스크 전부 done이면 **COMPLETE로 복구**, 진짜 중단된 것만 FAILED
+
+## v3.3.2 (2026-03-28) — GC/리소스 정리 + 미션 라우터 과분류 수정
+
+### MissionRouter v2.0.0 — LLM 기반 미션 분류 (`mission_router.py`)
+- **하드코딩 패턴 매칭 전면 제거** → haiku LLM 기반 분류로 교체
+- 10자 이하 인사/잡담만 패턴으로 즉시 QUICK (LLM 호출 절약)
+- 나머지 전부 LLM이 type(quick/standard/epic/raid) + title + agents를 JSON으로 판단
+- LLM 실패 시 STANDARD fallback
+- 에이전트도 LLM이 직접 선정 (기존: 키워드 매칭)
+- 실제 테스트 8건 전부 정확 분류 (기존 하드코딩: 과반이 STANDARD로 잘못 분류)
+
+### SQLite VACUUM (`meta_store.py`)
+- `vacuum()` 메서드 추가 — 서버 시작 시 `cleanup_old_background_tasks()` 직후 자동 실행
+- 삭제 후 빈 페이지 회수하여 DB 파일 크기 비대화 방지
+
+### Qdrant 컬렉션 사이즈 가드 (`long_term.py`)
+- `enforce_collection_cap()` — 컬렉션당 포인트 수 상한 (기본 10,000) 초과 시 importance 낮고 오래된 순으로 삭제
+- `optimize_all_collections()`에 통합: 사이즈 가드 → 시간감쇠 정리 → 중복 제거 3단계
+- 24시간 주기 외에도 상한 초과 시 즉시 정리되어 OOM 방지
+
+### Redis 클라이언트 연결 누수 수정
+- `ResponseCache.close()` 추가 (`core/response_cache.py`)
+- `SharedWorkspace.close()` 추가 (`core/collaboration.py`)
+- 서버 셧다운 캐스케이드에 두 클라이언트 종료 등록 (`api/server.py`)
+
+## v3.3.1 (2026-03-28) — RAID 병렬 실행 수정 + 채팅 삭제 버그 수정
+
+### RAID 미션 병렬 실행 개선 (`mission_executor_v4.py`)
+- **전문가 에이전트 직접 배정**: `_decompose_task()` 에이전트 목록에서 `rank >= 2` 제한 제거 → 전문가(JX_FRONTEND, JX_BACKEND 등, rank=3)도 LLM이 직접 배정 가능
+- **팀 구조 표시**: 에이전트를 팀별로 그룹핑하여 LLM에 전달 → 조직 구조 인지 후 적절한 분산 배정
+- **분산 배정 원칙 프롬프트 추가**: "최소 2명 이상 분산", "전문가 우선 배정", "병렬 실행 극대화" 명시
+- 기존: 코딩 작업이 JX_CODER(팀장)에게 전부 몰림 → 수정: JX_FRONTEND, JX_BACKEND 등에 직접 분산
+
+### 세션 확보 안정화 (`session_manager.py`)
+- `ensure_agents()`: 개별 에이전트 세션 생성 실패 시 해당 에이전트만 스킵 (기존: 한 명 실패하면 전체 중단)
+
+### 채팅 삭제 버그 수정 (`channel.py`, `CompanyChat.tsx`, `api.ts`)
+- **백엔드**: SSE `/channel/stream`에 `cleared_at` 파라미터 추가 → 삭제 시점 이전 히스토리 서버 측 필터링
+- **프론트엔드**: SSE `type: 'history'` 이벤트도 `clearedAt` 필터 적용하여 정상 처리 (기존: history 이벤트 무시)
+- **프론트엔드**: SSE 연결 시 `cleared_at` 파라미터를 서버에 전달하여 이중 필터링
+
+## v3.3.0 (2026-03-27) — 논문 기반 에이전트 강화 (Agentic LLM Survey + SOTOPIA)
+
+### Self-Refine 패턴 적용 (`jinx_loop.py`)
+- **3단계 프롬프트 분리**: 기존 단일 프롬프트 → Generation(초안) → Feedback(자가비평) → Refinement(수정)
+- 비평 점수 0.8 이상이면 초안 즉시 채택 (불필요한 LLM 호출 절약)
+- `_parse_json_response()` 헬퍼 추가, 중복 `import re` 제거
+
+### Schwartz 가치 체계 (`personality.py`)
+- **10개 가치 차원** 추가: self_direction, stimulation, hedonism, achievement, power, security, conformity, tradition, benevolence, universalism
+- **decision_style** 필드: intuitive/analytical/deliberative/spontaneous/dependent
+- 전체 21개 아키타입에 가치 프로필 매핑
+- `get_value_compatibility(a, b)` — 협업 매칭용 가치 호환성 점수
+
+### System 1/2 추론 전략 (`difficulty_router.py`)
+- **ReasoningStrategy enum**: SINGLE_SHOT, CHAIN_OF_THOUGHT, TREE_OF_THOUGHTS, SELF_REFINE, DEBATE
+- `select_reasoning_strategy()` — 난이도 + 키워드 분석으로 최적 추론 전략 선택
+- `classify_with_strategy()` — (Difficulty, ReasoningStrategy) 튜플 반환
+
+### 토론 모델 + 신뢰 수준 (`collaboration.py`)
+- **DebateSession**: 다중 에이전트 토론 (N라운드 의견 교환 → 합의도 측정 → 결론 도출)
+- **TrustLevel**: 4단계 신뢰 (STRANGER/COLLEAGUE/TRUSTED/PARTNER), 비대칭 신뢰 변동 (쌓기 어렵고 잃기 쉬움)
+- `filter_context_by_trust()` — 신뢰 수준별 정보 공개 범위 제어 (Dec-POMDP)
+- `cross_validate()` — 복수 에이전트 결과 교차 검증, 낮은 일관성 경고
+
+### Weak Partner 감지 (`competitive_dispatch.py`)
+- `detect_weak_partners()` — 성공률 기준 저성능 에이전트 감지
+- `weighted_vote()` — 과거 성과 가중 투표로 최적 결과 선택
+- `competitive_execute_with_weak_filter()` — 약한 파트너 필터 후 경쟁 실행
+
+### 다차원 성과 평가 (`agent_performance.py`)
+- **SOTOPIA-EVAL 기반 5차원**: goal_completion, efficiency, collaboration, knowledge, compliance
+- `MultiDimEvaluation.evaluate()` — 에이전트 결과를 5차원 자동 채점
+- `get_profile()` — 차원별 평균/트렌드/최강·최약 차원 프로필
+- `get_recommendation()` — 저성과 차원 개선 권고
+
+### SOTOPIA 소셜 다이나믹스 (`social.ts`)
+- **5가지 행동 타입**: speak, non_verbal, physical, none, leave
+- **Relationship 시스템**: 에이전트 간 관계 점수 (-1~1), 상호작용 이력 추적
+- **에피소드 이벤트**: meeting/collaboration/conflict/celebration/crisis — 관계에 영향
+- **관계 기반 대화**: 친밀도에 따라 대화 스타일 변동 (친근 ↔ 형식적)
+
+## v3.2.0 (2026-03-27) — 장기메모리 경험 축적 수정, ToolGraph v4
+
+### 장기메모리 경험 축적 수정 (5가지 버그 해결)
+- **JINXUS_CORE 서브에이전트 경험 저장**: `_memory_write_node`에서 `save_long_term()` 추가. 기존에는 SQLite 로그만 저장하고 Qdrant 벡터에는 저장하지 않았음
+- **CORE 자체 경험도 저장**: JINXUS_CORE가 취합한 응답도 장기기억에 축적
+- **저장 조건 완화**: duration 임계값 500ms→100ms, 실패 경험 무조건 저장, 도구 사용 작업도 저장
+- **비동기 쓰기 안정화**: 1회 재시도 로직 + error 레벨 로깅 + `_write_fail_count` 카운터
+- **Qdrant 연결 검증**: `connect()`에서 즉시 연결 확인, 실패 시 예외 재발생
+- **Reflection 시스템 수정**: 존재하지 않던 `get_recent_memories()` → scroll API 기반 `_get_recent_memories()` 구현
+- **헬스체크 강화**: `pending_writes`, `write_failures` 모니터링 필드 추가
+
+### ToolGraph v4 업그레이드 (graph-tool-call 최신 반영)
+- **임베딩 시맨틱 검색 추가**: OpenAI 임베딩을 4번째 검색 소스로 추가 (BM25 25% + 그래프 40% + 임베딩 20% + 어노테이션 15%)
+- **대화 컨텍스트 인식**: `retrieve_with_context()` — "그거 취소해줘" 같은 모호한 쿼리를 대화 히스토리에서 해석
+- **멀티턴 히스토리 강화**: 이전 도구의 PRECEDES 이웃에 30% 부스트 (다음 단계 도구 자동 추천)
+- **도구 임베딩 배치 생성**: lazy init으로 첫 검색 시 244개 도구 임베딩 일괄 계산
+- **모호한 쿼리 판별**: 대명사/짧은 참조 자동 감지 → 컨텍스트 키워드로 보강
+
 ## v3.1.1 (2026-03-26) — SSE 실시간 스트리밍, Geny 참고 개편, UX 개선
 
 ### SSE 실시간 스트리밍 (Geny 패턴 적용)

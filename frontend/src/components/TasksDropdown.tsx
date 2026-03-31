@@ -53,16 +53,23 @@ export default function TasksDropdown() {
     return () => clearInterval(interval);
   }, [isOpen]);
 
-  // 외부 클릭 시 닫기
+  // 외부 클릭 시 닫기 + ESC 키 닫기
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
     };
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
 
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
   }, []);
 
   const activeCount = tasks.length;
@@ -74,24 +81,24 @@ export default function TasksDropdown() {
       {/* 트리거 버튼 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors press-feedback focus-ring ${
           activeCount > 0
             ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'
             : 'bg-dark-card text-zinc-400 hover:bg-dark-border'
         }`}
       >
-        {activeCount > 0 && <Loader2 size={14} className="animate-spin" />}
-        <span>작업중 ({activeCount})</span>
+        {activeCount > 0 && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
+        <span className="tabular-nums">작업중 ({activeCount})</span>
         <ChevronDown size={14} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {/* 드롭다운 메뉴 */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50">
+        <div className="absolute right-0 top-full mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-dropdown scroll-contain">
           <div className="max-h-60 overflow-y-auto">
             {loading && tasks.length === 0 ? (
               <div className="px-3 py-2 text-center text-zinc-500 text-xs">
-                <Loader2 size={12} className="animate-spin mx-auto mb-1" />
+                <Loader2 size={12} className="animate-spin motion-reduce:animate-none mx-auto mb-1" />
                 로딩...
               </div>
             ) : error ? (

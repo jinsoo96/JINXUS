@@ -113,6 +113,12 @@ class ResponseCache:
         except Exception as e:
             logger.warning(f"[ResponseCache] 캐시 무효화 실패: {e}")
 
+    async def close(self) -> None:
+        """Redis 연결 종료"""
+        if self._redis:
+            await self._redis.close()
+            self._redis = None
+
 
 # 싱글톤
 _cache: Optional[ResponseCache] = None

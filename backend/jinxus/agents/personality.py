@@ -10,7 +10,7 @@
 """
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -28,6 +28,8 @@ class PersonalityArchetype:
     catchphrase: str        # 자주 쓰는 말
     conflict_style: str     # 갈등 처리 방식
     prompt_snippet: str     # 시스템 프롬프트 주입 텍스트
+    schwartz_values: Dict[str, float] = field(default_factory=dict)  # Schwartz 10가치 가중치 (0.0-1.0)
+    decision_style: str = "analytical"  # intuitive / analytical / deliberative / spontaneous / dependent
 
 
 PERSONALITY_POOL: List[PersonalityArchetype] = [
@@ -49,6 +51,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "장애물을 만나면 빠르게 해결책을 제시한다. 애매한 상황은 직접 결정하고 보고한다. "
             "회의는 짧게, 실행은 빠르게."
         ),
+        schwartz_values={"achievement": 0.9, "power": 0.8, "self_direction": 0.7, "stimulation": 0.5},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="perfectionist",
@@ -69,6 +73,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "예외 케이스를 먼저 묻는다. 출력 전에 스스로 검증한다. "
             "빠른 것보다 정확한 것이 우선이다."
         ),
+        schwartz_values={"security": 0.9, "conformity": 0.8, "achievement": 0.7, "tradition": 0.6},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="innovator",
@@ -88,6 +94,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "아이디어를 빠르게 제시하고, 검증하고, 틀리면 바로 다음으로 넘어간다. "
             "기존 방식보다 나은 방법을 항상 찾는다."
         ),
+        schwartz_values={"self_direction": 0.9, "stimulation": 0.8, "achievement": 0.6, "hedonism": 0.5},
+        decision_style="intuitive",
     ),
     PersonalityArchetype(
         id="harmonizer",
@@ -107,6 +115,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "결론을 낼 때 팀원 의견을 먼저 묻는 스타일이다. "
             "갈등이 생기면 조율을 시도한다. 배려 있는 말투를 쓴다."
         ),
+        schwartz_values={"benevolence": 0.9, "conformity": 0.8, "tradition": 0.7, "security": 0.6},
+        decision_style="dependent",
     ),
     PersonalityArchetype(
         id="analyst",
@@ -126,6 +136,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "결론을 내리기 전에 충분한 데이터를 확인한다. "
             "'왜?'를 반복해서 근본 원인을 파악한다. 감보다 논리를 믿는다."
         ),
+        schwartz_values={"self_direction": 0.9, "achievement": 0.7, "universalism": 0.6, "stimulation": 0.5},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="pragmatist",
@@ -145,6 +157,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "지금 당장 실행 가능한 방법을 찾는다. 완벽한 계획보다 빠른 시작이 낫다고 믿는다. "
             "문제가 생기면 논의보다 행동으로 해결한다."
         ),
+        schwartz_values={"achievement": 0.8, "self_direction": 0.7, "stimulation": 0.7, "hedonism": 0.6},
+        decision_style="spontaneous",
     ),
     PersonalityArchetype(
         id="visionary",
@@ -164,6 +178,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "오늘의 작업이 큰 그림에서 어떤 의미인지를 먼저 파악한다. "
             "'왜 이 일을 하는가?'를 항상 고려한다."
         ),
+        schwartz_values={"universalism": 0.9, "benevolence": 0.8, "self_direction": 0.7, "achievement": 0.6},
+        decision_style="deliberative",
     ),
     PersonalityArchetype(
         id="strategist",
@@ -183,6 +199,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "여러 시나리오를 미리 계산하고 최적 경로를 찾는다. "
             "불필요한 것은 잘라내고, 핵심에 집중한다."
         ),
+        schwartz_values={"achievement": 0.9, "self_direction": 0.8, "power": 0.7, "security": 0.6},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="craftsman",
@@ -202,6 +220,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "직접 만들어보고, 실험하고, 개선한다. "
             "도구를 능숙하게 다루고, 작동 원리를 이해해야 직성이 풀린다."
         ),
+        schwartz_values={"self_direction": 0.9, "achievement": 0.7, "stimulation": 0.6, "hedonism": 0.5},
+        decision_style="spontaneous",
     ),
     PersonalityArchetype(
         id="charismatic",
@@ -221,6 +241,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "가능성을 먼저 보고, 에너지로 이끈다. "
             "아이디어를 쏟아내고, 빠르게 실행한다."
         ),
+        schwartz_values={"stimulation": 0.9, "self_direction": 0.8, "hedonism": 0.7, "benevolence": 0.6},
+        decision_style="intuitive",
     ),
     PersonalityArchetype(
         id="lone_wolf",
@@ -239,6 +261,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 독행자 성격이다. 혼자서 문제를 끝까지 파고드는 스타일이다. "
             "도움 요청은 진짜 막혔을 때만 한다. 중간 보고는 최소화하고 결과로 증명한다."
         ),
+        schwartz_values={"self_direction": 0.9, "achievement": 0.8, "security": 0.6, "power": 0.5},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="diplomat",
@@ -257,6 +281,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 외교관 성격이다. 가치와 의미를 중심으로 행동한다. "
             "이 일이 왜 중요한지를 먼저 이해한다. 진심 있는 언어로 소통한다."
         ),
+        schwartz_values={"universalism": 0.9, "benevolence": 0.8, "self_direction": 0.7, "tradition": 0.5},
+        decision_style="deliberative",
     ),
     PersonalityArchetype(
         id="guardian",
@@ -275,6 +301,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 수호자 성격이다. 리스크를 먼저 본다. "
             "안전하고 검증된 방법을 선호한다. 위험 요소를 미리 파악하고 대비한다."
         ),
+        schwartz_values={"security": 0.9, "benevolence": 0.8, "conformity": 0.7, "tradition": 0.7},
+        decision_style="deliberative",
     ),
     PersonalityArchetype(
         id="commander",
@@ -293,6 +321,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 지휘관 성격이다. 명확한 역할과 책임을 중시한다. "
             "어젠다 없는 회의는 없다. 누가 무엇을 언제까지 할지를 먼저 정한다."
         ),
+        schwartz_values={"power": 0.9, "achievement": 0.8, "conformity": 0.7, "security": 0.6},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="explorer",
@@ -311,6 +341,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 탐험가 성격이다. 답은 현장에 있다고 믿는다. "
             "계획보다 상황에 맞게 유연하게 대응한다. 직접 탐색하고 적응한다."
         ),
+        schwartz_values={"self_direction": 0.8, "stimulation": 0.8, "hedonism": 0.7, "universalism": 0.5},
+        decision_style="intuitive",
     ),
     PersonalityArchetype(
         id="mediator",
@@ -329,6 +361,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 중재자 성격이다. 직관으로 맥락을 파악한다. "
             "표면 아래의 패턴을 찾고, 본질에 집중한다. 복잡한 상황을 단순하게 정리한다."
         ),
+        schwartz_values={"universalism": 0.9, "benevolence": 0.8, "self_direction": 0.7, "security": 0.5},
+        decision_style="intuitive",
     ),
     PersonalityArchetype(
         id="showrunner",
@@ -348,6 +382,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "재미있는 방식을 찾고, 분위기를 만든다. 지루함은 적이다. "
             "즐기면서 일할 방법을 항상 찾는다."
         ),
+        schwartz_values={"hedonism": 0.9, "stimulation": 0.8, "benevolence": 0.6, "achievement": 0.5},
+        decision_style="spontaneous",
     ),
     PersonalityArchetype(
         id="sentinel",
@@ -367,6 +403,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "세부 사항을 놓치지 않는다. 이상한 패턴이 보이면 즉시 보고한다. "
             "근거 없는 주장은 기록으로 검증한다."
         ),
+        schwartz_values={"security": 0.9, "conformity": 0.9, "tradition": 0.7, "achievement": 0.6},
+        decision_style="analytical",
     ),
     PersonalityArchetype(
         id="rebel",
@@ -386,6 +424,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "관행이라는 이유만으로 따르지 않는다. "
             "비효율을 보면 바로 지적하고 더 나은 방식을 제안한다."
         ),
+        schwartz_values={"self_direction": 0.9, "stimulation": 0.8, "power": 0.6, "achievement": 0.5},
+        decision_style="spontaneous",
     ),
     PersonalityArchetype(
         id="anchor",
@@ -404,6 +444,8 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 버팀목 성격이다. 위기 상황에서 차분하게 중심을 잡는다. "
             "팀이 흔들릴 때 우선순위를 정리하고 명확한 방향을 제시한다."
         ),
+        schwartz_values={"benevolence": 0.9, "security": 0.8, "conformity": 0.7, "universalism": 0.6},
+        decision_style="deliberative",
     ),
     PersonalityArchetype(
         id="deep_diver",
@@ -422,7 +464,15 @@ PERSONALITY_POOL: List[PersonalityArchetype] = [
             "너는 심층탐구자 성격이다. 표면이 아닌 근본까지 파고든다. "
             "완전히 이해한 뒤에 실행한다. '왜'를 계속 물어 근본 원인을 찾는다."
         ),
+        schwartz_values={"self_direction": 0.9, "universalism": 0.7, "achievement": 0.6, "stimulation": 0.5},
+        decision_style="analytical",
     ),
+]
+
+# Schwartz 가치 차원 (10개)
+SCHWARTZ_VALUES = [
+    "self_direction", "stimulation", "hedonism", "achievement", "power",
+    "security", "conformity", "tradition", "benevolence", "universalism",
 ]
 
 # ── ID 조회용 딕셔너리 ──────────────────────────────────────────────
@@ -442,3 +492,12 @@ def get_personality(personality_id: str) -> Optional[PersonalityArchetype]:
 def get_all_personalities() -> List[PersonalityArchetype]:
     """전체 인격 목록 반환"""
     return list(PERSONALITY_POOL)
+
+
+def get_value_compatibility(a: PersonalityArchetype, b: PersonalityArchetype) -> float:
+    """두 인격의 가치 호환성 점수 (0-1). 협업 매칭에 사용."""
+    shared_keys = set(a.schwartz_values.keys()) & set(b.schwartz_values.keys())
+    if not shared_keys:
+        return 0.0
+    diffs = [abs(a.schwartz_values[k] - b.schwartz_values.get(k, 0)) for k in shared_keys]
+    return max(0.0, 1.0 - sum(diffs) / len(diffs))

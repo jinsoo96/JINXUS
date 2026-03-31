@@ -1,5 +1,9 @@
 """JinxMemory - 통합 메모리 인터페이스
 
+v2.1.0: LLM 게이트 메모리 주입 (Geny 패턴)
+- "이 요청에 메모리가 필요한가?" haiku로 먼저 판단
+- 불필요한 Qdrant 벡터 검색 절약
+
 v1.7.0: 비동기 메모리 쓰기 (ThreadPoolExecutor + drain barrier)
 - 장기기억(Qdrant) 쓰기를 백그라운드에서 처리
 - recall() 전 drain_writes()로 모든 pending write 완료 보장
@@ -37,6 +41,7 @@ class JinxMemory:
         self._write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jinx-mem-write")
         self._pending_writes: list[Future] = []
         self._pending_lock = Lock()
+        self._write_fail_count: int = 0  # 저장 실패 횟수 추적
 
     # ===== 초기화 =====
 
@@ -57,7 +62,77 @@ class JinxMemory:
             "redis": await self._short_term.is_connected(),
             "qdrant": self._long_term.is_connected(),
             "sqlite": True,  # 파일 기반이라 항상 True
+            "pending_writes": len(self._pending_writes),
+            "write_failures": self._write_fail_count,
         }
+
+    # ===== LLM 게이트 메모리 주입 (Geny 패턴) =====
+
+    # 메모리 검색이 불필요한 패턴 (LLM 호출 없이 빠르게 판단)
+    _SKIP_PATTERNS = [
+        "안녕", "ㅎㅇ", "hi", "hello", "네", "응", "ㅇㅇ", "고마워", "감사",
+        "뭐해", "ㅋㅋ", "ㅎㅎ", "ㄱㅅ", "ok", "ㅇㅋ", "bye", "잘자",
+    ]
+
+    async def needs_memory(self, query: str) -> bool:
+        """이 요청에 메모리 검색이 필요한지 판단 (2단계)
+
+        1단계: 패턴 매칭 (빠름, 무비용)
+        2단계: LLM 판단 (haiku, 최소비용)
+
+        Returns:
+            True if memory search is needed
+        """
+        if not query or len(query.strip()) < 3:
+            return False
+
+        # 1단계: 패턴 매칭 — 인사/감탄/단순 응답은 메모리 불필요
+        q_lower = query.strip().lower()
+        if q_lower in self._SKIP_PATTERNS:
+            return False
+        if len(q_lower) <= 5 and not any(c.isdigit() for c in q_lower):
+            return False
+
+        # 2단계: LLM 판단 (haiku — 최소 비용)
+        try:
+            from anthropic import AsyncAnthropic
+            from jinxus.config import get_settings
+            settings = get_settings()
+            client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+            response = await client.messages.create(
+                model=settings.claude_fast_model,
+                max_tokens=5,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"다음 요청에 과거 작업 기억이나 학습 경험을 참조해야 합니까?\n"
+                        f"요청: {query[:200]}\n"
+                        f"YES 또는 NO만 답하세요."
+                    ),
+                }],
+            )
+
+            answer = response.content[0].text.strip().upper()
+            return "YES" in answer
+
+        except Exception as e:
+            logger.warning(f"[JinxMemory] LLM 게이트 판단 실패: {e}, 기본 검색 수행")
+            return True  # 실패 시 안전하게 검색 수행
+
+    async def gated_search(
+        self, agent_name: str, query: str, limit: int = 5,
+    ) -> list[dict]:
+        """게이트 적용 메모리 검색 — 필요할 때만 Qdrant 조회
+
+        Returns:
+            메모리 리스트 (불필요하면 빈 리스트)
+        """
+        if not await self.needs_memory(query):
+            logger.debug(f"[JinxMemory] 게이트 통과 안 됨 (검색 스킵): {query[:50]}")
+            return []
+
+        return await self.search_long_term_async(agent_name, query, limit)
 
     # ===== 단기기억 =====
 
@@ -103,21 +178,35 @@ class JinxMemory:
         search_long_term 호출 전 drain_writes()가 자동 호출되어 일관성 보장.
         """
         def _do_save():
-            try:
-                return self._long_term.save(
-                    agent_name=agent_name,
-                    task_id=task_id,
-                    instruction=instruction,
-                    summary=summary,
-                    outcome=outcome,
-                    success_score=success_score,
-                    key_learnings=key_learnings,
-                    importance_score=importance_score,
-                    prompt_version=prompt_version,
-                )
-            except Exception as e:
-                logger.warning(f"[JinxMemory] 장기기억 비동기 쓰기 실패: {e}")
-                return None
+            """백그라운드 저장 — 1회 재시도 포함"""
+            for attempt in range(2):
+                try:
+                    return self._long_term.save(
+                        agent_name=agent_name,
+                        task_id=task_id,
+                        instruction=instruction,
+                        summary=summary,
+                        outcome=outcome,
+                        success_score=success_score,
+                        key_learnings=key_learnings,
+                        importance_score=importance_score,
+                        prompt_version=prompt_version,
+                    )
+                except Exception as e:
+                    if attempt == 0:
+                        logger.warning(
+                            f"[JinxMemory] 장기기억 저장 실패 (재시도 예정): "
+                            f"agent={agent_name}, task={task_id}, error={e}"
+                        )
+                        import time
+                        time.sleep(0.5)  # 짧은 대기 후 재시도
+                    else:
+                        logger.error(
+                            f"[JinxMemory] 장기기억 저장 최종 실패: "
+                            f"agent={agent_name}, task={task_id}, error={e}"
+                        )
+                        self._write_fail_count += 1
+                        return None
 
         future = self._write_pool.submit(_do_save)
         future.add_done_callback(self._on_write_done)

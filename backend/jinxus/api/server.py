@@ -27,6 +27,7 @@ from jinxus.api.routers import (
     mission_router,
     command_router,
 )
+from jinxus.api.routers.aai import router as aai_router
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI):
             print(f"Interrupted tasks reported: {len(interrupted)}")
         # 오래된 작업 정리
         await meta.cleanup_old_background_tasks(days=7)
+        await meta.vacuum()
     except Exception as e:
         logger.debug(f"Interrupted tasks check failed: {e}")
 
@@ -120,11 +122,11 @@ async def lifespan(app: FastAPI):
         session_mgr.start_idle_monitor()
         print("CLI Engine: AgentSessionManager initialized")
 
-        # v4 MissionExecutor 고아 정리
-        from jinxus.core.mission_executor_v4 import get_mission_executor_v4
-        executor_v4 = get_mission_executor_v4()
-        await executor_v4.cleanup_orphan_missions()
-        print("CLI Engine: MissionExecutor v4 ready")
+        # MissionExecutor 고아 정리
+        from jinxus.core.mission_executor import get_mission_executor
+        executor = get_mission_executor()
+        await executor.cleanup_orphan_missions()
+        print("CLI Engine: MissionExecutor ready")
     except Exception as e:
         logger.warning(f"CLI Engine init failed (v4 features disabled): {e}")
 
@@ -307,6 +309,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"[server] MissionStore 종료 중 오류: {e}")
 
+    # ResponseCache Redis 종료
+    try:
+        from jinxus.core.response_cache import get_response_cache
+        await get_response_cache().close()
+    except Exception as e:
+        logger.debug(f"[server] ResponseCache 종료 중 오류: {e}")
+
+    # SharedWorkspace Redis 종료
+    try:
+        from jinxus.core.collaboration import get_collaborator
+        await get_collaborator()._workspace.close()
+    except Exception as e:
+        logger.debug(f"[server] SharedWorkspace 종료 중 오류: {e}")
+
     # 스케줄러 종료
     try:
         from jinxus.tools import TOOL_REGISTRY
@@ -383,6 +399,7 @@ def create_app() -> FastAPI:
     app.include_router(matrix_router)
     app.include_router(mission_router)
     app.include_router(command_router)
+    app.include_router(aai_router)
 
     @app.get("/")
     async def root():

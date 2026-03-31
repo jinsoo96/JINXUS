@@ -1,10 +1,15 @@
-"""자율 멀티스텝 작업 실행기 v1.7.0
+"""자율 멀티스텝 작업 실행기 v1.8.0
 
 복잡한 작업을 여러 라운드로 분해하여 자율적으로 실행한다.
 각 라운드의 결과가 다음 라운드의 컨텍스트로 전달되며,
 중간 진행 상황을 콜백(텔레그램 등)으로 보고한다.
 
-v1.7.0 추가:
+v1.8.0 추가 (Geny 패턴):
+- Iteration Gate 3중 체크 (completion signal + context budget + iteration count)
+- Completion Signal 파싱 통합 (TASK_COMPLETE / BLOCKED / ERROR / CONTINUE)
+- Context Window Guard 연동 (context overflow 사전 방지)
+
+v1.7.0:
 - Redis 기반 step 체크포인트 (서버 재시작 시 복구)
 - 실제 진행률 (completed_steps / total_steps)
 - 개별 step 타임아웃 (asyncio.wait_for)
@@ -28,6 +33,10 @@ from typing import Optional, Callable, Awaitable
 
 from anthropic import AsyncAnthropic
 from jinxus.config import get_settings
+from jinxus.core.completion_signals import (
+    parse_completion_signal, SIGNAL_COMPLETE, SIGNAL_BLOCKED, SIGNAL_ERROR,
+)
+from jinxus.core.context_guard import ContextWindowGuard, BudgetStatus
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +165,10 @@ class AutonomousRunner:
 
         # 실시간 진행률 콜백
         self._progress_update: Optional[Callable[[int, int, int], Awaitable[None]]] = progress_update
+
+        # v1.8.0: Iteration Gate 3중 체크
+        self._context_guard = ContextWindowGuard(model=self._model)
+        self._accumulated_context: list[dict] = []  # 누적 메시지 (context budget 추적용)
 
     def cancel(self):
         """실행 취소"""
@@ -355,6 +368,16 @@ class AutonomousRunner:
                 failed = len([r for r in records if not r.success])
                 await progress_callback(
                     f"[Autonomous] 그룹 {group_idx + 1}/{len(groups)} 완료 (성공 {completed}, 실패 {failed})"
+                )
+
+            # v1.8.0: Iteration Gate 3중 체크
+            gate_result = self._iteration_gate_check(records, step_index)
+            if gate_result:
+                if progress_callback:
+                    await progress_callback(f"[Autonomous] Iteration Gate: {gate_result}")
+                return self._build_result(
+                    task, records, total_planned, start_time,
+                    stopped_reason=gate_result,
                 )
 
             # 체크포인트 저장
@@ -840,6 +863,47 @@ class AutonomousRunner:
         except Exception as e:
             logger.error(f"[AutonomousRunner] 평가 실패: {e}")
             return {"done": False}
+
+    def _iteration_gate_check(
+        self, records: list[StepRecord], step_index: int,
+    ) -> Optional[str]:
+        """Iteration Gate 3중 체크 (Geny 패턴)
+
+        1. Completion Signal: 에이전트가 명시적으로 완료/차단/에러 선언
+        2. Context Budget: 누적 컨텍스트가 위험 수준 도달
+        3. Iteration Count: 최대 반복 횟수 초과
+
+        Returns:
+            중단 사유 문자열 (None이면 계속)
+        """
+        # 1. Completion Signal 체크 — 최근 응답에서 시그널 파싱
+        if records:
+            last_response = records[-1].response
+            signal = parse_completion_signal(last_response)
+            if signal:
+                if signal.type == SIGNAL_COMPLETE:
+                    return f"작업 완료 (에이전트 선언: {signal.detail or 'TASK_COMPLETE'})"
+                elif signal.type == SIGNAL_BLOCKED:
+                    return f"작업 차단: {signal.detail}"
+                elif signal.type == SIGNAL_ERROR:
+                    return f"에러 발생: {signal.detail}"
+                # CONTINUE는 계속 진행
+
+        # 2. Context Budget 체크 — 누적 응답의 토큰 추정
+        total_text = "\n".join(r.response for r in records if r.response)
+        self._accumulated_context = [{"role": "assistant", "content": total_text}]
+        budget_check = self._context_guard.check(self._accumulated_context)
+        if budget_check.status in (BudgetStatus.BLOCK, BudgetStatus.OVERFLOW):
+            return (
+                f"컨텍스트 예산 초과 ({budget_check.usage_percent:.0f}%, "
+                f"{budget_check.used_tokens}/{budget_check.max_tokens} tokens)"
+            )
+
+        # 3. Iteration Count 체크
+        if step_index >= self._max_steps:
+            return f"최대 반복 횟수 도달 ({self._max_steps})"
+
+        return None
 
     def _build_context_instruction(
         self, instruction: str, records: list[StepRecord]

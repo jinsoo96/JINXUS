@@ -1,6 +1,7 @@
 """JinxLoop - 자가 강화 엔진 + A/B 테스트"""
 import json
 import logging
+import re
 from typing import Optional
 
 from anthropic import Anthropic
@@ -351,7 +352,6 @@ JSON으로 응답:
                 max_tokens=500,
                 messages=[{"role": "user", "content": analysis_prompt}],
             )
-            import re
             text = response.content[0].text
             json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             if json_match:
@@ -378,16 +378,17 @@ JSON으로 응답:
         performance: dict,
         feedback_list: list[dict],
     ) -> dict:
-        """개선안 생성"""
+        """Self-Refine 패턴: Generation → Feedback → Refinement (3단계 프롬프트 분리)
+
+        논문 참고: Self-Refine (Madaan et al., 2023)
+        단일 프롬프트 대비 각 단계에 집중하여 품질 향상.
+        """
         feedback_summary = "\n".join(
             f"- 평점 {f.get('rating')}: {f.get('comment', 'N/A')}"
             for f in feedback_list[:5]
         )
 
-        improve_prompt = f"""다음 에이전트의 프롬프트를 개선해줘.
-
-## 에이전트
-{agent_name}
+        context_block = f"""## 에이전트: {agent_name}
 
 ## 현재 프롬프트
 {old_prompt[:2000] if old_prompt else '(기본 프롬프트 사용 중)'}
@@ -401,42 +402,114 @@ JSON으로 응답:
 {chr(10).join(f'- {p}' for p in failure_patterns)}
 
 ## 최근 피드백
-{feedback_summary if feedback_summary else '없음'}
+{feedback_summary if feedback_summary else '없음'}"""
 
-## 요청
-1. 위 문제 패턴을 해결할 수 있도록 프롬프트를 개선해줘
-2. 기존 프롬프트의 좋은 점은 유지하면서 문제점만 보완
-3. 개선 이유를 간단히 설명해줘
+        # ── Step 1: Generation (초안 생성) ────────────────────────
+        gen_prompt = f"""다음 에이전트의 프롬프트 개선 초안을 작성해줘.
+기존 프롬프트의 장점을 유지하면서 문제 패턴을 해결하는 데 집중해.
 
-JSON으로 응답해:
+{context_block}
+
+JSON으로 응답:
 ```json
-{{
-  "new_prompt": "개선된 전체 프롬프트",
-  "change_reason": "변경 이유 요약 (1-2문장)"
-}}
-```
-"""
+{{"draft_prompt": "개선된 전체 프롬프트 초안", "intended_fixes": ["해결하려는 문제1", "문제2"]}}
+```"""
 
-        response = self._client.messages.create(
+        gen_response = self._client.messages.create(
             model=self._model,
             max_tokens=4096,
-            messages=[{"role": "user", "content": improve_prompt}],
+            messages=[{"role": "user", "content": gen_prompt}],
+        )
+        draft = self._parse_json_response(gen_response.content[0].text)
+        draft_prompt = draft.get("draft_prompt", old_prompt or f"{agent_name} 기본 프롬프트")
+
+        # ── Step 2: Feedback (자가 비평) ──────────────────────────
+        feedback_prompt = f"""다음 프롬프트 개선안을 비평해줘. 냉정하게 평가해.
+
+## 원본 프롬프트
+{old_prompt[:1500] if old_prompt else '(기본 프롬프트)'}
+
+## 개선 초안
+{draft_prompt[:2000]}
+
+## 해결하려던 문제
+{chr(10).join(f'- {p}' for p in failure_patterns)}
+
+## 비평 관점
+1. 원래 문제를 실제로 해결하는가?
+2. 기존 장점을 훼손하지 않았는가?
+3. 지시가 모호하거나 상충하는 부분은 없는가?
+4. 빠뜨린 개선 포인트는 없는가?
+
+JSON으로 응답:
+```json
+{{"score": 0.0~1.0, "strengths": ["장점"], "weaknesses": ["약점"], "suggestions": ["구체적 제안"]}}
+```"""
+
+        fb_response = self._client.messages.create(
+            model=self._fast_model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": feedback_prompt}],
+        )
+        feedback = self._parse_json_response(fb_response.content[0].text)
+
+        # 비평 점수가 충분히 높으면 바로 채택 (0.8 이상)
+        if feedback.get("score", 0) >= 0.8:
+            logger.info(f"[JinxLoop] {agent_name}: Self-Refine Step2 점수 {feedback.get('score'):.2f}, 초안 채택")
+            return {
+                "new_prompt": draft_prompt,
+                "change_reason": f"Self-Refine 초안 채택 (비평 점수: {feedback.get('score', 0):.2f})",
+            }
+
+        # ── Step 3: Refinement (비평 반영 수정) ───────────────────
+        refine_prompt = f"""프롬프트 개선 초안에 대한 비평을 반영하여 최종 버전을 만들어줘.
+
+## 초안
+{draft_prompt[:2000]}
+
+## 비평 결과
+- 점수: {feedback.get('score', 0):.2f}
+- 장점: {', '.join(feedback.get('strengths', []))}
+- 약점: {', '.join(feedback.get('weaknesses', []))}
+- 제안: {', '.join(feedback.get('suggestions', []))}
+
+## 원래 해결하려던 문제
+{chr(10).join(f'- {p}' for p in failure_patterns)}
+
+비평의 약점을 보완하고 제안을 반영한 최종 프롬프트를 만들어.
+
+JSON으로 응답:
+```json
+{{"new_prompt": "최종 개선 프롬프트", "change_reason": "변경 이유 요약"}}
+```"""
+
+        refine_response = self._client.messages.create(
+            model=self._model,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": refine_prompt}],
+        )
+        result = self._parse_json_response(refine_response.content[0].text)
+
+        if not result.get("new_prompt"):
+            result["new_prompt"] = draft_prompt
+            result["change_reason"] = "Refinement 파싱 실패, 초안 사용"
+
+        logger.info(
+            f"[JinxLoop] {agent_name}: Self-Refine 완료 "
+            f"(비평 점수: {feedback.get('score', 0):.2f}, 약점: {len(feedback.get('weaknesses', []))}개)"
         )
 
-        response_text = response.content[0].text
+        return result
 
-        # JSON 파싱
+    def _parse_json_response(self, text: str) -> dict:
+        """JSON 응답 파싱 (```json 블록 또는 raw JSON 지원)"""
         try:
-            import re
-            json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+            json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
-            return json.loads(response_text)
+            return json.loads(text)
         except json.JSONDecodeError:
-            return {
-                "new_prompt": old_prompt or f"{agent_name} 기본 프롬프트",
-                "change_reason": "파싱 실패로 변경 없음",
-            }
+            return {}
 
     async def run_ab_test(
         self,
@@ -604,7 +677,6 @@ JSON으로 응답해:
             )
             score_text = eval_response.content[0].text.strip()
             # 숫자만 추출
-            import re
             score_match = re.search(r"(0\.\d+|1\.0|0|1)", score_text)
             if score_match:
                 return float(score_match.group(1))

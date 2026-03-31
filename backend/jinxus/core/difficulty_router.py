@@ -21,6 +21,18 @@ class Difficulty(str, Enum):
     HARD = "hard"
 
 
+class ReasoningStrategy(str, Enum):
+    """추론 전략 — System 1 (빠른 직관) vs System 2 (깊은 분석)
+
+    논문 참고: Agentic LLM Survey — System 1/2 Thinking
+    """
+    SINGLE_SHOT = "single_shot"        # System 1: 즉답 (인사, 간단 질문)
+    CHAIN_OF_THOUGHT = "chain_of_thought"  # System 1.5: 단계별 추론
+    TREE_OF_THOUGHTS = "tree_of_thoughts"  # System 2: 분기 탐색 (복잡한 문제)
+    SELF_REFINE = "self_refine"        # System 2+: 생성→비평→수정 루프
+    DEBATE = "debate"                  # System 2+: 다중 관점 토론
+
+
 # ── 규칙 기반 빠른 분류 ──────────────────────────────────────────
 
 # EASY: 인사, 상식, 단순 질문
@@ -109,3 +121,79 @@ def classify_difficulty_with_context(
         return Difficulty.MEDIUM
 
     return base
+
+
+# ── 추론 복잡도 키워드 ─────────────────────────────────────────────
+_REASONING_KEYWORDS = {
+    "comparison": ["비교", "차이", "vs", "versus", "장단점", "어떤 게 나아"],
+    "multi_step": ["단계별", "순서대로", "절차", "방법", "how to", "과정"],
+    "analysis": ["분석", "원인", "이유", "왜", "why", "근본"],
+    "creative": ["아이디어", "브레인스토밍", "제안", "창의", "새로운 방법"],
+    "code_complex": ["아키텍처", "설계", "리팩토링", "최적화", "시스템 디자인"],
+}
+
+
+def select_reasoning_strategy(
+    user_input: str,
+    difficulty: Difficulty,
+) -> ReasoningStrategy:
+    """난이도와 입력 특성에 따라 최적 추론 전략을 선택
+
+    Difficulty와 독립적으로, 같은 MEDIUM이라도 질문 유형에 따라
+    다른 추론 전략이 필요할 수 있다.
+    """
+    text = user_input.strip().lower()
+
+    # EASY → 항상 SINGLE_SHOT
+    if difficulty == Difficulty.EASY:
+        return ReasoningStrategy.SINGLE_SHOT
+
+    # 키워드 카테고리 매칭
+    matched_categories = []
+    for category, keywords in _REASONING_KEYWORDS.items():
+        if any(k in text for k in keywords):
+            matched_categories.append(category)
+
+    # HARD + 다중 카테고리 → DEBATE 또는 SELF_REFINE
+    if difficulty == Difficulty.HARD:
+        if len(matched_categories) >= 2:
+            return ReasoningStrategy.DEBATE
+        if "code_complex" in matched_categories or "analysis" in matched_categories:
+            return ReasoningStrategy.TREE_OF_THOUGHTS
+        return ReasoningStrategy.SELF_REFINE
+
+    # MEDIUM
+    if "comparison" in matched_categories or "analysis" in matched_categories:
+        return ReasoningStrategy.CHAIN_OF_THOUGHT
+    if "creative" in matched_categories:
+        return ReasoningStrategy.TREE_OF_THOUGHTS
+    if "code_complex" in matched_categories:
+        return ReasoningStrategy.CHAIN_OF_THOUGHT
+    if "multi_step" in matched_categories:
+        return ReasoningStrategy.CHAIN_OF_THOUGHT
+
+    # MEDIUM 기본
+    return ReasoningStrategy.CHAIN_OF_THOUGHT
+
+
+def classify_with_strategy(
+    user_input: str,
+    agent_count: int = 0,
+    has_code_keywords: bool = False,
+) -> tuple[Difficulty, ReasoningStrategy]:
+    """난이도 + 추론 전략을 동시에 반환
+
+    Returns:
+        (difficulty, reasoning_strategy) 튜플
+    """
+    difficulty = classify_difficulty_with_context(
+        user_input, agent_count, has_code_keywords
+    )
+    strategy = select_reasoning_strategy(user_input, difficulty)
+
+    logger.debug(
+        f"[DifficultyRouter] 분류: {difficulty.value} / 전략: {strategy.value} "
+        f"(input: {user_input[:50]}...)"
+    )
+
+    return difficulty, strategy

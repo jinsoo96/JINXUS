@@ -7,7 +7,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Coroutine, Dict, List
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -190,3 +190,138 @@ def should_use_competitive(
         return True
 
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Weak Partner Detection — SOTOPIA 논문 기반
+# 저성능 에이전트가 고성능 에이전트의 결과를 끌어내리는 효과 방지
+# ═══════════════════════════════════════════════════════════════════════
+
+async def detect_weak_partners(
+    agent_stats: dict[str, dict],
+    threshold: float = 0.5,
+) -> list[str]:
+    """성과 기준으로 약한 파트너를 감지
+
+    Args:
+        agent_stats: {agent_name: {"success_rate": float, "total_tasks": int, ...}}
+        threshold: 성공률 임계치 (이하면 weak)
+
+    Returns:
+        weak partner 에이전트 이름 리스트
+    """
+    weak = []
+    for agent, stats in agent_stats.items():
+        total = stats.get("total_tasks", 0)
+        if total < 3:
+            continue  # 데이터 부족한 에이전트는 판단 보류
+
+        success_rate = stats.get("success_rate", 0.0)
+        if success_rate < threshold:
+            weak.append(agent)
+            logger.info(
+                "[WeakPartner] %s 감지: 성공률 %.1f%% (임계치 %.1f%%)",
+                agent, success_rate * 100, threshold * 100,
+            )
+
+    return weak
+
+
+def weighted_vote(
+    results: list[dict],
+    agent_weights: Optional[dict[str, float]] = None,
+) -> dict:
+    """성과 가중 투표로 최적 결과 선택
+
+    단순 다수결 대신, 에이전트의 과거 성과를 가중치로 반영하여
+    더 신뢰할 수 있는 결과를 선택한다.
+
+    Args:
+        results: 에이전트 결과 리스트 [{"agent": str, "success": bool, "output": str, ...}]
+        agent_weights: {agent_name: weight} — 없으면 균등 가중치
+
+    Returns:
+        최고 가중 점수를 받은 결과
+    """
+    if not results:
+        return {}
+
+    if len(results) == 1:
+        results[0]["vote_score"] = 1.0
+        return results[0]
+
+    # 기본 가중치: 균등
+    if agent_weights is None:
+        agent_weights = {r.get("agent", f"agent_{i}"): 1.0 for i, r in enumerate(results)}
+
+    scored = []
+    for result in results:
+        agent = result.get("agent", "")
+        weight = agent_weights.get(agent, 0.5)
+
+        # 기본 점수 계산
+        base_score = 0.0
+        if result.get("success"):
+            base_score = result.get("success_score", 0.7)
+
+        # 가중 점수
+        vote_score = base_score * weight
+        result["vote_score"] = round(vote_score, 4)
+        scored.append((vote_score, result))
+
+    # 최고 점수 결과 반환
+    scored.sort(key=lambda x: x[0], reverse=True)
+    winner = scored[0][1]
+    winner["vote_winner"] = True
+    winner["vote_reason"] = (
+        f"가중 점수 {winner['vote_score']:.3f} "
+        f"(agent_weight: {agent_weights.get(winner.get('agent', ''), 0.5):.2f})"
+    )
+
+    logger.info(
+        "[WeightedVote] 승자: %s (점수: %.3f)",
+        winner.get("agent", "?"), winner["vote_score"],
+    )
+
+    return winner
+
+
+async def competitive_execute_with_weak_filter(
+    task: dict,
+    candidate_agents: list[str],
+    executor_fn,
+    agent_stats: Optional[dict[str, dict]] = None,
+) -> dict:
+    """약한 파트너를 필터링한 후 경쟁 실행
+
+    Args:
+        task: 서브태스크
+        candidate_agents: 후보 에이전트 리스트
+        executor_fn: 에이전트 실행 함수
+        agent_stats: 에이전트 성과 통계
+
+    Returns:
+        최우수 결과
+    """
+    # 약한 파트너 필터링
+    if agent_stats and len(candidate_agents) > 2:
+        weak = await detect_weak_partners(agent_stats)
+        strong_agents = [a for a in candidate_agents if a not in weak]
+
+        if len(strong_agents) >= 2:
+            logger.info(
+                "[CompetitiveDispatch] Weak partner 필터: %s 제외",
+                [a for a in candidate_agents if a in weak],
+            )
+            candidate_agents = strong_agents
+
+    # 2명 이상이면 경쟁 실행
+    if len(candidate_agents) >= 2:
+        return await competitive_execute(task, candidate_agents[:2], executor_fn)
+
+    # 1명이면 단독 실행
+    subtask = {**task, "agent": candidate_agents[0]}
+    result = await executor_fn(subtask)
+    result["competitive_winner"] = True
+    result["competitive_reason"] = "필터 후 단독 실행"
+    return result

@@ -526,26 +526,69 @@ class JinxusCore:
 
     async def _memory_write_node(self, state: ManagerState) -> ManagerState:
         """장기기억에 작업 결과 저장"""
-        # 상태 추적: 메모리 저장 단계
         self._state_tracker.update_node(self.name, GraphNode.MEMORY_WRITE)
 
         results = state["dispatch_results"]
         task_id = state["task_id"]
 
-        # 각 에이전트 작업 로깅
         for result in results:
-            if result["agent_name"] != "JINXUS_CORE":
-                await self._memory.log_agent_stat(
-                    main_task_id=task_id,
-                    agent_name=result["agent_name"],
+            agent_name = result["agent_name"]
+            if agent_name == "JINXUS_CORE":
+                continue
+
+            # 1. 메타 통계 로깅 (SQLite)
+            await self._memory.log_agent_stat(
+                main_task_id=task_id,
+                agent_name=agent_name,
+                instruction=state["user_input"],
+                success=result["success"],
+                success_score=result["success_score"],
+                duration_ms=result["duration_ms"],
+                failure_reason=result.get("failure_reason"),
+                output=result.get("output"),
+                tool_calls=result.get("tool_calls"),
+            )
+
+            # 2. 장기기억 저장 (Qdrant) — 서브에이전트 경험 축적
+            output = result.get("output", "")
+            if result["duration_ms"] >= 100 and len(output) > 10:
+                importance = 0.3
+                if not result["success"]:
+                    importance = 0.5  # 실패 경험이 더 중요 (교훈)
+                elif result["success_score"] >= 0.8:
+                    importance = 0.4
+                if result.get("tool_calls"):
+                    importance = min(importance + 0.1, 1.0)
+
+                reflection = result.get("reflection", "")
+                summary = output[:500] if output else state["user_input"][:200]
+
+                self._memory.save_long_term(
+                    agent_name=agent_name,
+                    task_id=f"{task_id}_{agent_name}",
                     instruction=state["user_input"],
-                    success=result["success"],
+                    summary=summary,
+                    outcome="success" if result["success"] else "failure",
                     success_score=result["success_score"],
-                    duration_ms=result["duration_ms"],
-                    failure_reason=result.get("failure_reason"),
-                    output=result.get("output"),
-                    tool_calls=result.get("tool_calls"),
+                    key_learnings=reflection if reflection else (result.get("failure_reason", "") if not result["success"] else ""),
+                    importance_score=importance,
+                    prompt_version=result.get("prompt_version", "v1.0"),
                 )
+
+        # 3. CORE 자신의 경험도 저장
+        aggregated = state.get("aggregated_output", "")
+        if aggregated and len(aggregated) > 20:
+            self._memory.save_long_term(
+                agent_name="JINXUS_CORE",
+                task_id=task_id,
+                instruction=state["user_input"],
+                summary=aggregated[:500],
+                outcome="success",
+                success_score=0.8,
+                key_learnings=state.get("reflection", ""),
+                importance_score=0.3,
+                prompt_version="core_v1.0",
+            )
 
         return state
 

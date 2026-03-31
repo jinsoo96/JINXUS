@@ -2,12 +2,12 @@
 // 상수 — PixelOffice 엔진 핵심 수치
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const SCALE = 4;             // 스프라이트 확대 배율 (16x24 기준 4배)
+export const SCALE = 4;             // 스프라이트 확대 배율
 export const TILE = 16 * SCALE;     // 64px per tile
-export const SW = 16;               // 스프라이트 소스 폭 (16x24)
-export const SH = 24;               // 스프라이트 소스 높이 (16x24)
+export const SW = 16;               // 스프라이트 소스 폭 (16x32 pixel-agents)
+export const SH = 32;               // 스프라이트 소스 높이 (16x32 pixel-agents)
 export const DSW = SW * SCALE;      // 64 — 화면에 그릴 스프라이트 폭
-export const DSH = SH * SCALE;      // 96 — 화면에 그릴 스프라이트 높이
+export const DSH = SH * SCALE;      // 128 — 화면에 그릴 스프라이트 높이
 
 // ── 맵 크기 (60x40 확장) ──
 export const MAP_W = 60;

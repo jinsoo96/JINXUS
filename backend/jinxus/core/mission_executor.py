@@ -47,8 +47,8 @@ class MissionExecutor:
     async def cleanup_orphan_missions(self):
         """서버 재시작 시 고아 미션 정리
 
-        실행 중인 Task가 없는데 briefing/in_progress/review 상태인 미션을
-        failed로 전이시킨다. 서버 startup에서 호출.
+        결과(result)가 이미 있으면 COMPLETE로 복구하고,
+        진짜 중단된 미션만 FAILED 처리한다.
         """
         store = self._store
         for status in (MissionStatus.BRIEFING, MissionStatus.IN_PROGRESS, MissionStatus.REVIEW):
@@ -56,11 +56,23 @@ class MissionExecutor:
                 orphans = await store.list_by_status(status, limit=50)
                 for mission in orphans:
                     if mission.id not in self._active_missions:
-                        mission.status = MissionStatus.FAILED
-                        mission.error = "서버 재시작으로 미션이 중단되었습니다"
-                        mission.completed_at = datetime.now().isoformat()
+                        # 결과가 있거나 서브태스크 전부 완료 → 실제로는 완료된 미션
+                        has_result = bool(mission.result and mission.result.strip())
+                        all_subtasks_done = (
+                            len(mission.subtasks) > 0
+                            and all(s.status == "done" for s in mission.subtasks)
+                        )
+                        if has_result or all_subtasks_done:
+                            mission.status = MissionStatus.COMPLETE
+                            if not mission.completed_at:
+                                mission.completed_at = datetime.now().isoformat()
+                            logger.info(f"[MissionExecutor] 고아 미션 완료 복구: {mission.id} ({mission.title})")
+                        else:
+                            mission.status = MissionStatus.FAILED
+                            mission.error = "서버 재시작으로 미션이 중단되었습니다"
+                            mission.completed_at = datetime.now().isoformat()
+                            logger.info(f"[MissionExecutor] 고아 미션 정리: {mission.id} ({mission.title})")
                         await store.save(mission)
-                        logger.info(f"[MissionExecutor] 고아 미션 정리: {mission.id} ({mission.title})")
             except Exception as e:
                 logger.warning(f"[MissionExecutor] 고아 미션 정리 실패 ({status}): {e}")
 

@@ -920,6 +920,15 @@ class MetaStore:
             await db.commit()
             return cursor.rowcount
 
+    async def vacuum(self) -> None:
+        """SQLite VACUUM — 삭제 후 빈 페이지 회수하여 파일 크기 축소"""
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute("VACUUM")
+            logger.info(f"[MetaStore] VACUUM 완료: {self._db_path}")
+        except Exception as e:
+            logger.warning(f"[MetaStore] VACUUM 실패: {e}")
+
 
 # 싱글톤 인스턴스
 _meta_store: Optional[MetaStore] = None

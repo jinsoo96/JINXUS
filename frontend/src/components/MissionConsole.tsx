@@ -21,7 +21,7 @@ const MISSION_TYPE_CONFIG: Record<string, { icon: typeof Zap; color: string; lab
 };
 
 const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
-  briefing: { color: '#f59e0b', label: '브리핑' },
+  briefing: { color: '#f59e0b', label: '작업중' },
   in_progress: { color: '#3b82f6', label: '수행중' },
   review: { color: '#8b5cf6', label: '리뷰' },
   complete: { color: '#22c55e', label: '완료' },
@@ -118,6 +118,14 @@ const MissionHistoryItem = memo(function MissionHistoryItem({
         )}
       </div>
       <p className="text-xs text-zinc-300 pr-10 truncate">{mission.title}</p>
+      {/* 원본 질문 — 제목과 다를 때만 표시 */}
+      {mission.original_input && mission.original_input !== mission.title && (
+        <p className="text-[10px] text-zinc-500 pr-10 truncate mt-0.5 italic">
+          &quot;{mission.original_input.length > 80
+            ? mission.original_input.slice(0, 80) + '…'
+            : mission.original_input}&quot;
+        </p>
+      )}
       <div className="flex items-center gap-2 mt-1">
         <span className="text-[9px] text-zinc-500">
           {new Date(mission.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
@@ -334,7 +342,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
             case 'mission_status': {
               const newStatus = (event.data.status as MissionData['status']);
               const newAgents = (event.data.agents as string[]);
-              if (newStatus === 'briefing') setExecutionPhase('브리핑 중...');
+              if (newStatus === 'briefing') setExecutionPhase('작업 중...');
               else if (newStatus === 'in_progress') setExecutionPhase('작업 수행 중');
               else if (newStatus === 'review') setExecutionPhase('리뷰 중...');
               else if (newStatus === 'complete' || newStatus === 'failed') setExecutionPhase('');
@@ -412,12 +420,18 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
               break;
             }
             case 'mission_tool_calls': {
-              // v4: 에이전트 도구 사용 내역
               const agent = event.data.agent as string;
               const tools = event.data.tools as Array<{name: string; input?: Record<string, unknown>}>;
               if (agent && tools?.length) {
                 pushLog(agent, `도구 ${tools.length}개 사용: ${tools.map(t => t.name).join(', ')}`, 'dm');
               }
+              break;
+            }
+            case 'huddle_message': {
+              // 오케스트레이터 작업 분해/계획 메시지
+              const from = (event.data.from || 'JINXUS_CORE') as string;
+              const msg = (event.data.message || '') as string;
+              if (msg) pushLog(from, msg, 'huddle');
               break;
             }
             case 'mission_message': {
@@ -744,29 +758,28 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
                       {statusConf.label}
                     </span>
                   )}
-                  {currentMission.assigned_agents.length > 0 && (
-                    <div className="flex items-center gap-1 ml-1">
-                      {currentMission.assigned_agents
-                        .filter(a => a !== 'JINXUS_CORE')
-                        .slice(0, 6).map(a => {
-                        const p = getPersona(a);
-                        const rt = runtimeMap[a];
-                        const isWorking = rt?.status === 'working';
-                        return (
-                          <span key={a}
-                            className={`text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 ${
-                              isWorking ? 'bg-blue-500/15 text-blue-300' : 'bg-zinc-800/50 text-zinc-500'
-                            }`}
-                            title={rt?.current_task || a}
-                          >
-                            {p?.emoji || '🤖'}
-                            <span className="hidden sm:inline">{p ? getFirstName(a) : a.replace('JX_', '')}</span>
-                            {isWorking && <Loader2 size={8} className="animate-spin" />}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {(() => {
+                    const workingAgents = currentMission.assigned_agents
+                      .filter(a => a !== 'JINXUS_CORE' && runtimeMap[a]?.status === 'working');
+                    return workingAgents.length > 0 && (
+                      <div className="flex items-center gap-1 ml-1">
+                        {workingAgents.slice(0, 6).map(a => {
+                          const p = getPersona(a);
+                          const rt = runtimeMap[a];
+                          return (
+                            <span key={a}
+                              className="text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 bg-blue-500/15 text-blue-300"
+                              title={rt?.current_task || a}
+                            >
+                              {p?.emoji || '🤖'}
+                              <span className="hidden sm:inline">{p ? getFirstName(a) : a.replace('JX_', '')}</span>
+                              <Loader2 size={8} className="animate-spin" />
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </>
               ) : (
                 <>

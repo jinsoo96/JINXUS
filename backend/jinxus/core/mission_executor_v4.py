@@ -70,17 +70,41 @@ class MissionExecutorV4:
         self._active_missions: Dict[str, asyncio.Task] = {}
 
     async def cleanup_orphan_missions(self):
-        """서버 재시작 시 고아 미션 정리"""
+        """서버 재시작 시 고아 미션 정리
+
+        결과(result)가 이미 있으면 COMPLETE로 복구하고,
+        진짜 중단된 미션만 FAILED 처리한다.
+        """
         store = self._store
         for status in (MissionStatus.BRIEFING, MissionStatus.IN_PROGRESS, MissionStatus.REVIEW):
             try:
                 orphans = await store.list_by_status(status, limit=50)
                 for mission in orphans:
-                    if mission.id not in self._active_missions:
+                    if mission.id in self._active_missions:
+                        continue
+                    # 결과가 있거나 서브태스크 전부 완료 → 실제로는 완료된 미션
+                    has_result = bool(mission.result and mission.result.strip())
+                    all_subtasks_done = (
+                        len(mission.subtasks) > 0
+                        and all(s.status == "done" for s in mission.subtasks)
+                    )
+                    if has_result or all_subtasks_done:
+                        mission.status = MissionStatus.COMPLETE
+                        if not mission.completed_at:
+                            mission.completed_at = datetime.now().isoformat()
+                        logger.info(
+                            "[MissionExecutorV4] 고아 미션 완료 복구: %s (%s)",
+                            mission.id, mission.title,
+                        )
+                    else:
                         mission.status = MissionStatus.FAILED
                         mission.error = "서버 재시작으로 미션이 중단되었습니다"
                         mission.completed_at = datetime.now().isoformat()
-                        await store.save(mission)
+                        logger.info(
+                            "[MissionExecutorV4] 고아 미션 정리: %s (%s)",
+                            mission.id, mission.title,
+                        )
+                    await store.save(mission)
             except Exception as e:
                 logger.warning("[MissionExecutorV4] 고아 미션 정리 실패: %s", e)
 
@@ -193,41 +217,41 @@ class MissionExecutorV4:
                 "id": mission.id, "error": str(e)[:300],
             }})
 
-    # ── Easy: CORE 직접 답변 ──────────────────────────────────────
+    # ── Easy: 단일 에이전트 경량 실행 ─────────────────────────────
 
     async def _execute_easy(self, mission: Mission):
-        """간단한 질문 — API 호출로 직접 답변"""
-        from jinxus.config import get_settings
-        from anthropic import Anthropic
+        """간단한 작업 — 단일 에이전트 세션으로 실행 (도구 사용 가능)
 
-        settings = get_settings()
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        v4.2: raw API 직답 → 에이전트 세션 실행으로 변경.
+        도구(날씨, 검색 등) 사용이 필요한 quick 미션도 제대로 처리.
+        """
+        agent_name = self._select_single_agent(mission.original_input)
 
         mission.status = MissionStatus.IN_PROGRESS
-        mission.assigned_agents = ["JINXUS_CORE"]
+        mission.assigned_agents = ["JINXUS_CORE", agent_name]
         await self._store.save(mission)
 
         await self._emit(mission.id, {"event": "mission_status", "data": {
             "id": mission.id, "status": "in_progress",
-            "message": "응답 생성 중...",
-            "agents": ["JINXUS_CORE"],
+            "message": f"{_agent_label(agent_name)} 작업 중...",
+            "agents": ["JINXUS_CORE", agent_name],
         }})
 
-        response = await asyncio.to_thread(
-            client.messages.create,
-            model=settings.claude_fast_model or "claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": mission.original_input}],
+        # 에이전트 세션 확보
+        session = await self._session_manager.create_session(agent_name)
+
+        # 실행 (로그 폴링 포함)
+        result = await self._execute_agent_with_logging(
+            mission, agent_name, session, mission.original_input,
         )
 
-        result_text = response.content[0].text
-        mission.result = result_text
+        mission.result = result.output if result.success else f"실패: {result.error}"
 
-        # 응답을 SSE 스트림으로 전달 (프론트엔드가 표시할 수 있도록)
-        await self._emit(mission.id, {"event": "mission_message", "data": {
-            "id": mission.id,
-            "chunk": result_text,
-        }})
+        # 결과를 SSE로 전달
+        if mission.result:
+            await self._emit(mission.id, {"event": "mission_message", "data": {
+                "id": mission.id, "chunk": mission.result,
+            }})
 
     # ── Medium: 단일 에이전트 ─────────────────────────────────────
 
@@ -786,14 +810,22 @@ class MissionExecutorV4:
         settings = get_settings()
         client = Anthropic(api_key=settings.anthropic_api_key)
 
-        # 사용 가능한 에이전트 목록
+        # 사용 가능한 에이전트 목록 (팀 구조 포함 — 전문가도 직접 배정 가능)
         try:
             from jinxus.agents.personas import get_all_personas
             personas = get_all_personas()
+            # 팀별 그룹핑
+            teams: Dict[str, list] = {}
+            for name, p in personas.items():
+                if p.rank >= 4:  # 일반 직원(rank 4)은 제외
+                    continue
+                team = getattr(p, 'team', '기타')
+                teams.setdefault(team, []).append(
+                    f"  - {name}: {p.role} ({p.display_name})"
+                )
             agent_list = "\n".join(
-                f"- {name}: {p.role} ({p.display_name})"
-                for name, p in personas.items()
-                if p.rank >= 2  # 팀 리드 이상만
+                f"[{team}]\n" + "\n".join(members)
+                for team, members in teams.items()
             )
         except Exception:
             agent_list = "- JX_CODER: 코드 작성\n- JX_RESEARCHER: 조사\n- JX_ANALYST: 분석"
@@ -812,9 +844,14 @@ class MissionExecutorV4:
             logger.debug("[Mission %s] 성과 데이터 로드 실패: %s", mission.id[:8], e)
 
         prompt = f"""다음 작업을 서브태스크로 분해하라. 각 서브태스크에 적합한 에이전트를 배정하라.
-성공률이 높고 해당 작업 유형 경험이 많은 에이전트를 우선 배정하라.
 
-## 사용 가능한 에이전트
+## 배정 원칙
+- 전문가(JX_FRONTEND, JX_BACKEND 등)가 있으면 팀장(JX_CODER)보다 전문가에게 직접 배정하라.
+- 서로 독립적인 작업은 서로 다른 에이전트에게 분산 배정하여 병렬 실행을 극대화하라.
+- 한 에이전트에 모든 작업을 몰아주지 마라. 최소 2명 이상에게 분산하라.
+- 성공률이 높고 해당 작업 유형 경험이 많은 에이전트를 우선 배정하라.
+
+## 사용 가능한 에이전트 (팀 구조)
 {agent_list}
 
 {perf_section}
@@ -970,7 +1007,11 @@ JSON만 응답하라. 설명 불필요."""
         text = user_input.lower()
 
         code_keywords = ["코드", "구현", "개발", "프론트", "백엔드", "api", "버그", "수정", "리팩"]
-        research_keywords = ["조사", "검색", "분석", "찾아", "알아봐", "비교"]
+        research_keywords = [
+            "조사", "검색", "분석", "찾아", "알아봐", "비교",
+            "날씨", "뉴스", "주가", "환율", "주식", "github", "레포",
+            "weather", "news", "stock", "search",
+        ]
         write_keywords = ["작성", "문서", "글", "블로그", "이메일"]
         ops_keywords = ["배포", "서버", "도커", "인프라", "모니터"]
 
@@ -983,7 +1024,7 @@ JSON만 응답하라. 설명 불필요."""
         if any(k in text for k in ops_keywords):
             return "JX_OPS"
 
-        return "JX_CODER"  # 기본값
+        return "JX_RESEARCHER"  # 기본값: 대부분 정보 조회
 
     @staticmethod
     def _infer_task_type(instruction: str) -> str:

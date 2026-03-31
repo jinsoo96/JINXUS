@@ -21,11 +21,11 @@ export default function Header() {
         {/* 모바일 햄버거 영역 */}
         <div className="w-8 md:hidden" />
 
-        {/* 업타임 */}
+        {/* 업타임 — tabular-nums로 숫자 정렬 흔들림 방지 */}
         {systemStatus && (
           <div className="hidden md:flex items-center gap-1.5 text-sm text-zinc-400">
             <Activity size={14} />
-            <span>{formatUptime(systemStatus.uptime_seconds)}</span>
+            <span className="tabular-nums">{formatUptime(systemStatus.uptime_seconds)}</span>
           </div>
         )}
 
@@ -35,7 +35,7 @@ export default function Header() {
         {/* 완료 작업 수 + 리셋 */}
         {systemStatus && (
           <div className="hidden md:flex items-center gap-1.5 text-sm text-zinc-400">
-            <span>완료: {systemStatus.total_tasks_processed}</span>
+            <span className="tabular-nums">완료: {systemStatus.total_tasks_processed}</span>
             {systemStatus.total_tasks_processed > 0 && (
               <button
                 onClick={async () => {
@@ -55,20 +55,20 @@ export default function Header() {
         )}
       </div>
 
-      {/* ── 오른쪽: 인프라 상태 ── */}
-      <div className="flex items-center gap-3 md:gap-4">
-        <div className="flex items-center gap-1.5 sm:gap-2 text-sm" aria-label="Redis 연결 상태">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${systemStatus?.redis_connected ? 'bg-green-500' : 'bg-red-500'}`} />
-          <span className={`hidden sm:inline ${systemStatus?.redis_connected ? 'text-green-400' : 'text-red-400'}`}>Redis</span>
-        </div>
-        <div className="flex items-center gap-1.5 sm:gap-2 text-sm" aria-label="Qdrant 연결 상태">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${systemStatus?.qdrant_connected ? 'bg-green-500' : 'bg-red-500'}`} />
-          <span className={`hidden sm:inline ${systemStatus?.qdrant_connected ? 'text-green-400' : 'text-red-400'}`}>Qdrant</span>
-        </div>
-        <div className="flex items-center gap-1.5 sm:gap-2 text-sm" aria-label="Synapse 연결 상태">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${systemStatus?.synapse_connected ? 'bg-green-500' : 'bg-red-500'}`} />
-          <span className={`hidden sm:inline ${systemStatus?.synapse_connected ? 'text-green-400' : 'text-red-400'}`}>Synapse</span>
-        </div>
+      {/* ── 오른쪽: 인프라 상태 (aria-live로 상태 변경 알림) ── */}
+      <div className="flex items-center gap-3 md:gap-4" role="status" aria-live="polite">
+        {[
+          { key: 'redis', label: 'Redis', connected: systemStatus?.redis_connected },
+          { key: 'qdrant', label: 'Qdrant', connected: systemStatus?.qdrant_connected },
+          { key: 'synapse', label: 'Synapse', connected: systemStatus?.synapse_connected },
+        ].map(({ key, label, connected }) => (
+          <div key={key} className="flex items-center gap-1.5 sm:gap-2 text-sm" aria-label={`${label} ${connected ? '연결됨' : '연결 끊김'}`}>
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className={`hidden sm:inline ${connected ? 'text-green-400' : 'text-red-400'}`}>{label}</span>
+            {/* 색상 외 텍스트 보조 — 모바일에서 색상만으로 구분 방지 */}
+            <span className="sr-only">{connected ? '연결됨' : '연결 끊김'}</span>
+          </div>
+        ))}
       </div>
     </header>
   );

@@ -43,11 +43,11 @@ export default function Home() {
   }, [setActiveTab, loadSystemStatus, loadAgents, loadPersonas]);
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-dvh">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Header />
-        <main className="flex-1 overflow-auto p-0 pt-12 sm:pt-14 md:pt-0">
+        <main id="main-content" className="flex-1 overflow-auto p-0 pt-12 sm:pt-14 md:pt-0">
           {/* Office (미션 + 플레이그라운드) */}
           <div className={activeTab === 'mission' ? 'h-full overflow-hidden' : 'hidden'}>
             <ErrorBoundary><MissionTab isActive={activeTab === 'mission'} /></ErrorBoundary>

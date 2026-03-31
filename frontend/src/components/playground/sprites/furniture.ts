@@ -181,6 +181,30 @@ export function makeAshtraySprite(): HTMLCanvasElement {
   _furnCache.set('ashtray', c); return c;
 }
 
+export function makeMiniBarSprite(): HTMLCanvasElement {
+  if (_furnCache.has('minibar')) return _furnCache.get('minibar')!;
+  const c = document.createElement('canvas'); c.width = 16; c.height = 16; const x = c.getContext('2d')!;
+  // bar counter (dark wood)
+  x.fillStyle = '#3d2b1f'; x.fillRect(2, 6, 12, 8);
+  x.fillStyle = '#4a3728'; x.fillRect(2, 6, 12, 1); // top highlight
+  x.fillStyle = '#2c1e14'; x.fillRect(2, 13, 12, 1); // bottom edge
+  // shelves inside
+  x.fillStyle = '#332211'; x.fillRect(3, 9, 10, 1);
+  // bottles (green soju, brown whiskey, clear sake)
+  x.fillStyle = '#22c55e'; x.fillRect(4, 7, 1, 2); // soju
+  x.fillStyle = '#16a34a'; x.fillRect(4, 7, 1, 1); // cap
+  x.fillStyle = '#92400e'; x.fillRect(6, 7, 1, 2); // whiskey
+  x.fillStyle = '#78350f'; x.fillRect(6, 7, 1, 1);
+  x.fillStyle = '#e2e8f0'; x.fillRect(8, 7, 1, 2); // sake
+  x.fillStyle = '#cbd5e1'; x.fillRect(8, 7, 1, 1);
+  x.fillStyle = '#22c55e'; x.fillRect(10, 7, 1, 2); // soju 2
+  // glasses on shelf
+  x.fillStyle = 'rgba(200,220,255,0.5)'; x.fillRect(4, 10, 1, 2); x.fillRect(7, 10, 1, 2); x.fillRect(10, 10, 1, 2);
+  // legs
+  x.fillStyle = '#2c1e14'; x.fillRect(3, 14, 2, 2); x.fillRect(11, 14, 2, 2);
+  _furnCache.set('minibar', c); return c;
+}
+
 export function makeUmbrellaTable(): HTMLCanvasElement {
   if (_furnCache.has('umbrella')) return _furnCache.get('umbrella')!;
   const c = document.createElement('canvas'); c.width = 16; c.height = 16; const x = c.getContext('2d')!;

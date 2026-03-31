@@ -281,8 +281,12 @@ export default function ProjectsTab() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {projects.length === 0 ? (
-              <div className="p-8 text-center text-zinc-600 text-sm">
-                프로젝트가 없습니다
+              <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
+                <div className="w-10 h-10 rounded-xl bg-zinc-800/50 flex items-center justify-center mb-3">
+                  <FolderKanban size={20} className="text-zinc-600" />
+                </div>
+                <p className="font-medium text-zinc-400 text-sm">프로젝트가 없습니다</p>
+                <p className="text-xs text-zinc-600 mt-1">백그라운드 작업을 시작하면 여기에 표시됩니다</p>
               </div>
             ) : (
               projects.map(project => {

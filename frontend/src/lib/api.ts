@@ -1247,10 +1247,15 @@ export const channelApi = {
     onData: (data: { type: string; message?: ChannelMessage }) => void,
     signal?: AbortSignal,
     channels?: string,
+    clearedAt?: string,
   ): void => {
     // STREAM_BASE: Next.js rewrite 프록시 경유
-    const url = channels
-      ? `${STREAM_BASE}/channel/stream?channels=${channels}`
+    const params = new URLSearchParams();
+    if (channels) params.set('channels', channels);
+    if (clearedAt && clearedAt !== '{}') params.set('cleared_at', clearedAt);
+    const qs = params.toString();
+    const url = qs
+      ? `${STREAM_BASE}/channel/stream?${qs}`
       : `${STREAM_BASE}/channel/stream`;
 
     let retryDelay = 1000;
@@ -1401,7 +1406,8 @@ export const missionApi = {
         'mission_status', 'mission_thinking', 'mission_agent_activity',
         'mission_message', 'mission_complete', 'mission_failed', 'mission_cancelled',
         'mission_briefing_message', 'mission_huddle', 'mission_tool_calls',
-        'mission_approval_required', 'agent_dm', 'agent_report', 'keepalive',
+        'mission_approval_required', 'agent_dm', 'agent_report',
+        'huddle_message', 'mission_agent_blocked', 'keepalive',
       ];
 
       for (const evtName of EVENTS) {

@@ -221,17 +221,21 @@ class AgentSessionManager:
         """여러 에이전트 세션을 한번에 확보 (없으면 생성)
 
         미션 실행 전에 필요한 에이전트들을 미리 준비할 때 사용.
+        개별 에이전트 세션 생성 실패 시 해당 에이전트만 스킵 (나머지는 계속 진행).
         """
         sessions = {}
         for name in agent_names:
-            session = self.get_session_by_name(name)
-            if session and session.is_alive():
-                sessions[name] = session
-            else:
-                sessions[name] = await self.create_session(
-                    agent_name=name,
-                    working_dir=working_dir,
-                )
+            try:
+                session = self.get_session_by_name(name)
+                if session and session.is_alive():
+                    sessions[name] = session
+                else:
+                    sessions[name] = await self.create_session(
+                        agent_name=name,
+                        working_dir=working_dir,
+                    )
+            except Exception as e:
+                logger.error("❌ Failed to ensure session for %s: %s", name, e)
         return sessions
 
     async def broadcast(

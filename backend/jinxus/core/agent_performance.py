@@ -265,6 +265,254 @@ class AgentPerformanceTracker:
         return "## 에이전트 과거 성과 데이터\n" + "\n".join(lines)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Multi-Dimensional Evaluation — SOTOPIA-EVAL 기반
+# 단순 성공/실패를 넘어 5차원으로 에이전트 성과를 평가
+# ═══════════════════════════════════════════════════════════════════════
+
+class EvalDimension:
+    """평가 차원 정의"""
+    GOAL_COMPLETION = "goal_completion"       # 목표 달성도
+    EFFICIENCY = "efficiency"                 # 효율성 (속도, 리소스)
+    COLLABORATION = "collaboration"           # 협업 기여도
+    KNOWLEDGE = "knowledge"                   # 지식 활용도
+    COMPLIANCE = "compliance"                 # 규칙/지침 준수도
+
+    ALL = [GOAL_COMPLETION, EFFICIENCY, COLLABORATION, KNOWLEDGE, COMPLIANCE]
+
+
+class MultiDimEvaluation:
+    """다차원 에이전트 평가 시스템
+
+    SOTOPIA-EVAL에서 영감: 단일 점수 대신 여러 차원으로 평가하여
+    에이전트의 강점/약점을 정밀하게 파악한다.
+
+    사용:
+        evaluator = MultiDimEvaluation()
+        scores = evaluator.evaluate(result, context)
+        profile = evaluator.get_profile("JX_CODER")
+    """
+
+    def __init__(self):
+        # agent_name → {dimension: [scores]}
+        self._history: dict[str, dict[str, list[float]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+
+    def evaluate(
+        self,
+        result: dict,
+        context: Optional[dict] = None,
+    ) -> dict[str, float]:
+        """에이전트 결과를 5차원으로 평가
+
+        Args:
+            result: 에이전트 실행 결과
+                - agent_name, success, output, duration_ms, tools_used, etc.
+            context: 추가 컨텍스트
+                - expected_output, instruction, collaboration_session, etc.
+
+        Returns:
+            {dimension: score} (각 0.0 ~ 1.0)
+        """
+        context = context or {}
+        agent_name = result.get("agent_name", "unknown")
+        scores = {}
+
+        # 1. 목표 달성도
+        scores[EvalDimension.GOAL_COMPLETION] = self._eval_goal(result, context)
+
+        # 2. 효율성
+        scores[EvalDimension.EFFICIENCY] = self._eval_efficiency(result)
+
+        # 3. 협업 기여도
+        scores[EvalDimension.COLLABORATION] = self._eval_collaboration(result, context)
+
+        # 4. 지식 활용도
+        scores[EvalDimension.KNOWLEDGE] = self._eval_knowledge(result)
+
+        # 5. 규칙 준수도
+        scores[EvalDimension.COMPLIANCE] = self._eval_compliance(result)
+
+        # 이력에 저장
+        for dim, score in scores.items():
+            self._history[agent_name][dim].append(score)
+            # 최근 50건만 유지
+            if len(self._history[agent_name][dim]) > 50:
+                self._history[agent_name][dim] = self._history[agent_name][dim][-50:]
+
+        return scores
+
+    def _eval_goal(self, result: dict, context: dict) -> float:
+        """목표 달성도 평가"""
+        if not result.get("success"):
+            return 0.1  # 실패해도 시도는 했으므로 0.1
+
+        score = result.get("success_score", 0.7)
+
+        # 출력이 충분한가
+        output = result.get("output", "")
+        if len(output) < 10:
+            score *= 0.5  # 너무 짧은 응답
+
+        return min(1.0, score)
+
+    def _eval_efficiency(self, result: dict) -> float:
+        """효율성 평가 (속도 기준)"""
+        duration = result.get("duration_ms", 0)
+
+        if duration <= 0:
+            return 0.5  # 측정 불가
+
+        # 5초 이하: 1.0, 30초: 0.7, 60초: 0.4, 120초+: 0.2
+        if duration <= 5000:
+            return 1.0
+        elif duration <= 30000:
+            return 0.7 + 0.3 * (30000 - duration) / 25000
+        elif duration <= 60000:
+            return 0.4 + 0.3 * (60000 - duration) / 30000
+        elif duration <= 120000:
+            return 0.2 + 0.2 * (120000 - duration) / 60000
+        else:
+            return 0.2
+
+    def _eval_collaboration(self, result: dict, context: dict) -> float:
+        """협업 기여도 평가"""
+        score = 0.5  # 기본
+
+        # 워크스페이스에 결과 공유했는가
+        if context.get("shared_to_workspace"):
+            score += 0.2
+
+        # 다른 에이전트의 결과를 참조했는가
+        if context.get("used_peer_context"):
+            score += 0.15
+
+        # 도움 요청에 응답했는가
+        if context.get("responded_to_help"):
+            score += 0.15
+
+        return min(1.0, score)
+
+    def _eval_knowledge(self, result: dict) -> float:
+        """지식 활용도 평가"""
+        score = 0.5
+
+        # 도구 사용 여부
+        tools_used = result.get("tools_used", [])
+        if tools_used:
+            score += min(0.3, len(tools_used) * 0.1)
+
+        # 출력에 구체적 근거가 있는가 (간이 체크)
+        output = result.get("output", "")
+        if any(marker in output for marker in ["http", "참고:", "근거:", "출처:", "```"]):
+            score += 0.2
+
+        return min(1.0, score)
+
+    def _eval_compliance(self, result: dict) -> float:
+        """규칙 준수도 평가"""
+        score = 1.0
+
+        # 실패했는데 에러 로깅 안 한 경우
+        if not result.get("success") and not result.get("failure_reason"):
+            score -= 0.3
+
+        # 금지 도구 사용 시 (tool_policy 위반)
+        if result.get("policy_violations"):
+            score -= 0.2 * len(result["policy_violations"])
+
+        return max(0.0, score)
+
+    def get_profile(self, agent_name: str) -> dict:
+        """에이전트의 다차원 성과 프로필 반환
+
+        Returns:
+            {
+                "agent_name": str,
+                "dimensions": {dim: {"avg": float, "trend": str, "count": int}},
+                "overall_score": float,
+                "strongest": str,
+                "weakest": str,
+            }
+        """
+        if agent_name not in self._history:
+            return {
+                "agent_name": agent_name,
+                "dimensions": {},
+                "overall_score": 0.0,
+                "strongest": None,
+                "weakest": None,
+            }
+
+        dimensions = {}
+        for dim in EvalDimension.ALL:
+            scores = self._history[agent_name].get(dim, [])
+            if not scores:
+                dimensions[dim] = {"avg": 0.0, "trend": "none", "count": 0}
+                continue
+
+            avg = sum(scores) / len(scores)
+
+            # 최근 트렌드 (최근 5개 vs 이전 5개)
+            if len(scores) >= 10:
+                recent = sum(scores[-5:]) / 5
+                earlier = sum(scores[-10:-5]) / 5
+                if recent > earlier + 0.05:
+                    trend = "improving"
+                elif recent < earlier - 0.05:
+                    trend = "declining"
+                else:
+                    trend = "stable"
+            else:
+                trend = "insufficient_data"
+
+            dimensions[dim] = {
+                "avg": round(avg, 3),
+                "trend": trend,
+                "count": len(scores),
+            }
+
+        # 전체 평균
+        avgs = [d["avg"] for d in dimensions.values() if d["count"] > 0]
+        overall = sum(avgs) / len(avgs) if avgs else 0.0
+
+        # 최강/최약 차원
+        sorted_dims = sorted(
+            [(d, v["avg"]) for d, v in dimensions.items() if v["count"] > 0],
+            key=lambda x: x[1],
+        )
+
+        return {
+            "agent_name": agent_name,
+            "dimensions": dimensions,
+            "overall_score": round(overall, 3),
+            "strongest": sorted_dims[-1][0] if sorted_dims else None,
+            "weakest": sorted_dims[0][0] if sorted_dims else None,
+        }
+
+    def get_recommendation(self, agent_name: str) -> list[str]:
+        """에이전트별 개선 권고사항 생성"""
+        profile = self.get_profile(agent_name)
+        recommendations = []
+
+        for dim, data in profile.get("dimensions", {}).items():
+            if data["avg"] < 0.4 and data["count"] >= 3:
+                labels = {
+                    EvalDimension.GOAL_COMPLETION: "목표 달성률이 낮습니다. 작업 이해도를 높이세요.",
+                    EvalDimension.EFFICIENCY: "실행 속도가 느립니다. 도구 선택을 최적화하세요.",
+                    EvalDimension.COLLABORATION: "협업 기여가 부족합니다. 결과 공유를 늘리세요.",
+                    EvalDimension.KNOWLEDGE: "도구/지식 활용이 부족합니다. 관련 도구를 더 사용하세요.",
+                    EvalDimension.COMPLIANCE: "규칙 준수가 미흡합니다. 에러 핸들링을 강화하세요.",
+                }
+                recommendations.append(labels.get(dim, f"{dim} 개선 필요"))
+
+            if data.get("trend") == "declining":
+                recommendations.append(f"{dim} 성과가 하락 추세입니다.")
+
+        return recommendations
+
+
 # ── 싱글톤 ──────────────────────────────────────────────────────────
 
 _tracker: Optional[AgentPerformanceTracker] = None
@@ -276,3 +524,15 @@ def get_performance_tracker() -> AgentPerformanceTracker:
     if _tracker is None:
         _tracker = AgentPerformanceTracker()
     return _tracker
+
+
+# 싱글톤
+_evaluator: Optional[MultiDimEvaluation] = None
+
+
+def get_multi_dim_evaluator() -> MultiDimEvaluation:
+    """MultiDimEvaluation 싱글톤 반환"""
+    global _evaluator
+    if _evaluator is None:
+        _evaluator = MultiDimEvaluation()
+    return _evaluator

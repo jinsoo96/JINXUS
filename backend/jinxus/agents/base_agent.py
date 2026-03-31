@@ -525,17 +525,30 @@ JSON으로 응답해:
 """
 
     def _should_save_to_longterm(self, state: AgentState) -> bool:
-        """장기기억 저장 여부 결정"""
-        # 즉각 실패(100ms 미만)는 저장 안 함
-        if state.get("duration_ms", 0) < 500:
-            return False
+        """장기기억 저장 여부 결정
 
-        # reflection이 있으면 무조건 저장 (내용 있는 경험)
-        if state.get("reflection") and len(state.get("reflection", "")) >= 5:
+        v2: 조건 완화 — 실패 경험 무조건 저장, duration 임계값 하향
+        """
+        duration = state.get("duration_ms", 0)
+
+        # 실패한 작업은 무조건 저장 (실패에서 배우기 위해)
+        if state.get("success") is False and duration >= 100:
             return True
 
-        # reflection 없어도 output이 있으면 저장 (결과가 있는 작업)
-        if state.get("output") and len(state.get("output", "")) > 20:
+        # 즉각 완료(100ms 미만)는 저장 안 함 (의미없는 작업)
+        if duration < 100:
+            return False
+
+        # reflection이 있으면 저장
+        if state.get("reflection") and len(state.get("reflection", "")) >= 3:
+            return True
+
+        # output이 있으면 저장
+        if state.get("output") and len(state.get("output", "")) > 10:
+            return True
+
+        # 도구를 사용한 작업은 저장
+        if state.get("tool_results") and len(state.get("tool_results", [])) > 0:
             return True
 
         return False

@@ -56,20 +56,34 @@ class LongTermMemory:
         self._openai_key = settings.openai_api_key or settings.gpt_emb_api_key
 
     def connect(self) -> None:
-        """Qdrant 및 OpenAI 연결"""
+        """Qdrant 및 OpenAI 연결 (연결 상태 검증 포함)"""
         if self._client is None:
-            self._client = QdrantClient(host=self._host, port=self._port)
+            try:
+                self._client = QdrantClient(host=self._host, port=self._port)
+                # 연결 검증
+                self._client.get_collections()
+                logger.info(f"[LongTermMemory] Qdrant 연결 성공: {self._host}:{self._port}")
+            except Exception as e:
+                logger.error(f"[LongTermMemory] Qdrant 연결 실패: {self._host}:{self._port} — {e}")
+                self._client = None
+                raise
+
         if self._openai is None and self._openai_key:
             self._openai = OpenAI(api_key=self._openai_key)
+            logger.info("[LongTermMemory] OpenAI 임베딩 클라이언트 초기화 완료")
+        elif not self._openai_key:
+            logger.warning("[LongTermMemory] OpenAI API 키 미설정 — 임베딩 생성 불가")
 
     def is_connected(self) -> bool:
-        """연결 상태 확인"""
+        """연결 상태 확인 (실패 원인 로깅)"""
         if not self._client:
+            logger.debug("[LongTermMemory] Qdrant 클라이언트 미초기화")
             return False
         try:
             self._client.get_collections()
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[LongTermMemory] Qdrant 연결 확인 실패: {e}")
             return False
 
     def ensure_collections(self) -> None:
@@ -597,16 +611,86 @@ class LongTermMemory:
 
         return budgeted
 
-    def optimize_all_collections(self) -> dict:
-        """모든 컬렉션에 대해 정리 + 중복 제거 실행
+    def enforce_collection_cap(
+        self,
+        agent_name: str,
+        max_points: int = 10000,
+    ) -> int:
+        """컬렉션 포인트 수 상한 강제 — 초과 시 가장 오래되고 중요도 낮은 포인트 삭제
+
+        Args:
+            agent_name: 에이전트 이름
+            max_points: 컬렉션당 최대 포인트 수
 
         Returns:
-            {agent_name: {"pruned": N, "deduped": M}} 형태의 결과
+            삭제된 포인트 수
+        """
+        self.connect()
+        collection = self._collection_for_agent(agent_name)
+
+        try:
+            info = self._client.get_collection(collection)
+            current = info.points_count
+            if current <= max_points:
+                return 0
+
+            excess = current - max_points
+            # importance 낮은 순 + 오래된 순으로 삭제 대상 수집
+            candidates = []
+            offset = None
+            while True:
+                result = self._client.scroll(
+                    collection_name=collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                points, next_offset = result
+                if not points:
+                    break
+                for p in points:
+                    importance = p.payload.get("importance_score", 0.5)
+                    created = p.payload.get("created_at", "")
+                    candidates.append((p.id, importance, created))
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            # importance 오름차순, 생성일 오름차순 (낮고 오래된 것 우선 삭제)
+            candidates.sort(key=lambda x: (x[1], x[2]))
+            to_delete = [c[0] for c in candidates[:excess]]
+
+            if to_delete:
+                self._client.delete(
+                    collection_name=collection,
+                    points_selector=to_delete,
+                )
+
+            logger.info(
+                f"[MemoryOptim] enforce_cap: {collection} — "
+                f"{len(to_delete)}개 삭제 ({current} → {current - len(to_delete)}, cap={max_points})"
+            )
+            return len(to_delete)
+
+        except Exception as e:
+            logger.error(f"[MemoryOptim] enforce_cap 실패 ({collection}): {e}")
+            return 0
+
+    def optimize_all_collections(self) -> dict:
+        """모든 컬렉션에 대해 사이즈 가드 + 정리 + 중복 제거 실행
+
+        Returns:
+            {agent_name: {"pruned": N, "deduped": M, "capped": K}} 형태의 결과
         """
         settings = get_settings()
         results = {}
 
         for agent_name in _DEFAULT_AGENTS:
+            capped = self.enforce_collection_cap(
+                agent_name=agent_name,
+                max_points=getattr(settings, "memory_max_points_per_collection", 10000),
+            )
             pruned = self.prune_with_time_decay(
                 agent_name=agent_name,
                 min_score=settings.memory_prune_min_score,
@@ -616,12 +700,14 @@ class LongTermMemory:
                 agent_name=agent_name,
                 similarity_threshold=settings.memory_dedup_threshold,
             )
-            results[agent_name] = {"pruned": pruned, "deduped": deduped}
+            results[agent_name] = {"pruned": pruned, "deduped": deduped, "capped": capped}
 
         total_pruned = sum(r["pruned"] for r in results.values())
         total_deduped = sum(r["deduped"] for r in results.values())
+        total_capped = sum(r["capped"] for r in results.values())
         logger.info(
-            f"[MemoryOptim] 전체 최적화 완료: {total_pruned}개 정리, {total_deduped}개 중복 제거"
+            f"[MemoryOptim] 전체 최적화 완료: {total_capped}개 상한초과삭제, "
+            f"{total_pruned}개 감쇠정리, {total_deduped}개 중복 제거"
         )
 
         return results

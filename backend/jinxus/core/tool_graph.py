@@ -3,8 +3,8 @@
 도구 간 관계를 그래프로 모델링하고, 사용자 쿼리에서
 관련 도구 워크플로우를 자동으로 구성한다.
 
-v3: BM25 + 그래프 BFS + wRRF 퓨전 + 어노테이션 정렬 스코어
-    + 이름 기반 자동 의존성 탐지 + MCP 도구 자동 메타데이터
+v4: BM25 + 그래프 BFS + 임베딩 시맨틱 + wRRF 퓨전 + 어노테이션 정렬
+    + 대화 컨텍스트 인식 + 이름 기반 자동 의존성 탐지 + MCP 자동 메타데이터
 참고: https://github.com/SonAIengine/graph-tool-call
 """
 import json
@@ -283,14 +283,15 @@ class BM25Scorer:
 class ToolGraph:
     """그래프 기반 도구 탐색 엔진
 
-    v3: BM25 + BFS 그래프 확장 + wRRF 랭크 퓨전 + 어노테이션 정렬 스코어
+    v4: BM25 + BFS 그래프 확장 + 임베딩 시맨틱 + wRRF 랭크 퓨전 + 어노테이션 정렬
     """
 
-    # wRRF 가중치 (graph-tool-call RetrievalEngine 패턴 반영)
-    _WEIGHT_BM25 = 0.30
-    _WEIGHT_GRAPH = 0.55
-    _WEIGHT_ANNOTATION = 0.15  # 어노테이션 정렬 점수 (신규)
-    _WRRF_K = 60  # RRF 상수
+    # v4: wRRF 가중치 (임베딩 소스 추가)
+    _WEIGHT_BM25 = 0.25
+    _WEIGHT_GRAPH = 0.40
+    _WEIGHT_EMBEDDING = 0.20  # v4 신규: 시맨틱 유사도
+    _WEIGHT_ANNOTATION = 0.15
+    _WRRF_K = 60
 
     # 쿼리 확장 매핑 — 한국어 키워드 → 관련 영어 키워드 추가
     _QUERY_EXPANSIONS: dict[str, str] = {
@@ -327,6 +328,9 @@ class ToolGraph:
         self._adj: dict[str, list[ToolEdge]] = {}
         self._bm25 = BM25Scorer()
         self._bm25_dirty = True  # 인덱스 재빌드 필요 여부
+        # v4: 임베딩 기반 검색 소스
+        self._embeddings: dict[str, list[float]] = {}  # tool_name -> embedding vector
+        self._embedding_fn = None  # embedding 함수 (lazy init)
 
     def add_node(self, node: ToolNode) -> None:
         """노드 추가"""
@@ -378,6 +382,87 @@ class ToolGraph:
             self._bm25.index(self._nodes)
             self._bm25_dirty = False
 
+    def _ensure_embeddings(self) -> None:
+        """도구 설명의 임베딩 벡터를 미리 계산 (lazy, 한 번만)"""
+        if self._embeddings or not self._nodes:
+            return
+        try:
+            if self._embedding_fn is None:
+                from jinxus.config import get_settings
+                from openai import OpenAI
+                settings = get_settings()
+                api_key = settings.openai_api_key or settings.gpt_emb_api_key
+                if not api_key:
+                    logger.debug("[ToolGraph] OpenAI API 키 없음 — 임베딩 검색 비활성화")
+                    return
+                client = OpenAI(api_key=api_key)
+                model = settings.embedding_model
+
+                def embed_fn(text: str) -> list[float]:
+                    resp = client.embeddings.create(model=model, input=text)
+                    return resp.data[0].embedding
+
+                self._embedding_fn = embed_fn
+
+            # 모든 도구 설명을 배치 임베딩
+            texts = []
+            names = []
+            for name, node in self._nodes.items():
+                text = f"{node.name}: {node.description}. Keywords: {', '.join(node.keywords[:5])}"
+                texts.append(text)
+                names.append(name)
+
+            if not texts:
+                return
+
+            # 배치로 임베딩 생성 (최대 2048개씩)
+            from jinxus.config import get_settings
+            from openai import OpenAI
+            settings = get_settings()
+            api_key = settings.openai_api_key or settings.gpt_emb_api_key
+            client = OpenAI(api_key=api_key)
+            model = settings.embedding_model
+
+            batch_size = 100
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                batch_names = names[i:i+batch_size]
+                resp = client.embeddings.create(model=model, input=batch_texts)
+                for j, emb_data in enumerate(resp.data):
+                    self._embeddings[batch_names[j]] = emb_data.embedding
+
+            logger.info(f"[ToolGraph] 임베딩 {len(self._embeddings)}개 생성 완료")
+        except Exception as e:
+            logger.warning(f"[ToolGraph] 임베딩 생성 실패 (BM25+그래프로 fallback): {e}")
+
+    def _embedding_search(self, query: str, top_k: int = 20) -> dict[str, float]:
+        """쿼리 임베딩과 도구 임베딩 간 코사인 유사도 계산"""
+        if not self._embeddings or not self._embedding_fn:
+            return {}
+        try:
+            query_vec = self._embedding_fn(query)
+
+            # 코사인 유사도 계산 (numpy 없이)
+            scores: dict[str, float] = {}
+            for name, tool_vec in self._embeddings.items():
+                dot = sum(a * b for a, b in zip(query_vec, tool_vec))
+                norm_q = sum(a * a for a in query_vec) ** 0.5
+                norm_t = sum(b * b for b in tool_vec) ** 0.5
+                if norm_q > 0 and norm_t > 0:
+                    sim = dot / (norm_q * norm_t)
+                    if sim > 0.1:  # 노이즈 필터
+                        scores[name] = sim
+
+            # 상위 top_k만 반환
+            if len(scores) > top_k:
+                sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+                scores = dict(sorted_items)
+
+            return scores
+        except Exception as e:
+            logger.debug(f"[ToolGraph] 임베딩 검색 실패: {e}")
+            return {}
+
     def retrieve(
         self,
         query: str,
@@ -427,6 +512,19 @@ class ToolGraph:
                 seed_names, max_depth, agent_name
             )
 
+        # ── 2.5단계: 임베딩 기반 시맨틱 검색 (v4) ──
+        embedding_scores: dict[str, float] = {}
+        self._ensure_embeddings()
+        if self._embeddings:
+            embedding_scores = self._embedding_search(query, top_k=20)
+            # 에이전트 권한 필터
+            if agent_name:
+                embedding_scores = {
+                    name: score for name, score in embedding_scores.items()
+                    if not self._nodes.get(name, ToolNode("", "")).allowed_agents
+                    or agent_name in self._nodes.get(name, ToolNode("", "")).allowed_agents
+                }
+
         # ── 3단계: 어노테이션-의도 정렬 점수 (graph-tool-call 패턴) ──
         annotation_scores: dict[str, float] = {}
         if _ANNOTATION_AVAILABLE:
@@ -450,6 +548,8 @@ class ToolGraph:
             (bm25_scores, self._WEIGHT_BM25),
             (graph_scores, self._WEIGHT_GRAPH),
         ]
+        if embedding_scores:
+            fusion_sources.append((embedding_scores, self._WEIGHT_EMBEDDING))
         if annotation_scores:
             fusion_sources.append((annotation_scores, self._WEIGHT_ANNOTATION))
 
@@ -460,11 +560,16 @@ class ToolGraph:
             if name not in final_scores:
                 final_scores[name] = score * self._WEIGHT_BM25 / (self._WRRF_K + 1)
 
-        # ── 5단계: history 디모션 ──
+        # ── 5단계: history 디모션 + 다음 단계 부스트 (v4) ──
         if history:
             for tool_name in history:
                 if tool_name in final_scores:
-                    final_scores[tool_name] *= 0.8  # 20% 감쇠
+                    final_scores[tool_name] *= 0.8  # 이미 사용한 도구 20% 감쇠
+
+                # v4: 이전 도구의 PRECEDES 이웃에 보너스 (다음 단계 도구 부스트)
+                for edge in self._adj.get(tool_name, []):
+                    if edge.edge_type == EdgeType.PRECEDES and edge.target in final_scores:
+                        final_scores[edge.target] *= 1.3  # 30% 부스트
 
         # 노드 가중치 반영
         for name in final_scores:
@@ -642,6 +747,85 @@ class ToolGraph:
             logger.warning(f"[ToolGraph] 메타 스토어 히스토리 조회 실패, 히스토리 없이 진행: {e}")
 
         return self.retrieve(query, top_k=top_k, agent_name=agent_name, history=history_tools)
+
+    async def retrieve_with_context(
+        self,
+        query: str,
+        conversation_history: list[dict],
+        top_k: int = 5,
+        agent_name: Optional[str] = None,
+    ) -> Workflow:
+        """대화 컨텍스트를 고려한 도구 탐색 (v4)
+
+        "그거 취소해줘" 같은 모호한 쿼리를 이전 대화에서 해석하여
+        구체적인 도구 검색 쿼리로 확장한다.
+
+        Args:
+            query: 현재 쿼리
+            conversation_history: 이전 대화 히스토리 [{role, content}, ...]
+            top_k: 반환할 도구 수
+            agent_name: 에이전트 이름 (권한 필터)
+        """
+        # 1. 최근 대화에서 도구 관련 컨텍스트 추출
+        context_keywords = self._extract_context_keywords(conversation_history)
+
+        # 2. 쿼리에 대명사/모호한 참조가 있으면 컨텍스트로 보강
+        enriched_query = query
+        if context_keywords and self._is_ambiguous_query(query):
+            enriched_query = f"{query} {' '.join(context_keywords)}"
+            logger.info(f"[ToolGraph] 쿼리 컨텍스트 보강: '{query}' → '{enriched_query}'")
+
+        # 3. 최근 사용 도구를 히스토리로 전달 (디모션)
+        recent_tools = self._extract_recent_tools(conversation_history)
+
+        return self.retrieve(
+            enriched_query, top_k=top_k, agent_name=agent_name, history=recent_tools
+        )
+
+    def _extract_context_keywords(self, history: list[dict]) -> list[str]:
+        """대화 히스토리에서 도구 관련 키워드 추출"""
+        keywords = []
+        # 최근 5개 메시지만 (너무 오래된 것은 노이즈)
+        recent = history[-5:] if len(history) > 5 else history
+
+        for msg in recent:
+            content = msg.get("content", "")
+            if not content:
+                continue
+            # 도구/작업 관련 명사 추출 (한국어+영어)
+            for ko, en in self._QUERY_EXPANSIONS.items():
+                if ko in content:
+                    keywords.extend(en.split()[:2])  # 상위 2개만
+            # 영어 키워드 추출
+            en_words = re.findall(r'[a-z]{3,}', content.lower())
+            for w in en_words:
+                if w in _PROTECTED_TERMS:
+                    keywords.append(w)
+
+        return list(set(keywords))[:10]  # 최대 10개
+
+    def _is_ambiguous_query(self, query: str) -> bool:
+        """쿼리가 모호한지 판별 (대명사, 짧은 참조 등)"""
+        ambiguous_markers = {
+            "그거", "그것", "이거", "이것", "저거", "저것",
+            "아까", "방금", "위에", "그", "이", "저",
+            "다시", "또", "계속", "마저", "나머지",
+            "it", "that", "this", "same", "again",
+        }
+        tokens = set(query.lower().split())
+        return bool(tokens & ambiguous_markers) or len(query) < 10
+
+    def _extract_recent_tools(self, history: list[dict]) -> list[str]:
+        """대화 히스토리에서 최근 사용된 도구명 추출"""
+        tools = []
+        for msg in reversed(history[-10:]):
+            content = msg.get("content", "")
+            # 도구명 패턴 매칭 (도구명은 snake_case 또는 mcp:xxx:xxx 형태)
+            found = re.findall(r'(?:mcp:[a-z_-]+:[a-z_]+|[a-z]+_[a-z_]+)', content.lower())
+            for f in found:
+                if f in self._nodes and f not in tools:
+                    tools.append(f)
+        return tools[:5]
 
     # ── 영속화 ──
 

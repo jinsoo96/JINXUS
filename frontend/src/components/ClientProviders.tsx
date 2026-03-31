@@ -8,9 +8,17 @@ export default function ClientProviders() {
     <Toaster
       position="top-right"
       toastOptions={{
+        duration: 4000, // 자동 닫힘 4초 (3-5초 권장 범위)
         style: { background: '#27272a', color: '#fff', border: '1px solid #3f3f46' },
-        error: { iconTheme: { primary: '#ef4444', secondary: '#fff' } },
-        success: { iconTheme: { primary: '#22c55e', secondary: '#fff' } },
+        error: {
+          duration: 6000, // 에러는 6초 (확인 시간 여유)
+          iconTheme: { primary: '#ef4444', secondary: '#fff' },
+          ariaProps: { role: 'alert', 'aria-live': 'assertive' },
+        },
+        success: {
+          duration: 3000,
+          iconTheme: { primary: '#22c55e', secondary: '#fff' },
+        },
       }}
     />
   );

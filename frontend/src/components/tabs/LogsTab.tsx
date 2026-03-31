@@ -471,14 +471,22 @@ export default function LogsTab() {
               </>
             ) : filter !== 'all' ? (
               <>
-                <Filter size={20} className="text-zinc-600 mb-1" />
-                <span>해당 에이전트의 로그가 없습니다</span>
-                <span className="text-xs text-zinc-600">
+                <div className="w-10 h-10 rounded-xl bg-zinc-800/50 flex items-center justify-center mb-3">
+                  <Filter size={20} className="text-zinc-600" />
+                </div>
+                <span className="font-medium text-zinc-400">해당 에이전트의 로그가 없습니다</span>
+                <span className="text-xs text-zinc-600 mt-1">
                   에이전트 필터를 &quot;전체&quot;로 변경해 보세요
                 </span>
               </>
             ) : (
-              <span>작업 기록이 없습니다</span>
+              <>
+                <div className="w-10 h-10 rounded-xl bg-zinc-800/50 flex items-center justify-center mb-3">
+                  <Clock size={20} className="text-zinc-600" />
+                </div>
+                <span className="font-medium text-zinc-400">작업 기록이 없습니다</span>
+                <span className="text-xs text-zinc-600 mt-1">에이전트가 작업을 수행하면 여기에 표시됩니다</span>
+              </>
             )}
           </div>
         ) : (

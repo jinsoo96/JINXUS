@@ -169,7 +169,7 @@ export default function Sidebar() {
                     onClick={() => handleTabClick(tab.id)}
                     aria-current={isActive ? 'page' : undefined}
                     title={collapsed ? tab.label : undefined}
-                    className={`w-full flex items-center rounded-lg transition-colors ${
+                    className={`w-full flex items-center rounded-lg transition-colors press-feedback focus-ring ${
                       collapsed ? 'justify-center p-3 relative' : 'gap-3 px-3 py-2.5'
                     } ${
                       isActive
@@ -218,15 +218,15 @@ export default function Sidebar() {
                 return (
                   <div className="flex items-center gap-3 mb-2 flex-shrink-0">
                     <div className="flex-1 text-center">
-                      <p className="text-base font-bold text-white leading-none">{hrAgents.length}</p>
+                      <p className="text-base font-bold text-white leading-none tabular-nums">{hrAgents.length}</p>
                       <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Total</p>
                     </div>
                     <div className="flex-1 text-center">
-                      <p className="text-base font-bold text-green-400 leading-none">{workingCount}</p>
+                      <p className="text-base font-bold text-green-400 leading-none tabular-nums">{workingCount}</p>
                       <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Running</p>
                     </div>
                     <div className="flex-1 text-center">
-                      <p className={`text-base font-bold leading-none ${errorCount > 0 ? 'text-red-400' : 'text-zinc-600'}`}>{errorCount}</p>
+                      <p className={`text-base font-bold leading-none tabular-nums ${errorCount > 0 ? 'text-red-400' : 'text-zinc-600'}`}>{errorCount}</p>
                       <p className="text-[9px] text-zinc-600 uppercase mt-0.5">Errors</p>
                     </div>
                   </div>

@@ -142,6 +142,7 @@ export const POI_LIST: POIDef[] = [
   { name: 'meeting_a',    col: 52, row: 10, action: '미팅 중', type: 'indoor' },
   { name: 'meeting_b',    col: 55, row: 10, action: '미팅 중', type: 'indoor' },
   { name: 'ceo_smoking',  col: 53, row: 12, action: '니코틴 충전 중', type: 'indoor', capacity: 1 },
+  { name: 'ceo_drinking', col: 56, row: 14, action: '한잔 하는 중', type: 'indoor', capacity: 1 },
   { name: 'sofa',         col: 29, row: 20, action: '소파에서 쉬는 중', type: 'indoor' },
   // Hallway
   { name: 'entrance',     col: 30, row: 4,  action: '로비 통과 중', type: 'indoor' },
@@ -194,8 +195,9 @@ export const FURNITURE: FurniturePlacement[] = [
   { type: 'wb', x: 8, y: 7, w: 2 },   // Executive room upper-right
   { type: 'wb', x: 50, y: 7 },
 
-  // CEO Room ashtray (indoor)
+  // CEO Room ashtray + mini-bar (indoor)
   { type: 'ashtray', x: 54, y: 12 },
+  { type: 'minibar', x: 57, y: 14 },
 
   // Bookshelves
   { type: 'book', x: 33, y: 8 },

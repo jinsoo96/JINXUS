@@ -12,7 +12,7 @@ A hyper-personalized multi-agent AI assistant with a virtual pixel office
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org)
 [![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-orange.svg)](https://anthropic.com)
-[![Version](https://img.shields.io/badge/Version-3.0.0-purple.svg)]()
+[![Version](https://img.shields.io/badge/Version-4.0.0-purple.svg)]()
 
 **Web UI** | **Telegram** | **CLI** | **Daemon**
 
@@ -68,13 +68,28 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 - Review Loop: automatic code review + fix cycles
 
 ### Autonomous Execution
-- AutonomousRunner: up to 8 hours, 50 steps background execution
+- AutonomousRunner v1.8.0: up to 8 hours, 50 steps background execution
+- **Iteration Gate**: triple-check safety (completion signal + context budget + iteration count)
+- **Completion Signals**: agents declare `[TASK_COMPLETE]`, `[BLOCKED]`, `[ERROR]`, `[CONTINUE]`
 - Redis checkpoints for crash recovery
 - Task chaining with `depends_on` for building pipelines
 - Telegram progress reports every 15 minutes
 
+### AAI Infrastructure (Agent-Agent Interaction)
+- **Inbox**: Redis-based async message queue between agents (deliver/read/mark_read)
+- **Relevance Gate**: keyword + LLM 2-stage filter — only relevant agents respond to broadcasts
+- **Goal Hierarchy**: company → team → agent → task goals with mission linking
+- **Heartbeat Protocol**: periodic agent wake-up with checklist-based autonomous execution
+- **Atomic Checkout**: Redis SETNX mission locking (409 Conflict pattern)
+- **Budget Enforcement**: per-agent monthly API cost tracking (ok → warning → hard_stop)
+- **Routine Engine**: cron-based recurring mission generation with concurrency policies
+- **Config Revision**: agent configuration versioning with rollback support
+- **SOUL.md**: file-based agent personas (SOUL.md + RULES.md) with runtime editing
+- **Structured Output**: Pydantic schema injection + 2-stage LLM retry for reliable JSON parsing
+
 ### Memory System
 - 3-tier: Redis (short-term) + Qdrant (long-term vectors) + SQLite (metadata)
+- **LLM Memory Gate**: haiku decides if memory search is needed before querying Qdrant
 - Automatic reflection: generates high-level insights when importance threshold is reached
 - Semantic search across long-term memory
 - Time-decay pruning with configurable half-life
@@ -135,8 +150,8 @@ All personas are defined as a single source of truth in `personas.py` (backend) 
 backend/jinxus/
   agents/              # JINXUS_CORE + sub-agents + coding/research teams
   api/routers/         # FastAPI endpoints (chat, mission, logs, agents, etc.)
-  core/                # Orchestrator, mission executor, approval gate, tool policy
-  memory/              # 3-tier memory + reflection system
+  core/                # Orchestrator, mission executor, approval gate, tool policy, AAI infra
+  memory/              # 3-tier memory + reflection + LLM gate
   tools/               # 19 native tools + DynamicToolExecutor + MCP client
   hr/                  # Agent hiring/firing, company channels
   config/              # Settings, MCP server definitions
@@ -192,6 +207,8 @@ bash dev.sh   # Auto-installs deps, builds, starts via pm2
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v4.0.0** | 2026-04-01 | AAI infrastructure (Inbox, Goals, Heartbeat, Budget, Routine, Mission Lock, Config Revision), SOUL.md agent personas, Iteration Gate triple-check, LLM memory gate, Structured Output retry, Toast gating, 31 new API endpoints |
+| v3.1.1 | 2026-03-26 | SSE Geny pattern, session management, agent rename, Telegram integration |
 | **v3.0.0** | 2026-03-24 | Pixel Office overhaul (60x40 map, 16x24 chibi sprites, camera system, outdoor areas), org restructure (realistic Korean IT company), mission real-time feed, global mute, tab rename (English), modular architecture (15 modules) |
 | v2.9.0 | 2026-03-22 | Pixel Office Playground, UI overhaul, SSE agent streaming |
 | v2.6.0 | 2026-03-19 | 5 new dev team agents (27 total), persona system |

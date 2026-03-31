@@ -5,21 +5,21 @@ import { getFirstName, getDisplayName, getRole, getPersona, sortByRank, TEAM_CON
 import type { AgentRuntimeStatus } from '@/lib/api';
 
 // ── Module imports ──
-import type { CharState, GameState, DeskDef, Frame } from './engine/types';
+import type { CharState, GameState, DeskDef } from './engine/types';
 import {
   SCALE, TILE, SW, SH, DSW, DSH, MAP_W, MAP_H, CW, CH,
   WALK_SPEED, WALK_FRAME_DUR, TYPE_FRAME_DUR, READ_FRAME_DUR,
   THINK_FRAME_DUR, SEARCH_FRAME_DUR, SPEECH_BUBBLE_DURATION,
 } from './engine/constants';
-import { walkFrame, typeFrame, readFrame, thinkFrame } from './sprites/character';
 import { SHIRT, hash } from './sprites/colors';
 import { TOOL_ICONS, getToolIcon, getWorkState } from './sprites/icons';
-import { sprite } from './sprites/cache';
+import { spriteForState } from './sprites/cache';
+import { loadAssets, getFurniture, getGrassTile, getStoneTile } from './sprites/loader';
 import {
   makeDeskSprite, makePlantSprite, makeCoffeeMachine, makeWhiteboard,
   makeBookshelf, makeServerRack, makePrinterSprite, makeVendingMachine,
   makeFridgeSprite, makeSofaSprite, makeWaterCooler, makeBenchSprite,
-  makeTreeSprite, makeAshtraySprite, makeUmbrellaTable,
+  makeTreeSprite, makeAshtraySprite, makeUmbrellaTable, makeMiniBarSprite,
 } from './sprites/furniture';
 import {
   ROOMS, DESKS, DOORS, POI_LIST, FURNITURE, TEAM_EN, ROOM_FLOORS,
@@ -100,6 +100,8 @@ function initChar(code: string, desk: DeskDef): CharState {
     prevStatus: null,
     activity: '출근 중', poiTarget: null, socialTarget: null, socialTimer: 0, smokingTimer: 0,
     smokeAnchorCol: 0, smokeAnchorRow: 0,
+    drinkingTimer: 0, drinkAnchorCol: 0, drinkAnchorRow: 0,
+    runningTimer: 0, runningTarget: null,
   };
 }
 
@@ -110,8 +112,20 @@ const JINXUS_SMOKE_INTERVAL = 20; // ~20초마다 흡연
 const JINXUS_SMOKE_DURATION_MIN = 15;
 const JINXUS_SMOKE_DURATION_MAX = 25;
 
-// JINXUS_CORE idle timer for smoking (module-level)
-let _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 5;
+// JINXUS_CORE drinking (CEO Room mini-bar)
+const CEO_DRINKING_POI = { col: 56, row: 14 };
+const JINXUS_DRINK_INTERVAL = 40; // ~40초마다 한잔
+const JINXUS_DRINK_DURATION_MIN = 20;
+const JINXUS_DRINK_DURATION_MAX = 35;
+
+// JINXUS_CORE: 통합 액션 카운트다운 (술/담배/러닝 중 랜덤 선택)
+const JINXUS_ACTION_INTERVAL = 14; // ~14초마다 액션 시도
+let _jinxusActionCountdown = JINXUS_ACTION_INTERVAL + Math.random() * 8;
+
+// Running constants
+const JINXUS_RUN_DURATION_MIN = 8;
+const JINXUS_RUN_DURATION_MAX = 15;
+const JINXUS_RUN_SPEED_MULT = 2.5; // 일반 걷기의 2.5배
 
 function isInCEORoom(col: number, row: number): boolean {
   return col >= CEO_ROOM.x1 && col <= CEO_ROOM.x2 && row >= CEO_ROOM.y1 && row <= CEO_ROOM.y2;
@@ -121,25 +135,59 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
   const status = runtime?.status || 'idle';
   const isJinxusCore = c.code === 'JINXUS_CORE';
 
-  // Working 상태면 흡연/사교 즉시 취소하고 자리로 복귀
+  // Working 상태면 흡연/사교/음주/러닝 즉시 취소하고 자리로 복귀
   if (status === 'working') {
     if (c.smokingTimer > 0) { c.smokingTimer = 0; c.poiTarget = null; }
+    if (c.drinkingTimer > 0) { c.drinkingTimer = 0; c.poiTarget = null; }
+    if (c.runningTimer > 0) { c.runningTimer = 0; c.runningTarget = null; }
     if (c.socialTimer > 0) { c.socialTarget = null; c.socialTimer = 0; }
-    // Reset smoke countdown so it starts fresh after work ends
-    if (isJinxusCore) _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 5;
+    if (isJinxusCore) _jinxusActionCountdown = JINXUS_ACTION_INTERVAL + Math.random() * 8;
   }
 
-  // JINXUS_CORE smoking logic: when idle, countdown to smoke
-  if (isJinxusCore && status !== 'working' && c.smokingTimer <= 0 && c.state === 'idle' && !c.poiTarget) {
-    _jinxusSmokeCountdown -= dt;
-    if (_jinxusSmokeCountdown <= 0) {
-      _jinxusSmokeCountdown = JINXUS_SMOKE_INTERVAL + Math.random() * 10;
-      // Walk to CEO Room ashtray
+  // JINXUS_CORE: 통합 액션 카운트다운 (아무 액션도 안 하는 중일 때만 틱)
+  if (isJinxusCore && status !== 'working' && c.smokingTimer <= 0 && c.drinkingTimer <= 0 && c.runningTimer <= 0) {
+    _jinxusActionCountdown -= dt;
+  }
+
+  // JINXUS_CORE 액션 트리거: idle + 아무것도 안 하는 중일 때만
+  if (isJinxusCore && status !== 'working' && c.smokingTimer <= 0 && c.drinkingTimer <= 0 && c.runningTimer <= 0 && c.state === 'idle' && !c.poiTarget && _jinxusActionCountdown <= 0) {
+    _jinxusActionCountdown = JINXUS_ACTION_INTERVAL + Math.random() * 10;
+    // 랜덤으로 술/담배/러닝 중 하나 선택
+    const roll = Math.random();
+    if (roll < 0.33) {
+      // 담배
       const p = bfs(c.col, c.row, CEO_SMOKING_POI.col, CEO_SMOKING_POI.row);
       if (p.length > 0) {
         c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
         c.poiTarget = 'ceo_smoking'; c.activity = '니코틴 부족';
-        c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = 3;
+        c.speechBubble = '🚬'; c.speechBubbleTimer = 3;
+      }
+    } else if (roll < 0.66) {
+      // 술
+      const p = bfs(c.col, c.row, CEO_DRINKING_POI.col, CEO_DRINKING_POI.row);
+      if (p.length > 0) {
+        c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+        c.poiTarget = 'ceo_drinking'; c.activity = '한잔 생각나는 중';
+        c.speechBubble = '🍶'; c.speechBubbleTimer = 3;
+      }
+    } else {
+      // 러닝: CEO Room 안에서 바로 시작
+      c.runningTimer = JINXUS_RUN_DURATION_MIN + Math.random() * (JINXUS_RUN_DURATION_MAX - JINXUS_RUN_DURATION_MIN);
+      c.activity = '러닝 중';
+      c.speechBubble = '🏃'; c.speechBubbleTimer = 3;
+      // 첫 러닝 목적지 설정
+      const grid = getGrid();
+      for (let i = 0; i < 10; i++) {
+        const tx = CEO_ROOM.x1 + Math.floor(Math.random() * (CEO_ROOM.x2 - CEO_ROOM.x1 + 1));
+        const ty = CEO_ROOM.y1 + Math.floor(Math.random() * (CEO_ROOM.y2 - CEO_ROOM.y1 + 1));
+        if (grid[ty]?.[tx]) {
+          const p = bfs(c.col, c.row, tx, ty);
+          if (p.length > 0) {
+            c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+            c.runningTarget = [tx, ty];
+            break;
+          }
+        }
       }
     }
   }
@@ -179,6 +227,98 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
                 break;
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  // 음주 중: 미니바 주변에서 서성이거나 멈추기, 끝나면 자리 복귀
+  if (c.drinkingTimer > 0) {
+    c.drinkingTimer -= dt;
+    if (c.drinkingTimer <= 0) {
+      c.drinkingTimer = 0;
+      // 랜덤 취한 멘트
+      const drunkLines = ['흐흐.. 한잔 했다', '자리로 돌아가는 중', '역시 소주..', '한잔 더..? 아니야'];
+      c.activity = drunkLines[Math.floor(Math.random() * drunkLines.length)];
+      c.speechBubble = '😵‍💫'; c.speechBubbleTimer = 3;
+      const deskPath = bfs(c.col, c.row, c.deskCol, c.deskRow);
+      if (deskPath.length > 0) {
+        c.path = deskPath; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+        c.idleTimer = 2 + Math.random() * 3;
+      } else {
+        c.idleTimer = 1;
+      }
+    } else if (c.state === 'idle') {
+      c.idleTimer -= dt;
+      if (c.idleTimer <= 0) {
+        c.idleTimer = 3 + Math.random() * 5;
+        // 40% 서성이기, 30% 가만히 마시기, 30% 취한 멘트
+        const roll = Math.random();
+        if (roll < 0.4) {
+          const grid = getGrid();
+          const ax = c.drinkAnchorCol || c.col;
+          const ay = c.drinkAnchorRow || c.row;
+          for (let i = 0; i < 8; i++) {
+            const tx = ax + Math.floor(Math.random() * 3) - 1;
+            const ty = ay + Math.floor(Math.random() * 3) - 1;
+            if (tx >= 0 && tx < MAP_W && ty >= 0 && ty < MAP_H && grid[ty]?.[tx]) {
+              if (Math.abs(tx - ax) > 2 || Math.abs(ty - ay) > 2) continue;
+              const p = bfs(c.col, c.row, tx, ty);
+              if (p.length > 0 && p.length <= 3) {
+                c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+                break;
+              }
+            }
+          }
+        } else if (roll < 0.7) {
+          // 가만히 서서 마시기 - 말풍선 갱신
+          const drinkBubbles = ['🍶', '🥂', '🍶', '🫗'];
+          c.speechBubble = drinkBubbles[Math.floor(Math.random() * drinkBubbles.length)];
+          c.speechBubbleTimer = 3;
+        } else {
+          // 취한 멘트
+          const drunkSpeech = ['캬~', '좋다...', '한잔 더', '오늘도 수고했다', '... 컵 어디감'];
+          c.speechBubble = drunkSpeech[Math.floor(Math.random() * drunkSpeech.length)];
+          c.speechBubbleTimer = 4;
+        }
+      }
+    }
+  }
+
+  // 러닝 중: CEO Room 안에서 빠르게 뛰어다님, 끝나면 자리 복귀
+  if (c.runningTimer > 0) {
+    c.runningTimer -= dt;
+    if (c.runningTimer <= 0) {
+      c.runningTimer = 0;
+      c.runningTarget = null;
+      c.activity = '헥헥..';
+      c.speechBubble = '💦'; c.speechBubbleTimer = 3;
+      const deskPath = bfs(c.col, c.row, c.deskCol, c.deskRow);
+      if (deskPath.length > 0) {
+        c.path = deskPath; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+        c.idleTimer = 3 + Math.random() * 4;
+      } else {
+        c.idleTimer = 1;
+      }
+    } else if (c.state === 'idle') {
+      // 도착했으면 다음 러닝 목적지 선택
+      const grid = getGrid();
+      for (let i = 0; i < 10; i++) {
+        const tx = CEO_ROOM.x1 + Math.floor(Math.random() * (CEO_ROOM.x2 - CEO_ROOM.x1 + 1));
+        const ty = CEO_ROOM.y1 + Math.floor(Math.random() * (CEO_ROOM.y2 - CEO_ROOM.y1 + 1));
+        if (grid[ty]?.[tx]) {
+          const p = bfs(c.col, c.row, tx, ty);
+          if (p.length > 2) {
+            c.path = p; c.pathIdx = 0; c.state = 'walk'; c.walkStep = 0; c.animT = 0;
+            c.runningTarget = [tx, ty];
+            // 가끔 러닝 관련 말풍선
+            if (Math.random() < 0.3) {
+              const runSpeech = ['🏃', '🏃‍♂️', '화이팅!', '체력이 자본!', '하..'];
+              c.speechBubble = runSpeech[Math.floor(Math.random() * runSpeech.length)];
+              c.speechBubbleTimer = 2;
+            }
+            break;
           }
         }
       }
@@ -258,6 +398,12 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
           c.smokingTimer = JINXUS_SMOKE_DURATION_MIN + Math.random() * (JINXUS_SMOKE_DURATION_MAX - JINXUS_SMOKE_DURATION_MIN);
           c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = c.smokingTimer;
           c.smokeAnchorCol = c.col; c.smokeAnchorRow = c.row;
+        } else if (c.poiTarget === 'ceo_drinking' && c.code === 'JINXUS_CORE') {
+          // JINXUS_CORE만 CEO Room 음주: 20~35초
+          c.drinkingTimer = JINXUS_DRINK_DURATION_MIN + Math.random() * (JINXUS_DRINK_DURATION_MAX - JINXUS_DRINK_DURATION_MIN);
+          c.speechBubble = '🍶'; c.speechBubbleTimer = c.drinkingTimer;
+          c.drinkAnchorCol = c.col; c.drinkAnchorRow = c.row;
+          c.activity = '한잔 하는 중';
         } else if (c.poiTarget.startsWith('smoking') && c.poiTarget !== 'ceo_smoking') {
           // 일반 에이전트: 실외 흡연장에서만 흡연 (smoking, smoking_b, smoking_c)
           c.smokingTimer = 27 + Math.random() * 6; // 27~33초 흡연
@@ -275,11 +421,15 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
     const [tx, ty] = tileCenter(nx, ny);
     const ddx = tx - c.x, ddy = ty - c.y;
     const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-    const spd = WALK_SPEED * dt;
+    // 러닝 중이면 빠른 속도 적용
+    const isRunning = c.runningTimer > 0;
+    const spd = WALK_SPEED * dt * (isRunning ? JINXUS_RUN_SPEED_MULT : 1);
     if (dist <= spd) { c.x = tx; c.y = ty; c.col = nx; c.row = ny; c.pathIdx++; }
     else { c.x += (ddx / dist) * spd; c.y += (ddy / dist) * spd; }
     c.animT += dt;
-    if (c.animT >= WALK_FRAME_DUR) { c.animT -= WALK_FRAME_DUR; c.walkStep = (c.walkStep + 1) % 4; }
+    // 러닝 중이면 다리 빠르게 움직임
+    const frameDurWalk = isRunning ? WALK_FRAME_DUR * 0.4 : WALK_FRAME_DUR;
+    if (c.animT >= frameDurWalk) { c.animT -= frameDurWalk; c.walkStep = (c.walkStep + 1) % 4; }
     return;
   }
 
@@ -349,8 +499,8 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
       } else {
         // Normal agents: original behavior
       if (behavior === 'poi') {
-        // 일반 에이전트는 ceo_smoking 제외 (CEO Room 흡연은 사장 전용)
-        const available = POI_LIST.filter(p => p.name !== 'ceo_smoking');
+        // 일반 에이전트는 ceo_smoking, ceo_drinking 제외 (CEO Room 전용)
+        const available = POI_LIST.filter(p => p.name !== 'ceo_smoking' && p.name !== 'ceo_drinking');
         const poi = available[Math.floor(Math.random() * available.length)];
         const p = bfs(c.col, c.row, poi.col, poi.row);
         const maxDist = poi.type === 'outdoor' ? 60 : 30;
@@ -452,17 +602,20 @@ const FURN_MAKERS: Record<string, () => HTMLCanvasElement> = {
   book: makeBookshelf, server: makeServerRack, printer: makePrinterSprite,
   vending: makeVendingMachine, fridge: makeFridgeSprite, sofa: makeSofaSprite,
   water: makeWaterCooler, bench: makeBenchSprite, tree: makeTreeSprite,
-  ashtray: makeAshtraySprite, umbrella: makeUmbrellaTable,
+  ashtray: makeAshtraySprite, umbrella: makeUmbrellaTable, minibar: makeMiniBarSprite,
 };
 
 function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Record<string, AgentRuntimeStatus>, camera: Camera) {
   ctx.imageSmoothingEnabled = false;
 
-  // Clear entire canvas before camera transform (prevents zoom ghosting)
+  // Reset to identity transform, clear entire device pixel buffer, then reapply DPR + camera
   const canvas = ctx.canvas;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Apply camera transform
+  // Apply DPR scale + camera transform
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.save();
   ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-camera.x, -camera.y);
@@ -471,16 +624,16 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
   ctx.fillStyle = '#06060a';
   ctx.fillRect(0, 0, CW, CH);
 
-  // Outdoor ground (y0-3 and y36-39)
-  const outdoorTile = makeFloorTile('concrete', '#0a120a', '#101a10');
+  // Outdoor ground (y0-3 and y36-39) — 잔디 타일
+  const oTile = getGrassTile() || makeFloorTile('concrete', '#0a120a', '#101a10');
   for (let y = 0; y <= 3; y++)
     for (let x = 0; x < MAP_W; x++)
-      ctx.drawImage(outdoorTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+      ctx.drawImage(oTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
   for (let y = 36; y <= 39; y++)
     for (let x = 0; x < MAP_W; x++)
-      ctx.drawImage(outdoorTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
+      ctx.drawImage(oTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
 
-  // LAYER 1: Room floors
+  // LAYER 1: Room floors — 다크 코드 타일 (원래 스타일 유지)
   for (const r of ROOMS) {
     const cfg = ROOM_FLOORS[r.team] || ROOM_FLOORS['경영지원팀'] || { type: 'tile', base: '#0c0c14', accent: '#141420' };
     const tile = makeFloorTile(cfg.type, cfg.base, cfg.accent);
@@ -488,8 +641,8 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
       for (let x = r.x + 1; x < r.x + r.w - 1; x++)
         ctx.drawImage(tile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
   }
-  // Hallway floors
-  const hallTile = makeFloorTile('concrete', '#0c0c12', '#14141c');
+  // Hallway floors — 돌 바닥
+  const hallTile = getStoneTile() || makeFloorTile('concrete', '#0c0c12', '#14141c');
   for (let x = 0; x < MAP_W; x++) {
     for (let y = 4; y <= 5; y++) ctx.drawImage(hallTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
     for (let y = 18; y <= 21; y++) ctx.drawImage(hallTile, 0, 0, 16, 16, x * TILE, y * TILE, TILE, TILE);
@@ -568,13 +721,21 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
     }
   }
 
-  // LAYER 6b: Furniture
+  // LAYER 6b: Furniture (PNG assets with code fallback)
   for (const f of FURNITURE) {
-    const maker = FURN_MAKERS[f.type];
-    if (!maker) continue;
-    const spr = maker();
     const fw = f.w ?? 1;
-    ctx.drawImage(spr, 0, 0, 16, 16, f.x * TILE, f.y * TILE, TILE * fw, TILE);
+    const fh = f.h ?? 1;
+    // Try PNG asset first
+    const pngSpr = getFurniture(f.type);
+    if (pngSpr) {
+      ctx.drawImage(pngSpr, 0, 0, pngSpr.width, pngSpr.height, f.x * TILE, f.y * TILE, TILE * fw, TILE * fh);
+    } else {
+      // Fallback to code-drawn sprite
+      const maker = FURN_MAKERS[f.type];
+      if (!maker) continue;
+      const spr = maker();
+      ctx.drawImage(spr, 0, 0, 16, 16, f.x * TILE, f.y * TILE, TILE * fw, TILE);
+    }
   }
 
   // Coffee steam
@@ -589,14 +750,14 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
   // LAYER 7: Characters (Y-sorted)
   const sorted = Array.from(game.chars.values()).sort((a, b) => a.y - b.y);
   for (const c of sorted) {
-    let f: Frame;
-    if (c.state === 'type') f = typeFrame(c.typeFrame);
-    else if (c.state === 'read' || c.state === 'search') f = readFrame(c.typeFrame);
-    else if (c.state === 'think') f = thinkFrame(c.typeFrame);
-    else if (c.state === 'walk') f = walkFrame(c.dir, c.walkStep);
-    else f = walkFrame(c.dir, 0);
+    // Determine animation frame index
+    let animState = c.state;
+    let frameIdx = 0;
+    if (c.state === 'walk') frameIdx = c.walkStep;
+    else if (c.state === 'type' || c.state === 'read' || c.state === 'think' || c.state === 'search') frameIdx = c.typeFrame;
 
-    const s = sprite(c.code, c.team, f);
+    const s = spriteForState(c.code, animState, c.dir, frameIdx, c.team);
+    if (!s) continue;
     const dx = Math.round(c.x - DSW / 2);
     const dy = Math.round(c.y - DSH / 2);
     ctx.imageSmoothingEnabled = false;
@@ -681,6 +842,86 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
         ctx.globalAlpha = alpha;
         ctx.fillStyle = '#ffffff';
         ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Drinking effect: soju glass in hand + cheek blush + swaying bubbles
+    if (c.drinkingTimer > 0) {
+      const fadeIn = Math.min(1, c.drinkingTimer / 2);
+      const isLeft = c.dir === 1;
+      const handOffX = (isLeft ? -5 : 5) * SCALE;
+      const glassX = Math.round(c.x + handOffX);
+      const glassY = Math.round(c.y + 0.5 * SCALE);
+
+      // ── 소주병 나발 (초록 소주병을 들고 벌컥벌컥) ──
+      // 병 몸통 (초록)
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(glassX - 1 * SCALE, glassY - 3 * SCALE, 2.5 * SCALE, 6 * SCALE);
+      // 병 목 (좁은 부분)
+      ctx.fillStyle = '#15803d';
+      ctx.fillRect(glassX - 0.3 * SCALE, glassY - 5.5 * SCALE, 1.2 * SCALE, 3 * SCALE);
+      // 병뚜껑 (은색)
+      ctx.fillStyle = '#d4d4d8';
+      ctx.fillRect(glassX - 0.3 * SCALE, glassY - 6 * SCALE, 1.2 * SCALE, 0.8 * SCALE);
+      // 라벨 (흰색)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.fillRect(glassX - 0.5 * SCALE, glassY - 1.5 * SCALE, 1.8 * SCALE, 2.5 * SCALE);
+      // 병 하이라이트 (반짝임)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.fillRect(glassX + 0.8 * SCALE, glassY - 4 * SCALE, 0.5 * SCALE, 5 * SCALE);
+
+      // ── 얼굴 홍조 (양쪽 볼 빨갛게) ──
+      ctx.globalAlpha = fadeIn * 0.4;
+      ctx.fillStyle = '#ef4444';
+      const faceY = Math.round(c.y - 5 * SCALE);
+      ctx.beginPath(); ctx.arc(c.x - 3 * SCALE, faceY, 1.5 * SCALE, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x + 3 * SCALE, faceY, 1.5 * SCALE, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // ── 소주 김 (투명한 작은 입김이 위로 올라감) ──
+      const bubbleT = Date.now() / 1000;
+      for (let i = 0; i < 3; i++) {
+        const age = (bubbleT * 0.5 + i * 1.4) % 2.8;
+        const rise = age * 3.5 * SCALE;
+        const drift = Math.sin(bubbleT * 0.6 + i * 1.8) * 1.2 * SCALE;
+        const bx = glassX + drift;
+        const by = glassY - 2 * SCALE - rise;
+        const br = (0.4 + age * 0.2) * SCALE;
+        const alpha = fadeIn * Math.max(0, 0.3 - age * 0.11);
+        if (alpha <= 0) continue;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Running effect: 먼지 파티클 + 땀방울
+    if (c.runningTimer > 0 && c.state === 'walk') {
+      const runT = Date.now() / 1000;
+      // ── 발밑 먼지 (달릴 때 발 뒤로 먼지) ──
+      for (let i = 0; i < 3; i++) {
+        const age = (runT * 1.5 + i * 0.8) % 1.2;
+        const dustX = c.x + (c.dir === 1 ? 3 : c.dir === 2 ? -3 : (i - 1) * 2) * SCALE;
+        const dustY = c.y + DSH / 2 - age * 3 * SCALE;
+        const dustR = (0.8 + age * 0.5) * SCALE;
+        const alpha = Math.max(0, 0.3 - age * 0.25);
+        if (alpha <= 0) continue;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#d4d4d8';
+        ctx.beginPath(); ctx.arc(dustX, dustY, dustR, 0, Math.PI * 2); ctx.fill();
+      }
+      // ── 땀방울 (머리 위에서 날림) ──
+      for (let i = 0; i < 2; i++) {
+        const age = (runT * 1.2 + i * 1.5) % 2.0;
+        const sweatX = c.x + (i === 0 ? -4 : 4) * SCALE + Math.sin(runT + i) * SCALE;
+        const sweatY = c.y - DSH / 2 - age * 3 * SCALE;
+        const alpha = Math.max(0, 0.5 - age * 0.25);
+        if (alpha <= 0) continue;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#60a5fa';
+        ctx.beginPath(); ctx.arc(sweatX, sweatY, 0.8 * SCALE, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
@@ -776,14 +1017,14 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
   const propsRef = useRef({ runtimeMap, hiredSet, onSelectAgent, agentBubbles, onActivityLog, muteChat });
   const [hovered, setHovered] = useState<string | null>(null);
   const [tipPos, setTipPos] = useState({ x: 0, y: 0 });
-
   propsRef.current = { runtimeMap, hiredSet, onSelectAgent, agentBubbles, onActivityLog, muteChat };
 
-  // Build grid + init POIs once
+  // Build grid + init POIs + load PNG assets once
   useEffect(() => {
     const grid = buildGrid();
     setGrid(grid);
     initPOIStates(POI_LIST);
+    loadAssets(); // 배경은 에셋 없이도 렌더됨, 스프라이트는 로드 완료 후 자동 표시
   }, []);
 
   // Canvas resize
@@ -1130,7 +1371,11 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
           onMouseUp={handleMouseUp}
           onMouseLeave={() => { setHovered(null); endDrag(cameraRef.current); }}
           onWheel={handleWheel}
-          style={{ cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab', touchAction: 'none' }}
+          style={{
+            cursor: cameraRef.current?.isDragging ? 'grabbing' : hovered ? 'pointer' : 'grab',
+            touchAction: 'none',
+            opacity: 1,
+          }}
         />
       </div>
 
