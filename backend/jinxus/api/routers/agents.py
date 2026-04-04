@@ -33,6 +33,11 @@ async def rename_agent(agent_code: str, request: RenameRequest):
     )
     if not success:
         raise HTTPException(404, f"에이전트 '{agent_code}'를 찾을 수 없습니다")
+    try:
+        from jinxus.personality.manager import get_personality_manager
+        get_personality_manager().invalidate()
+    except Exception:
+        pass
     return {
         "success": True,
         "agent": agent_code,

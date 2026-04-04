@@ -319,6 +319,19 @@ class DynamicToolExecutor:
             )
         enhanced_system_prompt = self._enhanced_system_prompt_cache[_cache_key]
 
+        # Budget 체크 — HARD_STOP이면 실행 중단
+        try:
+            from jinxus.core.budget import get_budget_manager
+            if await get_budget_manager().should_block(self._agent_name):
+                logger.warning(f"[{self._agent_name}] API 예산 한도 초과 — 실행 차단")
+                return ExecutionResult(
+                    success=False,
+                    output="",
+                    error="API 예산 한도 초과로 실행이 중단되었습니다.",
+                )
+        except Exception as e:
+            logger.debug(f"[{self._agent_name}] Budget 체크 실패 (무시): {e}")
+
         # 도구가 없으면 일반 대화
         if not tool_schemas:
             response = await asyncio.to_thread(self._client.messages.create,
@@ -472,6 +485,20 @@ class DynamicToolExecutor:
             )
             _api_ms = (_time.time() - _round_start) * 1000
             logger.debug(f"[{self._agent_name}] Claude API 응답 {_api_ms:.0f}ms usage=({response.usage.input_tokens}in/{response.usage.output_tokens}out) stop={response.stop_reason}")
+
+            # Budget 비용 기록
+            try:
+                from jinxus.core.budget import get_budget_manager
+                _bm = get_budget_manager()
+                import asyncio as _aio
+                _aio.ensure_future(_bm.record_cost(
+                    agent=self._agent_name,
+                    model=self._model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                ))
+            except Exception:
+                pass
 
             # 응답 처리
             assistant_content = []

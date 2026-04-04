@@ -348,6 +348,22 @@ async def routine_list(status: Optional[str] = None):
     return {"routines": [asdict(r) for r in routines]}
 
 
+@router.post("/routines/{routine_id}/toggle")
+async def routine_toggle(routine_id: str):
+    """루틴 상태 토글 (active ↔ paused)"""
+    from jinxus.core.routine import get_routine_manager
+    mgr = get_routine_manager()
+    routine = await mgr.get(routine_id)
+    if not routine:
+        raise HTTPException(status_code=404, detail="루틴을 찾을 수 없습니다")
+    new_status = "paused" if routine.status == "active" else "active"
+    updated = await mgr.update(routine_id, status=new_status)
+    if not updated:
+        raise HTTPException(status_code=500, detail="상태 변경 실패")
+    from dataclasses import asdict
+    return asdict(updated)
+
+
 @router.delete("/routines/{routine_id}")
 async def routine_delete(routine_id: str):
     from jinxus.core.routine import get_routine_manager

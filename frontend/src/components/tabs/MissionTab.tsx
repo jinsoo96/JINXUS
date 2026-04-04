@@ -6,15 +6,17 @@ import { useAppStore } from '@/store/useAppStore';
 import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import PixelOffice, { type ActivityLogEntry } from '@/components/playground/PixelOffice';
 import MissionConsole from '@/components/MissionConsole';
-import { MessageSquare, Coffee, Briefcase, MapPin, VolumeX, Volume2, PanelRightClose, PanelRightOpen, Building2, ClipboardList, Terminal } from 'lucide-react';
+import { MessageSquare, Coffee, Briefcase, MapPin, VolumeX, Volume2, PanelRightClose, PanelRightOpen, Building2, ClipboardList, Terminal, Users, Brain } from 'lucide-react';
 import DockerLogPanel from '@/components/DockerLogPanel';
+import AgentsTab from '@/components/tabs/AgentsTab';
+import PersonalityTab from '@/components/tabs/PersonalityTab';
 import { getFirstName, getPersona } from '@/lib/personas';
 
 interface MissionTabProps {
   isActive?: boolean;
 }
 
-type OfficeSubTab = 'office' | 'work';
+type OfficeSubTab = 'office' | 'work' | 'members' | 'personality';
 
 const MAX_FEED_ENTRIES = 80;
 
@@ -220,6 +222,35 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
         </button>
 
         <button
+          onClick={() => setSubTab('members')}
+          className={`flex items-center gap-1.5 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition-colors active:bg-zinc-700/80 ${
+            subTab === 'members'
+              ? 'bg-zinc-700/60 text-white'
+              : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+          }`}
+          style={{ minHeight: 44 }}
+        >
+          <Users size={13} />
+          Members
+          <span className="text-[9px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded-full ml-1">
+            {hrAgents.filter(a => a.is_active).length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setSubTab('personality')}
+          className={`flex items-center gap-1.5 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition-colors active:bg-zinc-700/80 ${
+            subTab === 'personality'
+              ? 'bg-zinc-700/60 text-white'
+              : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+          }`}
+          style={{ minHeight: 44 }}
+        >
+          <Brain size={13} />
+          Personality
+        </button>
+
+        <button
           onClick={() => setLogPanelOpen(o => !o)}
           className={`ml-auto flex items-center gap-1.5 px-4 sm:px-3 py-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition-colors active:bg-zinc-700/80 ${
             logPanelOpen
@@ -320,6 +351,20 @@ export default function MissionTab({ isActive = true }: MissionTabProps) {
         <div className={subTab === 'work' ? 'h-full' : 'hidden'}>
           <MissionConsole onMissionEvent={handleMissionEvent} runtimeMap={runtimeMap} />
         </div>
+
+        {/* 직원 현황: AgentsTab */}
+        {subTab === 'members' && (
+          <div className="h-full overflow-auto p-3 sm:p-4 md:p-6">
+            <AgentsTab isActive={subTab === 'members'} forcedSubTab="status" />
+          </div>
+        )}
+
+        {/* 에이전트 인격: PersonalityTab */}
+        {subTab === 'personality' && (
+          <div className="h-full overflow-auto p-3 sm:p-4 md:p-6">
+            <PersonalityTab isActive={subTab === 'personality'} />
+          </div>
+        )}
       </div>
 
       {/* 시스템 로그 패널 (하단 슬라이드) */}

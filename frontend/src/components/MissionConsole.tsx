@@ -835,6 +835,16 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
                       {statusConf.label}
                     </span>
                   )}
+                  {isActiveStatus(currentMission.status) && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); cancelMission(); }}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-red-400/70 hover:text-red-400 bg-red-500/10 hover:bg-red-500/20 transition-colors flex-shrink-0"
+                      title="업무 중지"
+                    >
+                      <Square size={9} />
+                      중지
+                    </button>
+                  )}
                   {(() => {
                     const workingAgents = currentMission.assigned_agents
                       .filter(a => a !== 'JINXUS_CORE' && runtimeMap[a]?.status === 'working');

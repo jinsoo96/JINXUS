@@ -183,9 +183,9 @@ export default function ControlPanel({ isActive }: { isActive: boolean }) {
                   )}
                   <button
                     onClick={() => handleToggle(agent, !isOn)}
-                    className={`relative w-12 h-7 sm:w-10 sm:h-5 rounded-full transition-colors ${isOn ? 'bg-green-500' : 'bg-zinc-700'}`}
+                    className={`relative inline-flex items-center w-10 h-5 rounded-full transition-colors ${isOn ? 'bg-green-500' : 'bg-zinc-700'}`}
                   >
-                    <span className={`absolute top-0.5 sm:top-0.5 w-6 h-6 sm:w-4 sm:h-4 rounded-full bg-white transition-transform ${isOn ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                    <span className={`inline-block w-4 h-4 rounded-full bg-white shadow transition-transform ${isOn ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
                   </button>
                 </div>
               </div>

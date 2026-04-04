@@ -1,19 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { Zap, Radio, MessageSquare, DollarSign, Clock } from 'lucide-react';
+import { Zap, Radio, DollarSign, Clock } from 'lucide-react';
 import ControlPanel from './autopilot/ControlPanel';
 import TriggerPanel from './autopilot/TriggerPanel';
-import CommsPanel from './autopilot/CommsPanel';
 import BudgetPanel from './autopilot/BudgetPanel';
 import RoutinePanel from './autopilot/RoutinePanel';
 
-type SubTab = 'control' | 'triggers' | 'comms' | 'budget' | 'routines';
+type SubTab = 'control' | 'triggers' | 'budget' | 'routines';
 
 const SUB_TABS: { id: SubTab; label: string; icon: typeof Zap }[] = [
   { id: 'control', label: '컨트롤 센터', icon: Zap },
   { id: 'triggers', label: '트리거', icon: Radio },
-  { id: 'comms', label: '통신', icon: MessageSquare },
   { id: 'budget', label: '예산', icon: DollarSign },
   { id: 'routines', label: '루틴', icon: Clock },
 ];
@@ -55,7 +53,6 @@ export default function AutopilotTab({ isActive = true }: { isActive?: boolean }
       {/* 서브탭 콘텐츠 */}
       {subTab === 'control' && <ControlPanel isActive={isActive} />}
       {subTab === 'triggers' && <TriggerPanel isActive={isActive} />}
-      {subTab === 'comms' && <CommsPanel isActive={isActive} />}
       {subTab === 'budget' && <BudgetPanel isActive={isActive} />}
       {subTab === 'routines' && <RoutinePanel isActive={isActive} />}
     </div>

@@ -29,6 +29,8 @@ from jinxus.api.routers import (
     whiteboard_router,
 )
 from jinxus.api.routers.aai import router as aai_router
+from jinxus.tts.router import router as tts_router
+from jinxus.personality.router import router as personality_router
 
 logger = logging.getLogger(__name__)
 
@@ -169,12 +171,13 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_routine_poll())
     print("Routine poller started (60s interval)")
 
-    # Trigger 폴러 — 30초마다 idle/threshold 트리거 체크
+    # Trigger 폴러 — 30초마다 cron/idle/threshold 트리거 체크
     async def _trigger_poll():
         from jinxus.core.trigger_engine import get_trigger_engine
         engine = get_trigger_engine()
         while True:
             try:
+                await engine.check_cron_triggers()
                 await engine.check_idle_triggers()
                 await engine.check_threshold_triggers()
             except Exception as e:
@@ -449,6 +452,8 @@ def create_app() -> FastAPI:
     app.include_router(command_router)
     app.include_router(whiteboard_router)
     app.include_router(aai_router)
+    app.include_router(tts_router)
+    app.include_router(personality_router)
 
     @app.get("/")
     async def root():

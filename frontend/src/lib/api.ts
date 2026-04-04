@@ -1638,6 +1638,9 @@ export const aaiApi = {
   deleteRoutine: async (id: string): Promise<{ success: boolean }> => {
     return apiCall(`/aai/routines/${id}`, { method: 'DELETE' });
   },
+  toggleRoutine: async (id: string): Promise<AAIRoutine> => {
+    return apiCall(`/aai/routines/${id}/toggle`, { method: 'POST' });
+  },
   getRoutineRuns: async (id: string, limit = 20): Promise<{ runs: RoutineRun[] }> => {
     return apiCall(`/aai/routines/${id}/runs?limit=${limit}`);
   },
@@ -1719,6 +1722,88 @@ export const whiteboardApi = {
     return apiCall(`/whiteboard/${id}/discover`, {
       method: 'POST',
       body: JSON.stringify({ agent_code: agentCode }),
+    });
+  },
+};
+
+// ── Personality API ──
+
+export interface OceanTraitsData {
+  openness: number;
+  conscientiousness: number;
+  extraversion: number;
+  agreeableness: number;
+  neuroticism: number;
+}
+
+export interface EmotionData {
+  pleasure: number;
+  arousal: number;
+  dominance: number;
+}
+
+export interface PersonalityProfileData {
+  agent: string;
+  name: string;
+  role: string;
+  team: string;
+  mbti: string;
+  ocean: OceanTraitsData;
+  emotion: EmotionData;
+  emotion_label: string;
+  speech_style: string;
+  tone: string;
+  voice_id: string;
+}
+
+export const personalityApi = {
+  getProfiles: async (): Promise<{ profiles: Record<string, PersonalityProfileData> }> => {
+    return apiCall('/personality/profiles');
+  },
+  getProfile: async (agent: string): Promise<PersonalityProfileData> => {
+    return apiCall(`/personality/profiles/${agent}`);
+  },
+  updateOcean: async (agent: string, updates: Partial<OceanTraitsData>): Promise<{ success: boolean; ocean: OceanTraitsData }> => {
+    return apiCall(`/personality/profiles/${agent}/ocean`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  },
+  updateEmotion: async (agent: string, emotion: EmotionData): Promise<{ success: boolean; emotion: EmotionData; label: string }> => {
+    return apiCall(`/personality/profiles/${agent}/emotion`, {
+      method: 'PATCH',
+      body: JSON.stringify(emotion),
+    });
+  },
+  getFingerprint: async (agent: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/personality/profiles/${agent}/fingerprint`);
+    if (!res.ok) throw new Error('Fingerprint 조회 실패');
+    return res.text();
+  },
+};
+
+// ── TTS API ──
+
+export const ttsApi = {
+  speak: async (text: string, agent = '', emotion = 'neutral'): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/tts/speak`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, agent, emotion }),
+    });
+    if (!res.ok) throw new Error('TTS 실패');
+    return res.blob();
+  },
+  getVoices: async (): Promise<{ voices: Record<string, unknown>[]; presets: Record<string, string> }> => {
+    return apiCall('/tts/voices');
+  },
+  getProfiles: async (): Promise<{ profiles: Record<string, { voice_id: string; speed: string; pitch: string }> }> => {
+    return apiCall('/tts/profiles');
+  },
+  setProfile: async (agent: string, voice_id: string, speed = '+0%', pitch = '+0Hz'): Promise<{ success: boolean }> => {
+    return apiCall('/tts/profiles', {
+      method: 'POST',
+      body: JSON.stringify({ agent, voice_id, speed, pitch }),
     });
   },
 };

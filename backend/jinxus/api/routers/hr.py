@@ -83,6 +83,12 @@ async def hire_agent(request: HireRequest):
 
     try:
         record = await hr.hire(spec)
+        # Personality 캐시 무효화 — 새 에이전트 반영
+        try:
+            from jinxus.personality.manager import get_personality_manager
+            get_personality_manager().invalidate()
+        except Exception:
+            pass
         return {
             "success": True,
             "agent": record.to_dict(),
@@ -112,6 +118,12 @@ async def fire_agent(agent_id: str, request: FireRequest = None):
     if not success:
         raise HTTPException(status_code=400, detail="에이전트를 해고할 수 없습니다.")
 
+    try:
+        from jinxus.personality.manager import get_personality_manager
+        get_personality_manager().invalidate()
+    except Exception:
+        pass
+
     return {
         "success": True,
         "agent_id": agent_id,
@@ -132,6 +144,12 @@ async def rehire_agent(agent_id: str):
 
     if not record:
         raise HTTPException(status_code=400, detail="에이전트를 재고용할 수 없습니다.")
+
+    try:
+        from jinxus.personality.manager import get_personality_manager
+        get_personality_manager().invalidate()
+    except Exception:
+        pass
 
     return {
         "success": True,

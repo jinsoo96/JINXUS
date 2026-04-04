@@ -10,7 +10,6 @@ import { SIDEBAR_POLLING_MS } from '@/lib/constants';
 
 const tabs = [
   { id: 'mission', label: 'Office', icon: Target },
-  { id: 'team', label: 'Corporation', icon: Building2 },
   { id: 'autopilot', label: 'Autopilot', icon: Zap },
   { id: 'projects', label: 'Projects', icon: FolderKanban },
   { id: 'memory', label: 'Memory', icon: Brain },

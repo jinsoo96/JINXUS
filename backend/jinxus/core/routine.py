@@ -188,6 +188,28 @@ class RoutineManager:
             if routine.next_run_at <= 0 or routine.next_run_at > now:
                 continue
 
+            # Autonomy config 체크 — autopilot 꺼져있거나 level 0이면 스킵
+            if routine.assigned_agent:
+                try:
+                    from jinxus.core.trigger_engine import get_trigger_engine
+                    autonomy = await get_trigger_engine().get_autonomy_config(routine.assigned_agent)
+                    if not autonomy.autopilot_enabled:
+                        logger.info(f"[Routine] {routine.name} skip (autopilot 비활성: {routine.assigned_agent})")
+                        await self.update(
+                            routine.id,
+                            next_run_at=cron_next_run(routine.cron_expr, now),
+                        )
+                        continue
+                    if autonomy.autonomy_level <= 0:
+                        logger.info(f"[Routine] {routine.name} skip (autonomy_level=0 관찰 모드: {routine.assigned_agent})")
+                        await self.update(
+                            routine.id,
+                            next_run_at=cron_next_run(routine.cron_expr, now),
+                        )
+                        continue
+                except Exception as e:
+                    logger.debug(f"[Routine] Autonomy 체크 실패 (무시): {e}")
+
             # 동시성 정책 체크
             if routine.concurrency_policy == ConcurrencyPolicy.SKIP_IF_ACTIVE.value:
                 if self._running.get(routine.id):
@@ -237,6 +259,22 @@ class RoutineManager:
         """루틴 → 미션 생성 및 실행"""
         r = await self._get_redis()
         runs_key = _ROUTINE_RUNS_KEY.format(routine_id=routine.id)
+
+        # Budget 체크 — HARD_STOP이면 스킵
+        if routine.assigned_agent:
+            try:
+                from jinxus.core.budget import get_budget_manager
+                if await get_budget_manager().should_block(routine.assigned_agent):
+                    logger.warning(f"[Routine] {routine.name} 예산 초과 스킵 (agent={routine.assigned_agent})")
+                    run.status = "skipped"
+                    run.result = "예산 초과로 스킵"
+                    run.completed_at = time.time()
+                    await r.rpush(runs_key, json.dumps(asdict(run), ensure_ascii=False))
+                    self.mark_complete(routine.id)
+                    return
+            except Exception as e:
+                logger.debug(f"[Routine] Budget 체크 실패 (무시): {e}")
+
         try:
             from jinxus.core.mission_executor_v4 import get_mission_executor_v4
             from jinxus.core.mission_router import get_mission_router

@@ -18,7 +18,7 @@ interface AppState {
   personasVersion: number;  // loadPersonas 완료 시 증가 → 구독 컴포넌트 리렌더링 트리거
 
   // 현재 탭
-  activeTab: 'mission' | 'team' | 'projects' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes' | 'workflow' | 'autopilot';
+  activeTab: 'mission' | 'projects' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes' | 'workflow' | 'autopilot';
 
   // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
   logsAgentFilter: string;

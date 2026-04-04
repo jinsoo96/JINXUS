@@ -11,8 +11,8 @@ import { systemApi } from '@/lib/api';
 // MissionTab(Office)은 항상 마운트 (기본 탭) — 서브탭으로 근무 환경/업무 포함
 const MissionTab = dynamic(() => import('@/components/tabs/MissionTab'), { ssr: false });
 const WhiteboardPanel = dynamic(() => import('@/components/playground/WhiteboardPanel'), { ssr: false });
-// 자주 쓰는 탭은 항상 마운트 유지 — 탭 전환 시 로딩 없음
-const TeamTab = dynamic(() => import('@/components/tabs/TeamTab'), { ssr: false });
+// AgentsTab — Office Members 서브탭용
+const AgentsTab = dynamic(() => import('@/components/tabs/AgentsTab'), { ssr: false });
 // 나머지 탭은 lazy load (ssr: false — 클라이언트 전용)
 const ProjectsTab = dynamic(() => import('@/components/tabs/ProjectsTab'), { ssr: false });
 const MemoryTab = dynamic(() => import('@/components/tabs/MemoryTab'), { ssr: false });
@@ -29,7 +29,7 @@ export default function Home() {
   useEffect(() => {
     // URL 해시로 초기 탭 설정 (예: #mission, #team, #settings)
     const hash = window.location.hash.slice(1);
-    const validTabs = ['mission', 'team', 'projects', 'memory', 'logs', 'tools', 'notes', 'workflow', 'autopilot', 'settings'] as const;
+    const validTabs = ['mission', 'projects', 'memory', 'logs', 'tools', 'notes', 'workflow', 'autopilot', 'settings'] as const;
     if (hash && validTabs.includes(hash as typeof validTabs[number])) {
       setActiveTab(hash as typeof validTabs[number]);
     }
@@ -55,10 +55,7 @@ export default function Home() {
           <div className={activeTab === 'mission' ? 'h-full overflow-hidden' : 'hidden'}>
             <ErrorBoundary><MissionTab isActive={activeTab === 'mission'} /></ErrorBoundary>
           </div>
-          {/* Corporation (팀 관리 + 조직도) */}
-          <div className={activeTab === 'team' ? 'h-full overflow-hidden p-3 sm:p-4 md:p-6' : 'hidden'}>
-            <ErrorBoundary><TeamTab isActive={activeTab === 'team'} /></ErrorBoundary>
-          </div>
+          {/* Corporation 삭제됨 — Members는 MissionTab 서브탭으로 이동 */}
           {/* 나머지 탭은 필요할 때만 마운트 */}
           {activeTab === 'projects' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="projects"><ProjectsTab /></ErrorBoundary></div>}
           {activeTab === 'memory' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="memory"><MemoryTab /></ErrorBoundary></div>}

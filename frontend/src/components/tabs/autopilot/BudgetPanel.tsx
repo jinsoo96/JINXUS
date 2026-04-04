@@ -75,7 +75,8 @@ export default function BudgetPanel({ isActive }: { isActive: boolean }) {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setMonthOffset(o => o - 1)}
-            className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500"><ChevronLeft size={16} /></button>
+            disabled={getMonthStr(monthOffset - 1) < '2026-04'}
+            className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 disabled:opacity-30"><ChevronLeft size={16} /></button>
           <span className="text-sm text-zinc-400 font-mono w-20 text-center">{month}</span>
           <button onClick={() => setMonthOffset(o => Math.min(0, o + 1))} disabled={monthOffset >= 0}
             className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 disabled:opacity-30"><ChevronRight size={16} /></button>

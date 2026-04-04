@@ -71,6 +71,7 @@ class HeartbeatEngine:
         self._running_heartbeats: dict[str, bool] = {}
         self._configs: dict[str, HeartbeatConfig] = {}
         self._task: Optional[asyncio.Task] = None
+        self._last_findings: dict[str, dict] = {}  # 스텝 간 발견사항 공유
 
     async def _get_redis(self) -> aioredis.Redis:
         if self._redis is None:
@@ -132,15 +133,21 @@ class HeartbeatEngine:
         try:
             config = self._configs.get(agent, HeartbeatConfig(agent=agent))
 
-            # 체크리스트 실행
-            for step in config.checklist:
-                step_result = await self._execute_step(agent, step, reason, context, on_step)
-                result.steps_executed.append(f"{step}: {step_result}")
+            # trigger 이유: context를 미션 템플릿으로 직접 실행
+            if reason == WakeReason.TRIGGER.value and context:
+                step_result = await self._fire_trigger_mission(agent, context, on_step)
+                result.steps_executed.append(f"trigger_mission: {step_result}")
+                result.tasks_completed = 1 if step_result.startswith("m-") else 0
+            else:
+                # scheduled/manual: 체크리스트 실행
+                for step in config.checklist:
+                    step_result = await self._execute_step(agent, step, reason, context, on_step)
+                    result.steps_executed.append(f"{step}: {step_result}")
 
-                if step == "check_inbox":
-                    result.messages_processed = int(step_result) if step_result.isdigit() else 0
-                elif step == "check_assigned_tasks":
-                    result.tasks_found = int(step_result) if step_result.isdigit() else 0
+                    if step == "check_inbox":
+                        result.messages_processed = int(step_result) if step_result.isdigit() else 0
+                    elif step == "check_assigned_tasks":
+                        result.tasks_found = int(step_result) if step_result.isdigit() else 0
 
             # 다음 heartbeat 시간 기록
             r = await self._get_redis()
@@ -189,18 +196,133 @@ class HeartbeatEngine:
             return str(len(messages))
 
         elif step == "check_assigned_tasks":
-            # TODO: TaskStore에서 에이전트 할당 작업 확인
-            return "0"
+            return await self._step_check_assigned_tasks(agent)
 
         elif step == "check_whiteboard":
-            # TODO: 화이트보드 새 항목 확인
-            return "0"
+            return await self._step_check_whiteboard(agent)
 
         elif step == "report_findings":
-            # TODO: 발견사항 CORE에게 보고
-            return "done"
+            return await self._step_report_findings(agent)
 
         return "skip"
+
+    # ── 체크리스트 스텝 구현 ──
+
+    async def _step_check_assigned_tasks(self, agent: str) -> str:
+        """에이전트에게 할당된 미완료 미션 수 확인"""
+        try:
+            from jinxus.core.mission import get_mission_store, MissionStatus
+            store = get_mission_store()
+            # briefing + in_progress 상태의 미션 중 이 에이전트가 할당된 것
+            count = 0
+            for status in (MissionStatus.BRIEFING, MissionStatus.IN_PROGRESS):
+                missions = await store.list_by_status(status, limit=50)
+                for m in missions:
+                    if agent in m.assigned_agents:
+                        count += 1
+            # _findings에 캐시 (report_findings에서 사용)
+            self._last_findings[agent] = self._last_findings.get(agent, {})
+            self._last_findings[agent]["pending_tasks"] = count
+            return str(count)
+        except Exception as e:
+            logger.error(f"[Heartbeat] check_assigned_tasks 실패 ({agent}): {e}")
+            return "0"
+
+    async def _step_check_whiteboard(self, agent: str) -> str:
+        """화이트보드에서 NEW 상태 메모 수 확인"""
+        try:
+            from jinxus.core.whiteboard import get_whiteboard_store
+            wb = get_whiteboard_store()
+            new_memos = await wb.list_new_memos()
+            count = len(new_memos)
+            # 발견한 메모 ID 캐시
+            self._last_findings[agent] = self._last_findings.get(agent, {})
+            self._last_findings[agent]["new_memo_ids"] = [m.id for m in new_memos]
+            self._last_findings[agent]["new_memos"] = count
+            # 발견 표시
+            for memo in new_memos:
+                await wb.mark_discovered(memo.id, agent)
+            return str(count)
+        except Exception as e:
+            logger.error(f"[Heartbeat] check_whiteboard 실패 ({agent}): {e}")
+            return "0"
+
+    async def _step_report_findings(self, agent: str) -> str:
+        """발견사항이 있으면 미션 자동 생성 및 실행"""
+        findings = self._last_findings.pop(agent, {})
+        pending_tasks = findings.get("pending_tasks", 0)
+        new_memos = findings.get("new_memos", 0)
+        new_memo_ids = findings.get("new_memo_ids", [])
+
+        if pending_tasks == 0 and new_memos == 0:
+            return "nothing_found"
+
+        try:
+            from jinxus.core.mission_router import get_mission_router
+            from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+            from jinxus.core.whiteboard import get_whiteboard_store
+
+            mission_router = get_mission_router()
+            executor = get_mission_executor_v4()
+            wb = get_whiteboard_store()
+            created_missions = []
+
+            # 새 메모마다 미션 생성
+            for memo_id in new_memo_ids:
+                memo = await wb.get(memo_id)
+                if not memo:
+                    continue
+                description = f"[화이트보드 메모] {memo.title}\n\n{memo.content}"
+                mission = await mission_router.create_mission(
+                    description,
+                    session_id=f"heartbeat:{agent}",
+                )
+                # 화이트보드 항목에 미션 연결
+                await wb.mark_claimed(memo_id, mission.id)
+                executor.start_mission(mission)
+                created_missions.append(mission.id)
+                logger.info(
+                    f"[Heartbeat] {agent} 메모 → 미션 생성: "
+                    f"'{memo.title}' → {mission.id}"
+                )
+
+            if created_missions:
+                return f"missions_created:{','.join(created_missions)}"
+            return "nothing_actionable"
+
+        except Exception as e:
+            logger.error(f"[Heartbeat] report_findings 실패 ({agent}): {e}")
+            return f"error:{str(e)[:100]}"
+
+    async def _fire_trigger_mission(
+        self,
+        agent: str,
+        context: str,
+        on_step: Optional[Callable] = None,
+    ) -> str:
+        """트리거 reason: context를 미션 템플릿으로 직접 미션 생성 및 실행"""
+        if on_step:
+            await on_step(agent, "trigger_mission")
+        try:
+            from jinxus.core.mission_router import get_mission_router
+            from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+
+            mission_router = get_mission_router()
+            executor = get_mission_executor_v4()
+
+            mission = await mission_router.create_mission(
+                context,
+                session_id=f"trigger:{agent}",
+            )
+            executor.start_mission(mission)
+            logger.info(
+                f"[Heartbeat] 트리거 미션 생성: {agent} → {mission.id} "
+                f"'{context[:50]}...'"
+            )
+            return mission.id
+        except Exception as e:
+            logger.error(f"[Heartbeat] 트리거 미션 생성 실패 ({agent}): {e}")
+            return f"error:{str(e)[:100]}"
 
     async def mention_wake(self, agent: str, from_agent: str, message: str) -> HeartbeatResult:
         """@멘션으로 에이전트 깨우기"""

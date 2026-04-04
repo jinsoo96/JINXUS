@@ -64,6 +64,14 @@ export default function RoutinePanel({ isActive }: { isActive: boolean }) {
     finally { setCreating(false); }
   };
 
+  const handleToggle = async (id: string) => {
+    try {
+      const updated = await aaiApi.toggleRoutine(id);
+      setRoutines(prev => prev.map(r => r.id === id ? { ...r, status: updated.status } : r));
+      toast.success(updated.status === 'paused' ? '루틴 일시정지' : '루틴 재개');
+    } catch { toast.error('상태 변경 실패'); }
+  };
+
   const handleDelete = async (id: string) => {
     try {
       await aaiApi.deleteRoutine(id);
@@ -86,11 +94,18 @@ export default function RoutinePanel({ isActive }: { isActive: boolean }) {
     const parts = expr.split(' ');
     if (parts.length !== 5) return expr;
     const [min, hour, dom, mon, dow] = parts;
-    if (dom === '*' && mon === '*' && dow === '*') return `매일 ${hour}:${min.padStart(2, '0')}`;
-    if (dom === '*' && mon === '*' && dow === '1') return `매주 월요일 ${hour}:${min.padStart(2, '0')}`;
-    if (dom === '*' && mon === '*' && dow === '1-5') return `평일 ${hour}:${min.padStart(2, '0')}`;
+    // */N 분마다
+    const everyMin = min.match(/^\*\/(\d+)$/);
+    if (everyMin && hour === '*') return `${everyMin[1]}분마다`;
+    // 매시 정각
     if (min === '0' && hour === '*') return '매시간';
-    if (min === '*/30') return '30분마다';
+    // 매일 HH:MM
+    if (dom === '*' && mon === '*' && dow === '*' && hour !== '*') return `매일 ${hour}:${min.padStart(2, '0')}`;
+    // 평일
+    if (dom === '*' && mon === '*' && dow === '1-5') return `평일 ${hour}:${min.padStart(2, '0')}`;
+    // 요일별
+    const dayNames: Record<string, string> = { '0': '일', '1': '월', '2': '화', '3': '수', '4': '목', '5': '금', '6': '토' };
+    if (dom === '*' && mon === '*' && dayNames[dow]) return `매주 ${dayNames[dow]}요일 ${hour}:${min.padStart(2, '0')}`;
     return expr;
   };
 
@@ -195,6 +210,17 @@ export default function RoutinePanel({ isActive }: { isActive: boolean }) {
                       <span className="text-[10px] text-zinc-600 mr-2">
                         다음: {new Date(r.next_run_at * 1000).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' })}
                       </span>
+                    )}
+                    {r.status !== 'archived' && (
+                      <button onClick={e => { e.stopPropagation(); handleToggle(r.id); }}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          r.status === 'active'
+                            ? 'hover:bg-amber-500/20 text-zinc-600 hover:text-amber-400'
+                            : 'hover:bg-green-500/20 text-zinc-600 hover:text-green-400'
+                        }`}
+                        title={r.status === 'active' ? '일시정지' : '재개'}>
+                        {r.status === 'active' ? <Pause size={13} /> : <Play size={13} />}
+                      </button>
                     )}
                     <button onClick={e => { e.stopPropagation(); handleDelete(r.id); }}
                       className="p-1.5 rounded-lg hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors">

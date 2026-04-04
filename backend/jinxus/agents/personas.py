@@ -37,6 +37,7 @@ class AgentPersona:
     collaboration_note: str = ""    # 팀워크 특성
     personality_id: str = ""        # personality.py 아키타입 ID (빈 문자열 → 랜덤)
     rank: int = 4                    # 직급 순위 (0=CEO, 1=C-Suite, 2=팀장, 3=시니어, 4=일반)
+    gender: str = "M"               # M=남성, F=여성 (TTS voice 선택, 아바타 등에 사용)
 
 
 PERSONAS: Dict[str, AgentPersona] = {
@@ -61,6 +62,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "product"),
         personality_id="strategist",
         rank=0,  # CEO
+        gender="M",
     ),
 
     "JX_COO": AgentPersona(
@@ -89,6 +91,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "biz-support"),
         personality_id="commander",
         rank=1,
+        gender="M",
     ),
 
     "JX_CFO": AgentPersona(
@@ -117,6 +120,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "biz-support"),
         personality_id="analyst",
         rank=1,
+        gender="F",
     ),
 
     "JX_CODER": AgentPersona(
@@ -145,6 +149,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "dev"),
         personality_id="rebel",
         rank=2,
+        gender="M",
     ),
 
     "JX_FRONTEND": AgentPersona(
@@ -254,6 +259,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("dev",),
         personality_id="mediator",
         rank=3,
+        gender="M",
     ),
 
     "JX_TESTER": AgentPersona(
@@ -309,6 +315,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "product"),
         personality_id="lone_wolf",
         rank=2,
+        gender="F",
     ),
 
     "JX_WEB_SEARCHER": AgentPersona(
@@ -445,6 +452,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("biz-support", "general"),
         personality_id="analyst",
         rank=3,
+        gender="M",
     ),
 
     "JX_OPS": AgentPersona(
@@ -473,6 +481,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("biz-support",),
         personality_id="pragmatist",
         rank=3,
+        gender="M",
     ),
 
     "JS_PERSONA": AgentPersona(
@@ -529,6 +538,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "dev", "platform"),
         personality_id="sentinel",
         rank=1,
+        gender="F",
     ),
 
     "JX_MARKETING": AgentPersona(
@@ -557,6 +567,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("marketing", "general"),
         personality_id="visionary",
         rank=2,
+        gender="M",
     ),
 
     "JX_SNS": AgentPersona(
@@ -612,6 +623,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("platform",),
         personality_id="lone_wolf",
         rank=3,
+        gender="M",
     ),
 
     "JX_SECURITY": AgentPersona(
@@ -640,6 +652,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("platform",),
         personality_id="guardian",
         rank=3,
+        gender="M",
     ),
 
     "JX_DATA_ENG": AgentPersona(
@@ -668,6 +681,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("platform", "biz-support"),
         personality_id="craftsman",
         rank=3,
+        gender="M",
     ),
 
     "JX_MOBILE": AgentPersona(
@@ -723,6 +737,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("dev", "platform"),
         personality_id="strategist",
         rank=2,
+        gender="M",
     ),
 
     "JX_PROMPT_ENG": AgentPersona(
@@ -778,6 +793,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("product", "general"),
         personality_id="pioneer",
         rank=3,
+        gender="M",
     ),
 
     "JX_PRODUCT": AgentPersona(
@@ -806,6 +822,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("product", "general"),
         personality_id="innovator",
         rank=2,
+        gender="F",
     ),
 
     "JX_SECRETARY": AgentPersona(
@@ -833,6 +850,7 @@ PERSONAS: Dict[str, AgentPersona] = {
         channels=("general", "biz-support"),
         personality_id="coordinator",
         rank=3,  # 시니어
+        gender="F",
     ),
 }
 
