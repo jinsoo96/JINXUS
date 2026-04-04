@@ -50,6 +50,16 @@ function matrixEventToChatMsg(ev: MatrixEvent, channel: ChannelId): ChatMsg | nu
 
 // ── 하위 컴포넌트 ──────────────────────────────────────────────────────
 
+// 날짜 구분선 (Geny DateDivider 패턴)
+const DateDivider = memo(({ date }: { date: string }) => (
+  <div className="flex items-center gap-3 px-4 py-2 my-1">
+    <div className="flex-1 h-px bg-zinc-800" />
+    <span className="text-[10px] text-zinc-600 font-medium">{date}</span>
+    <div className="flex-1 h-px bg-zinc-800" />
+  </div>
+));
+DateDivider.displayName = 'DateDivider';
+
 const ChatMessage = memo(({ msg }: { msg: ChatMsg }) => {
   const time = new Date(msg.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   return (
@@ -442,10 +452,11 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
     };
     const abort = new AbortController();
     // cleared_at를 SSE 스트림에 전달하여 서버 측 필터링
-    const clearedParam = JSON.stringify(clearedAtRef.current);
+    // clearedAt 변경 시 SSE 재연결하�� 삭제된 메시지 재수신 방지
+    const clearedParam = JSON.stringify(clearedAt);
     channelApi.streamChannel(onData, abort.signal, undefined, clearedParam);
     return () => abort.abort();
-  }, [isActive]);
+  }, [isActive, clearedAt]);
 
   // activeChannel ref 동기화
   useEffect(() => {
@@ -588,14 +599,26 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
                 try {
                   await channelApi.clearHistory(activeChannel);
                 } catch { /* Redis 삭제 실패해도 로컬은 정리 */ }
-                // 로컬 메시지 초기화 + clearedAt 기록
-                setMessages(prev => ({ ...prev, [activeChannel]: [] }));
+                // clearedAt을 ref + state + localStorage 동시 업데이트 (Matrix sync race 방지)
                 const now = new Date().toISOString();
-                setClearedAt(prev => {
-                  const next = { ...prev, [activeChannel]: now };
-                  localStorage.setItem('channel_cleared_at', JSON.stringify(next));
-                  return next;
+                const next = { ...clearedAtRef.current, [activeChannel]: now };
+                clearedAtRef.current = next;  // ref 즉시 업데이트 (processEvents가 바로 참조)
+                localStorage.setItem('channel_cleared_at', JSON.stringify(next));
+                // 로컬 메시지 초기화 + 다른 채널도 clearedAt 기준 필터링
+                setMessages(prev => {
+                  const cleaned: Record<string, ChatMsg[]> = {};
+                  for (const ch of Object.keys(prev)) {
+                    if (ch === activeChannel) {
+                      cleaned[ch] = [];
+                    } else if (next[ch]) {
+                      cleaned[ch] = (prev[ch] ?? []).filter(m => m.createdAt > next[ch]);
+                    } else {
+                      cleaned[ch] = prev[ch] ?? [];
+                    }
+                  }
+                  return cleaned;
                 });
+                setClearedAt(next);
               }}
               title="현재 채널 대화 전체 삭제"
               className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
@@ -631,7 +654,19 @@ export default function CompanyChat({ isActive }: { isActive: boolean }) {
               <p className="text-sm">Matrix 연결 중...</p>
             </div>
           ) : (
-            currentMessages.map(msg => <ChatMessage key={msg.id} msg={msg} />)
+            currentMessages.map((msg, idx) => {
+              // DateDivider: 이전 메시지와 날짜가 다르면 구분선 삽입
+              const prev = idx > 0 ? currentMessages[idx - 1] : null;
+              const msgDate = new Date(msg.createdAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+              const prevDate = prev ? new Date(prev.createdAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' }) : null;
+              const showDivider = !prev || msgDate !== prevDate;
+              return (
+                <div key={msg.id}>
+                  {showDivider && <DateDivider date={msgDate} />}
+                  <ChatMessage msg={msg} />
+                </div>
+              );
+            })
           )}
 
           {visibleApprovals.map(ap => (

@@ -557,10 +557,16 @@ class DynamicToolExecutor:
                 input_summary = {k: (str(v)[:80] + "..." if len(str(v)) > 80 else v) for k, v in tool_input.items()}
                 logger.info(f"[{self._agent_name}] TOOL_CALL {original_tool_name}({input_summary})")
 
+                # 도구 입력 요약 (calling 콜백용)
+                _input_detail = ", ".join(
+                    f"{k}={str(v)[:60]}{'...' if len(str(v)) > 60 else ''}"
+                    for k, v in list(tool_input.items())[:2]
+                )
+
                 # 도구 호출 시작 콜백
                 if tool_callback:
                     try:
-                        await tool_callback(original_tool_name, "calling")
+                        await tool_callback(original_tool_name, "calling", _input_detail)
                     except Exception as e:
                         logger.warning(f"[DynamicToolExecutor] 도구 시작 콜백 실패 ({original_tool_name}): {e}")
 
@@ -571,7 +577,7 @@ class DynamicToolExecutor:
                 all_raw_results.append(result)
 
                 success = result.get("success", False)
-                result_preview = str(result.get("output") or result.get("error", ""))[:150]
+                result_preview = str(result.get("output") or result.get("error", ""))[:100]
                 logger.info(f"[{self._agent_name}] TOOL_RESULT {original_tool_name} {'OK' if success else 'FAIL'} {_tool_duration:.0f}ms | {result_preview}")
 
                 # 도구 실행 메트릭 기록
@@ -594,10 +600,10 @@ class DynamicToolExecutor:
                 except Exception as e:
                     logger.warning(f"[DynamicToolExecutor] 도구 호출 로그 기록 실패 ({original_tool_name}): {e}")
 
-                # 도구 호출 완료 콜백
+                # 도구 호출 완료 콜백 (결과 요약 포함)
                 if tool_callback:
                     try:
-                        await tool_callback(original_tool_name, "done" if success else "error")
+                        await tool_callback(original_tool_name, "done" if success else "error", result_preview)
                     except Exception as e:
                         logger.warning(f"[DynamicToolExecutor] 도구 완료 콜백 실패 ({original_tool_name}): {e}")
 

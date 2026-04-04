@@ -1,5 +1,97 @@
 # JINXUS 개발 현황
 
+## v4.1.1 (2026-04-04) — 버그픽스: 도구 사용 불가 / 로그 소실 / 병렬 이벤트
+
+### 수정된 버그 3건
+
+1. **도구 사용 불가 (모든 에이전트)**: `JXResearcher`, `JXCoder`, 코딩/리서치 전문가 에이전트 10개가 `BaseAgent`를 상속하지 않아 `_make_tool_callback()` 메서드 누락 → `DynamicToolExecutor` 실행 시 `AttributeError` 발생 → MCP/도구 사용 전체 실패. `AgentCallbackMixin` 클래스 도입 후 모든 에이전트가 상속.
+
+2. **미션 완료 후 로그 소실**: `mission_executor.py`에서 `save(mission)` 호출 시 로컬 객체(빈 `agent_conversations`)로 Redis를 덮어씀. `add_conversation()`이 Redis에 저장한 대화 로그가 전부 소멸. `_sync_conversations()` 메서드 도입 — `save()` 전 Redis에서 최신 conversations 동기화 (v4 executor 패턴 적용).
+
+3. **순차 실행 시 agent_started 순서 오류**: 모든 에이전트 `agent_started` 이벤트를 실행 전 일괄 전송하여 병렬/순차 구분 불가. 병렬 모드는 유지, 순차 모드는 각 에이전트 실행 직전에 구조화 콜백(`{{specialist_started:NAME}}`)으로 전송하도록 수정.
+
+| 파일 | 변경 내용 |
+|------|---------|
+| `agents/base_agent.py` | `AgentCallbackMixin` 클래스 추가 (`_make_tool_callback`, `_report_progress`). `BaseAgent`가 상속 |
+| `agents/jx_researcher.py`, `jx_coder.py` | `AgentCallbackMixin` 상속 추가 |
+| `agents/research/*.py` (3개) | `AgentCallbackMixin` 상속 추가 |
+| `agents/coding/*.py` (5개) | `AgentCallbackMixin` 상속 추가 |
+| `core/mission_executor.py` | `_sync_conversations()` 추가, 모든 `save()` 전 동기화 |
+| `agents/jinxus_core.py` | 순차 모드에서 `agent_started` 이벤트를 실행 직전 콜백으로 전송 |
+
+### 추가 수정 (v4.1.1b)
+
+4. **태스크로그에 JX_ 코드 노출**: `base_agent.py`의 `AgentCallbackMixin._make_tool_callback`·`_report_progress`에서 `self.name` (raw `JX_RESEARCHER` 등) 그대로 노출. `_agent_display_name()` 함수로 페르소나 Korean name 변환. `jx_researcher._run_specialist`·`jx_coder._run_specialist` 내 fallback 메시지도 동일 적용.
+
+| 파일 | 변경 내용 |
+|------|---------|
+| `agents/base_agent.py` | `_agent_display_name()` 함수 추가, `AgentCallbackMixin`에서 활용 |
+| `agents/jx_researcher.py` | `_agent_display_name` import + `_run_specialist` 메시지 한국어 이름 변환 |
+| `agents/jx_coder.py` | `_agent_display_name` import + `_run_specialist` fallback 메시지 변환 |
+
+## v4.1.0 (2026-04-03) — 화이트보드 시스템 (AAI Phase 2)
+
+AAI 로드맵 2단계 "Shared Whiteboard" 구현. 복도 중앙에 대형 화이트보드를 설치하고,
+에이전트가 자율적으로 발견 → CORE에 보고 → 자동 미션 생성하는 파이프라인 구축.
+
+### 화이트보드 항목 2종류
+- **지침사항(guideline)**: 업무 규칙. 항상 활성 상태로 미션 컨텍스트에 주입됨
+- **메모(memo)**: 녹음/직접입력. 에이전트가 발견 시 자동으로 미션 생성 + 실행
+
+### 백엔드
+
+| 파일 | 설명 |
+|------|------|
+| `core/whiteboard.py` | WhiteboardStore (Redis) + WhiteboardItem 모델. 상태: new→seen→claimed→done→archived |
+| `api/routers/whiteboard.py` | CRUD API + `POST /{id}/discover` (에이전트 발견 → 지침사항 수집 → 미션 자동 생성) |
+| `api/routers/__init__.py` | whiteboard_router 등록 |
+| `api/server.py` | 라우터 포함 + WhiteboardStore Redis 종료 처리 |
+
+### 프론트엔드
+
+| 파일 | 설명 |
+|------|------|
+| `map/mapData.ts` | 복도 중앙(col:20, row:18)에 `main_whiteboard` POI + `wb_main` 가구(3타일 너비) |
+| `sprites/furniture.ts` | `makeMainWhiteboard()` — 포스트잇 스타일 대형 화이트보드 스프라이트 |
+| `WhiteboardPanel.tsx` | 모달 오버레이 — 전체/지침/메모 탭, CRUD, 상태 뱃지, 태그 |
+| `PixelOffice.tsx` | ① 클릭 감지(타일 19-21, 17-18) → 패널 오픈 ② 에이전트 POI 도착 시 새 메모 발견 → discover API → 자동 미션 ③ 글로우+뱃지 시각 효과 ④ 30초 폴링 |
+| `api.ts` | `whiteboardApi` — listAll/getGuidelines/getNewMemos/createItem/updateItem/deleteItem/discoverItem |
+| `store/useAppStore.ts` | `whiteboardOpen` / `setWhiteboardOpen` 상태 |
+| `app/page.tsx` | WhiteboardPanel 글로벌 오버레이 마운트 |
+
+### JX_SECRETARY — WaveNoter 자동 동기화 에이전트
+
+| 파일 | 설명 |
+|------|------|
+| `agents/personas.py` | JX_SECRETARY(정소율) 페르소나 — 경영팀, 비서, rank 3 |
+| `config/mcp_servers.py` | Playwright MCP allowed_agents에 JX_SECRETARY 추가 |
+| `core/wavenote_sync.py` | WaveNoter 루틴 정의 — 미션 템플릿 + 서버 시작 시 자동 등록 |
+| `api/server.py` | lifespan에 `ensure_wavenote_routine()` 호출 |
+| `frontend/src/lib/personas.ts` | JX_SECRETARY 정적 fallback 추가 |
+
+**루틴 흐름:**
+```
+10분마다 (cron: */10 * * * *) → RoutineManager 트리거
+  → JX_SECRETARY에게 미션 배정
+  → Playwright(headless)로 app.wavenote.ai 접속
+  → 새 녹음 확인 → 화이트보드 API(POST /whiteboard)로 메모 등록
+  → 에이전트가 화이트보드에서 발견 → 자동 미션 생성
+```
+
+### 실행 흐름
+```
+사용자: 메모 등록 (UI 또는 API)
+  → 화이트보드에 NEW 표시 (파란 글로우 + 빨간 뱃지)
+  → 에이전트가 배회 중 main_whiteboard POI 방문
+  → "📋 확인 중..." 말풍선 + 8-13초 체류
+  → NEW 메모 있으면 discover API 호출
+  → 지침사항도 미션 프롬프트에 함께 주입
+  → JINXUS_CORE가 미션 분류 → 에이전트 배정 → 실행
+  → OFFICE FEED에 "화이트보드에서 발견 → 미션 생성" 기록
+```
+
+---
+
 ## v4.0.0 (2026-04-01) — AAI 인프라 + Geny/Paperclip 패턴 도입
 
 Geny(자율주행 에이전트)와 Paperclip(회사 시뮬레이션)의 핵심 패턴을 분석하고 JINXUS에 적용.
@@ -50,6 +142,57 @@ Agent-Agent Interaction(AAI) 로드맵의 인프라 기반을 구축.
 ### 프론트엔드
 
 - `lib/toast-gate.ts` — 이벤트 폭주 시 카테고리별 10초/3개 rate limiting (Paperclip 패턴)
+
+### Autopilot 탭 — 에이전트 자율 행동 관리 UI
+
+Geny, Stanford Generative Agents, AgentOffice, Smashing Magazine UX 패턴 조사 기반 구현.
+백엔드 AAI 인프라(heartbeat, routine, inbox, budget, goals, trigger)의 프론트엔드 UI를 신규 구축.
+
+**백엔드 추가:**
+| 모듈 | 설명 |
+|------|------|
+| `core/trigger_engine.py` | 트리거 레지스트리 (cron/event/idle/interaction/threshold). Redis 영속화. AutonomyConfig (에이전트별 자율 설정) |
+| `api/routers/aai.py` 확장 | `/aai/autonomy` (자율 설정 CRUD), `/aai/triggers` (트리거 CRUD) |
+
+**프론트엔드 구조:**
+| 컴포넌트 | 설명 |
+|----------|------|
+| `AutopilotTab.tsx` | 메인 탭 (서브탭 5개 라우팅) |
+| `autopilot/ControlPanel.tsx` | 에이전트 그리드 + Autonomy Dial (4단계: 관찰/계획/확인후실행/자율실행) + 하트비트 + 깨우기 + 마스터 토글 |
+| `autopilot/TriggerPanel.tsx` | 트리거 CRUD + 5가지 유형별 설정 폼 (cron/event/idle/interaction/threshold) |
+| `autopilot/CommsPanel.tsx` | 에이전트 간 인박스 뷰어 + 메시지 보내기 (채팅 UI) |
+| `autopilot/BudgetPanel.tsx` | 에이전트별 API 비용 대시보드 + 예산 수정 + 모델별 분포 + 월 선택기 |
+| `autopilot/RoutinePanel.tsx` | Cron 루틴 CRUD + 실행 이력 + cron→한국어 변환 |
+
+**API 배선:** `lib/api.ts`에 `aaiApi` 네임스페이스 (heartbeat/autonomy/triggers/routines/inbox/budget 전체)
+
+**UX 패턴:**
+- Autonomy Dial: Smashing Magazine "Shared Autonomy Controls" 패턴 (Watch→Plan→Confirm→Auto 4단계)
+- Bounded Autonomy: 에이전트별 자율성 레벨 독립 설정
+- Trigger Engine: 5가지 트리거 유형 (시간/이벤트/유휴/상호작용/임계값)
+
+### Geny 프론트엔드 12개 개선 (이어서 완료)
+
+| # | 항목 | 상태 |
+|---|------|------|
+| 1 | ExecutionTimeline (수직 타임라인 + 컬러 노드 + glow) | 완료 |
+| 2 | DiffViewer → FileChangeBadge 대체 구현 | 완료 |
+| 3 | thinking_preview (opacity + truncate) | 완료 |
+| 4 | FileChangeSummary (파일명+op 배지) | 완료 |
+| 5 | Dev Mode 토글 (Sidebar DEV 버튼) | 완료 |
+| 6 | DateDivider (CompanyChat 날짜 구분선) | 완료 |
+| 7 | CSS 변수 이중 테마 (:root dark + html.light) | 완료 |
+| 8 | **메모리 파일 트리** — 카테고리 하위에 실제 결과 노드 트리, 중요도 dot, 접기/펼치기 | 완료 |
+| 9 | **스키마 기반 Settings** — `/status/config/schema` API + SettingsTab 동적 설정 폼 (그룹별 필드, 런타임 변경) | 완료 |
+| 10 | 세션 상태 dot + glow (이미 구현됨) | 완료 |
+| 11 | **React Flow 워크플로우 에디터** — @xyflow/react 기반 에이전트 실행 그래프 시각화 (BFS 계층 레이아웃, MiniMap, Controls) | 완료 |
+| 12 | Live2D 아바타 | 미진행 (대규모 작업) |
+
+### 에이전트 내부 이름 노출 방지
+
+- `mission_executor.py`: 모든 SSE 이벤트(`from`, `to`, `agent`, `agents`, `agents_used`, `participants`)에서 내부 코드명(JX_CODER 등) → 한국어 표시 이름(이민준 등)으로 자동 치환
+- `_display_name()` / `_display_names()` 헬퍼 함수 (personas.py `get_all_personas()` 활용)
+- 업무노트 자동 생성 시 에이전트 이름도 치환
 
 ---
 

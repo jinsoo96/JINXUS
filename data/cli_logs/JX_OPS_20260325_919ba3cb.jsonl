@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-25T13:33:23.361062", "level": "COMMAND", "message": "현재 시간과 서버 디스크 용량을 확인하고 보고해", "metadata": {"timeout": null, "system_prompt_len": 0, "max_turns": 50}}
+{"timestamp": "2026-03-25T13:33:24.926069", "level": "STREAM", "message": "system_init", "metadata": {"model": "claude-sonnet-4-6", "tools_count": 24, "mcp_servers": []}}

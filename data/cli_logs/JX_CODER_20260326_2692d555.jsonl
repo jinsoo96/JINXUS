@@ -1,0 +1,7 @@
+{"timestamp": "2026-03-26T09:04:50.399265", "level": "COMMAND", "message": "현재 시간", "metadata": {"timeout": null, "system_prompt_len": 0, "max_turns": 50}}
+{"timestamp": "2026-03-26T09:04:51.802629", "level": "STREAM", "message": "system_init", "metadata": {"model": "claude-sonnet-4-6", "tools_count": 24, "mcp_servers": []}}
+{"timestamp": "2026-03-26T09:04:54.626257", "level": "STREAM", "message": "assistant_text", "metadata": {"text_preview": "2026년 3월 26일입니다.\n\n정확한 현재 시각이 필요하시면 시스템 시간을 확인해드리겠습니다.", "text_length": 53}}
+{"timestamp": "2026-03-26T09:04:55.007229", "level": "TOOL", "message": "Bash: `date`", "metadata": {"tool_name": "Bash", "tool_input": {"command": "date", "description": "현재 시간 확인"}, "tool_id": "toolu_01PVjSCuhPsEjEYKWyZ1B39m"}}
+{"timestamp": "2026-03-26T09:04:57.015003", "level": "STREAM", "message": "assistant_text", "metadata": {"text_preview": "**2026년 3월 26일 (목) 오전 9시 04분 55초 KST** 입니다.", "text_length": 43}}
+{"timestamp": "2026-03-26T09:04:57.031065", "level": "STREAM", "message": "result", "metadata": {"success": true, "duration_ms": 5317, "cost_usd": 0.0631386, "num_turns": 2}}
+{"timestamp": "2026-03-26T09:04:57.820794", "level": "RESPONSE", "message": "**2026년 3월 26일 (목) 오전 9시 04분 55초 KST** 입니다.", "metadata": {"success": true, "duration_ms": 7421, "cost_usd": 0.0631386}}

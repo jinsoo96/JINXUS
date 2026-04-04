@@ -18,8 +18,23 @@ from jinxus.core.mission import (
     Mission, MissionType, MissionStatus, get_mission_store,
 )
 from jinxus.core.agent_messenger import get_agent_messenger
+from jinxus.agents.personas import get_all_personas
 
 logger = logging.getLogger(__name__)
+
+
+def _display_name(agent_code: str) -> str:
+    """에이전트 내부 코드 → 한국어 표시 이름 변환"""
+    personas = get_all_personas()
+    p = personas.get(agent_code)
+    if p:
+        return p.full_name or p.korean_name
+    return agent_code
+
+
+def _display_names(agent_codes: list) -> list:
+    """에이전트 코드 리스트 → 표시 이름 리스트"""
+    return [_display_name(c) for c in agent_codes]
 
 
 # 오케스트레이터 thinking step → 한국어 라벨
@@ -43,6 +58,19 @@ class MissionExecutor:
         self._store = get_mission_store()
         self._messenger = get_agent_messenger()
         self._active_missions: Dict[str, asyncio.Task] = {}
+
+    async def _sync_conversations(self, mission: Mission) -> None:
+        """save() 전 Redis에 저장된 agent_conversations를 로컬 객체에 동기화.
+
+        add_conversation()은 Redis를 직접 갱신하지만 로컬 mission 객체는 업데이트하지 않는다.
+        save(mission) 호출 시 빈 conversations로 덮어쓰는 race condition을 방지한다.
+        """
+        try:
+            fresh = await self._store.get(mission.id)
+            if fresh and fresh.agent_conversations:
+                mission.agent_conversations = fresh.agent_conversations
+        except Exception as e:
+            logger.warning(f"[MissionExecutor] 대화 로그 동기화 실패 (무시): {e}")
 
     async def cleanup_orphan_missions(self):
         """서버 재시작 시 고아 미션 정리
@@ -116,17 +144,19 @@ class MissionExecutor:
 
             # === IN_PROGRESS ===
             mission.status = MissionStatus.IN_PROGRESS
+            await self._sync_conversations(mission)
             await self._store.save(mission)
 
             await self._emit(mission.id, {"event": "mission_status", "data": {
                 "id": mission.id, "status": "in_progress",
                 "message": "미션 수행 중...",
-                "agents": mission.assigned_agents,
+                "agents": _display_names(mission.assigned_agents),
             }})
 
             await self._execute_with_conversations(mission)
 
             # === REVIEW ===
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.REVIEW
             await self._store.save(mission)
 
@@ -141,6 +171,7 @@ class MissionExecutor:
             )
 
             # === COMPLETE ===
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.COMPLETE
             mission.completed_at = datetime.now().isoformat()
             await self._store.save(mission)
@@ -156,10 +187,11 @@ class MissionExecutor:
                 "title": mission.title,
                 "result": mission.result,
                 "duration_ms": mission.duration_ms,
-                "agents_used": mission.assigned_agents,
+                "agents_used": _display_names(mission.assigned_agents),
             }})
 
         except asyncio.CancelledError:
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.CANCELLED
             mission.completed_at = datetime.now().isoformat()
             await self._store.save(mission)
@@ -167,6 +199,7 @@ class MissionExecutor:
 
         except TimeoutError:
             logger.error(f"[MissionExecutor] 미션 타임아웃 {mission.id}")
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.FAILED
             mission.error = "미션 실행 시간 초과"
             mission.completed_at = datetime.now().isoformat()
@@ -178,6 +211,7 @@ class MissionExecutor:
 
         except Exception as e:
             logger.error(f"[MissionExecutor] 미션 실패 {mission.id}: {e}", exc_info=True)
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.FAILED
             mission.error = str(e)[:500]
             mission.completed_at = datetime.now().isoformat()
@@ -241,14 +275,14 @@ class MissionExecutor:
                         from_agent = current_agent
 
                     await self._store.add_conversation(
-                        mission.id, from_agent, None, msg[:200], "huddle"
+                        mission.id, from_agent, None, msg[:400], "huddle"
                     )
 
                     await self._emit(mission.id, {"event": "mission_thinking", "data": {
                         "id": mission.id,
                         "step": step,
-                        "detail": msg[:200],
-                        "from": from_agent,
+                        "detail": msg[:400],
+                        "from": _display_name(from_agent),
                         "timestamp": datetime.now().isoformat(),
                     }})
 
@@ -267,15 +301,15 @@ class MissionExecutor:
 
                     await self._emit(mission.id, {"event": "agent_dm", "data": {
                         "id": mission.id,
-                        "from": "JINXUS_CORE",
-                        "to": agent,
+                        "from": _display_name("JINXUS_CORE"),
+                        "to": _display_name(agent),
                         "message": msg,
                         "timestamp": datetime.now().isoformat(),
                     }})
 
                     await self._emit(mission.id, {"event": "mission_agent_activity", "data": {
                         "id": mission.id,
-                        "agent": agent,
+                        "agent": _display_name(agent),
                         "action": "working",
                     }})
 
@@ -288,7 +322,7 @@ class MissionExecutor:
                     if tool_calls:
                         await self._emit(mission.id, {"event": "mission_tool_calls", "data": {
                             "id": mission.id,
-                            "agent": agent,
+                            "agent": _display_name(agent),
                             "tools": tool_calls[:10],
                             "timestamp": datetime.now().isoformat(),
                         }})
@@ -301,15 +335,15 @@ class MissionExecutor:
 
                     await self._emit(mission.id, {"event": "agent_report", "data": {
                         "id": mission.id,
-                        "from": agent,
-                        "to": "JINXUS_CORE",
+                        "from": _display_name(agent),
+                        "to": _display_name("JINXUS_CORE"),
                         "message": report_msg,
                         "timestamp": datetime.now().isoformat(),
                     }})
 
                     await self._emit(mission.id, {"event": "mission_agent_activity", "data": {
                         "id": mission.id,
-                        "agent": agent,
+                        "agent": _display_name(agent),
                         "action": "done",
                     }})
 
@@ -320,7 +354,7 @@ class MissionExecutor:
                         "id": mission.id,
                         "message": data.get("message", "작업 계획을 확인해 주세요"),
                         "subtasks_count": data.get("subtasks_count", 0),
-                        "agents": data.get("agents", []),
+                        "agents": _display_names(data.get("agents", [])),
                         "timestamp": datetime.now().isoformat(),
                     }})
 
@@ -335,15 +369,15 @@ class MissionExecutor:
                     if count > 0:
                         await self._emit(mission.id, {"event": "huddle_message", "data": {
                             "id": mission.id,
-                            "from": "JINXUS_CORE",
-                            "message": f"📋 작업 {count}개 분해 완료 (모드: {mode})",
+                            "from": _display_name("JINXUS_CORE"),
+                            "message": f"작업 {count}개 분해 완료 (모드: {mode})",
                             "timestamp": datetime.now().isoformat(),
                         }})
 
                 elif evt == "start":
                     await self._emit(mission.id, {"event": "huddle_message", "data": {
                         "id": mission.id,
-                        "from": "JINXUS_CORE",
+                        "from": _display_name("JINXUS_CORE"),
                         "message": "미션 처리 시작합니다.",
                         "timestamp": datetime.now().isoformat(),
                     }})
@@ -360,6 +394,7 @@ class MissionExecutor:
 
         # QUICK 미션은 여기서 완료 처리
         if mission.type == MissionType.QUICK:
+            await self._sync_conversations(mission)
             mission.status = MissionStatus.COMPLETE
             mission.completed_at = datetime.now().isoformat()
             await self._store.save(mission)
@@ -368,9 +403,10 @@ class MissionExecutor:
                 "title": mission.title,
                 "result": mission.result,
                 "duration_ms": mission.duration_ms,
-                "agents_used": mission.assigned_agents,
+                "agents_used": _display_names(mission.assigned_agents),
             }})
         else:
+            await self._sync_conversations(mission)
             await self._store.save(mission)
 
     async def _run_briefing(self, mission: Mission):
@@ -383,7 +419,7 @@ class MissionExecutor:
 
         await self._emit(mission.id, {"event": "mission_huddle", "data": {
             "id": mission.id,
-            "participants": agents,
+            "participants": _display_names(agents),
             "topic": f"미션 브리핑: {mission.title}",
         }})
 
@@ -395,7 +431,7 @@ class MissionExecutor:
 
         await self._emit(mission.id, {"event": "mission_briefing_message", "data": {
             "id": mission.id,
-            "from": "JINXUS_CORE",
+            "from": _display_name("JINXUS_CORE"),
             "message": briefing_msg,
             "timestamp": datetime.now().isoformat(),
         }})
@@ -409,7 +445,7 @@ class MissionExecutor:
             )
             await self._emit(mission.id, {"event": "mission_briefing_message", "data": {
                 "id": mission.id,
-                "from": agent,
+                "from": _display_name(agent),
                 "message": "네, 맡겠습니다.",
                 "timestamp": datetime.now().isoformat(),
             }})
@@ -450,7 +486,8 @@ class MissionExecutor:
         conversations = mission.agent_conversations or []
         conv_lines = []
         for c in conversations[-20:]:
-            conv_lines.append(f"- **{c.get('from', '?')}**: {c.get('message', '')[:200]}")
+            sender = _display_name(c.get('from', '?'))
+            conv_lines.append(f"- **{sender}**: {c.get('message', '')[:200]}")
         conv_summary = "\n".join(conv_lines) if conv_lines else "(대화 없음)"
 
         duration_str = ""
@@ -473,7 +510,7 @@ class MissionExecutor:
 **미션 타입:** {type_label}
 **상태:** 완료
 **소요 시간:** {duration_str or '측정 안 됨'}
-**참여 에이전트:** {', '.join(mission.assigned_agents) if mission.assigned_agents else '없음'}
+**참여 에이전트:** {', '.join(_display_names(mission.assigned_agents)) if mission.assigned_agents else '없음'}
 
 ## 미션 요청
 

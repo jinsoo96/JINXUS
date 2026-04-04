@@ -16,6 +16,7 @@ from .channel import router as channel_router
 from .matrix import router as matrix_router
 from .mission import router as mission_router
 from .command import router as command_router
+from .whiteboard import router as whiteboard_router
 
 __all__ = [
     "chat_router",
@@ -36,4 +37,5 @@ __all__ = [
     "matrix_router",
     "mission_router",
     "command_router",
+    "whiteboard_router",
 ]

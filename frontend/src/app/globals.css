@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ── 다크 테마 (기본) ── Geny CSS 변수 이중 테마 패턴 */
+:root,
+html.dark {
   --foreground: #fafafa;
   --background: #0a0a0b;
   --gold: #d4a853;
@@ -29,6 +31,39 @@
   --z-modal: 40;
   --z-popover: 50;
   --z-toast: 100;
+
+  /* ── 코드 구문 강조 ── */
+  --code-bg: #1e1e2e;
+  --code-string: #a6e3a1;
+  --code-keyword: #cba6f7;
+  --code-comment: #585b70;
+  --code-number: #fab387;
+}
+
+/* ── 라이트 테마 ── */
+html.light {
+  --foreground: #1a1a1a;
+  --background: #f8f9fa;
+  --gold: #b8860b;
+  --gold-light: #d4a853;
+  --gold-dark: #8b6914;
+
+  --color-primary: #b8860b;
+  --color-primary-hover: #a07608;
+  --color-destructive: #dc2626;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-info: #2563eb;
+  --color-muted: #9ca3af;
+  --color-surface: #ffffff;
+  --color-surface-2: #f3f4f6;
+  --color-border: #e5e7eb;
+
+  --code-bg: #f5f5f5;
+  --code-string: #22863a;
+  --code-keyword: #d73a49;
+  --code-comment: #6a737d;
+  --code-number: #005cc5;
 }
 
 /* ── 모션 감도 사용자 존중 (WCAG 2.1 SC 2.3.3) ── */
@@ -140,15 +175,6 @@ code {
 .drawer-overlay {
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
-}
-
-/* 모바일 바텀시트 */
-.bottom-sheet-enter {
-  transform: translateY(100%);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.bottom-sheet-enter-active {
-  transform: translateY(0);
 }
 
 /* 모바일 입력창 키보드 대응 */

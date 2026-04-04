@@ -4,23 +4,25 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import { useAppStore } from '@/store/useAppStore';
 import { systemApi, agentApi, type AgentRuntimeStatus } from '@/lib/api';
-import { MessageSquare, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban, Building2, Target } from 'lucide-react';
+import { MessageSquare, Brain, ScrollText, Wrench, Settings, Menu, X, ChevronLeft, ChevronRight, BookOpen, FolderKanban, Building2, Target, GitBranch, Zap } from 'lucide-react';
 import { getDisplayName, sortByRank } from '@/lib/personas';
 import { SIDEBAR_POLLING_MS } from '@/lib/constants';
 
 const tabs = [
   { id: 'mission', label: 'Office', icon: Target },
   { id: 'team', label: 'Corporation', icon: Building2 },
+  { id: 'autopilot', label: 'Autopilot', icon: Zap },
   { id: 'projects', label: 'Projects', icon: FolderKanban },
   { id: 'memory', label: 'Memory', icon: Brain },
   { id: 'logs', label: 'Logs', icon: ScrollText },
   { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'notes', label: 'Notes', icon: BookOpen },
+  { id: 'workflow', label: 'Workflow', icon: GitBranch },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 export default function Sidebar() {
-  const { activeTab, setActiveTab, setLogsAgentFilter, agents, hrAgents } = useAppStore();
+  const { activeTab, setActiveTab, setLogsAgentFilter, agents, hrAgents, devMode, setDevMode } = useAppStore();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [version, setVersion] = useState('');
@@ -155,7 +157,11 @@ export default function Sidebar() {
         {/* 네비게이션 */}
         <nav className={`flex-1 ${collapsed ? 'p-2' : 'p-3'}`} aria-label="메인 네비게이션">
           <ul className="space-y-1">
-            {tabs.map((tab) => {
+            {tabs.filter(tab => {
+              // Dev Mode가 꺼져있으면 개발용 탭 숨김
+              if (!devMode && ['logs', 'tools', 'notes', 'settings'].includes(tab.id)) return false;
+              return true;
+            }).map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               // Office 탭에 작업중 에이전트 수 뱃지
@@ -258,14 +264,28 @@ export default function Sidebar() {
           </>
         )}
 
-        {/* 접기/펼치기 버튼 (데스크톱만) */}
-        <button
-          onClick={toggleCollapsed}
-          className="hidden md:flex items-center justify-center p-3 border-t border-dark-border text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
-          title={collapsed ? '사이드바 펼치기' : '사이드바 접기'}
-        >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
+        {/* Dev Mode 토글 + 접기/펼치기 */}
+        <div className="border-t border-dark-border flex items-center">
+          {!collapsed && (
+            <button
+              onClick={() => setDevMode(!devMode)}
+              className={`flex-1 flex items-center justify-center gap-1.5 p-2.5 text-[10px] font-medium transition-colors ${
+                devMode ? 'text-amber-400 hover:text-amber-300' : 'text-zinc-600 hover:text-zinc-400'
+              }`}
+              title={devMode ? 'Dev Mode 끄기 (개발탭 숨김)' : 'Dev Mode 켜기 (개발탭 표시)'}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${devMode ? 'bg-amber-400' : 'bg-zinc-700'}`} />
+              DEV
+            </button>
+          )}
+          <button
+            onClick={toggleCollapsed}
+            className="hidden md:flex items-center justify-center p-3 text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+            title={collapsed ? '사이드바 펼치기' : '사이드바 접기'}
+          >
+            {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+          </button>
+        </div>
       </aside>
     </>
   );

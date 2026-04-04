@@ -12,7 +12,7 @@ A hyper-personalized multi-agent AI assistant with a virtual pixel office
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org)
 [![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-orange.svg)](https://anthropic.com)
-[![Version](https://img.shields.io/badge/Version-4.0.0-purple.svg)]()
+[![Version](https://img.shields.io/badge/Version-4.1.1-purple.svg)]()
 
 **Web UI** | **Telegram** | **CLI** | **Daemon**
 
@@ -26,6 +26,8 @@ JINXUS is a multi-agent AI system where a single orchestrator (JINXUS_CORE) mana
 
 You talk to one central orchestrator. It handles everything: interpreting intent, decomposing complex tasks, delegating to specialist agents, collecting results, and delivering a unified response.
 
+The system includes a **Shared Whiteboard** where agents autonomously discover new information, propose actions, and execute missions — plus a **Trigger Engine** and **Autopilot UI** for managing agent autonomy levels, routines, budgets, and inter-agent communication.
+
 ---
 
 ## Key Features
@@ -35,7 +37,8 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 - **16x24 chibi sprites** with 2-head proportions, team-colored uniforms, and 12 hair variations
 - **Camera/viewport system** with drag-to-scroll and wheel-to-zoom
 - **BFS pathfinding** with smooth interpolation movement
-- **28 POIs** (coffee machine, whiteboard, printer, vending machine, benches, etc.) with state tracking
+- **28+ POIs** (coffee machine, whiteboard, printer, vending machine, benches, etc.) with state tracking
+- **Shared Whiteboard** in the hallway — agents visit, discover new memos, and auto-generate missions
 - **Per-agent daily schedules** based on rank and team
 - **Emoji activity display** above character heads
 - **Spontaneous agent chat** with 92 Korean dialogue templates (zero API cost)
@@ -76,6 +79,9 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 - Telegram progress reports every 15 minutes
 
 ### AAI Infrastructure (Agent-Agent Interaction)
+- **Shared Whiteboard**: Redis-backed shared canvas — guidelines (always-active rules) + memos (auto-discovered by agents)
+- **Trigger Engine**: 5 trigger types (cron / event / idle / interaction / threshold) with Redis persistence
+- **Autonomy Dial**: 4-level per-agent autonomy (Watch → Plan → Confirm → Auto) — Smashing Magazine "Shared Autonomy Controls" pattern
 - **Inbox**: Redis-based async message queue between agents (deliver/read/mark_read)
 - **Relevance Gate**: keyword + LLM 2-stage filter — only relevant agents respond to broadcasts
 - **Goal Hierarchy**: company → team → agent → task goals with mission linking
@@ -83,6 +89,7 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 - **Atomic Checkout**: Redis SETNX mission locking (409 Conflict pattern)
 - **Budget Enforcement**: per-agent monthly API cost tracking (ok → warning → hard_stop)
 - **Routine Engine**: cron-based recurring mission generation with concurrency policies
+- **WaveNoter Sync**: JX_SECRETARY auto-syncs voice memos from WaveNote → Whiteboard every 10 min
 - **Config Revision**: agent configuration versioning with rollback support
 - **SOUL.md**: file-based agent personas (SOUL.md + RULES.md) with runtime editing
 - **Structured Output**: Pydantic schema injection + 2-stage LLM retry for reliable JSON parsing
@@ -95,7 +102,12 @@ You talk to one central orchestrator. It handles everything: interpreting intent
 - Time-decay pruning with configurable half-life
 
 ### Frontend
-- **8 tabs**: Office, Corporation, Projects, Memory, Logs, Tools, Notes, Settings
+- **10 tabs**: Office, Corporation, Projects, Memory, Logs, Tools, Notes, Settings, Autopilot, Workflow
+- **Autopilot Tab**: Control Panel (autonomy dial + heartbeat), Triggers, Comms (inter-agent inbox), Budget dashboard, Routine manager
+- **Workflow Tab**: React Flow-based agent execution graph visualization (BFS layout, MiniMap, Controls)
+- **Whiteboard Panel**: overlay UI with guidelines/memos tabs, CRUD, status badges, tag filtering
+- **Memory File Tree**: hierarchical category → result nodes with importance dots, expand/collapse
+- **Schema-based Settings**: dynamic config form from `/status/config/schema` API
 - Single source of truth: `TEAM_CONFIG` in `personas.ts` drives all team-related UI
 - Real-time SSE streaming with smooth typing animation
 - Team channels (Matrix/Synapse integration)
@@ -150,7 +162,7 @@ All personas are defined as a single source of truth in `personas.py` (backend) 
 backend/jinxus/
   agents/              # JINXUS_CORE + sub-agents + coding/research teams
   api/routers/         # FastAPI endpoints (chat, mission, logs, agents, etc.)
-  core/                # Orchestrator, mission executor, approval gate, tool policy, AAI infra
+  core/                # Orchestrator, mission executor, whiteboard, trigger engine, AAI infra
   memory/              # 3-tier memory + reflection + LLM gate
   tools/               # 19 native tools + DynamicToolExecutor + MCP client
   hr/                  # Agent hiring/firing, company channels
@@ -207,6 +219,8 @@ bash dev.sh   # Auto-installs deps, builds, starts via pm2
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v4.1.1** | 2026-04-04 | AgentCallbackMixin (tool usage fix for all agents), mission log sync fix, sequential event ordering fix, internal codename → display name conversion |
+| **v4.1.0** | 2026-04-03 | Shared Whiteboard (AAI Phase 2), Trigger Engine (5 types), Autopilot Tab (5 sub-panels), Workflow Tab (React Flow), JX_SECRETARY WaveNoter sync, Autonomy Dial, schema-based Settings, memory file tree, 12 Geny UI improvements |
 | **v4.0.0** | 2026-04-01 | AAI infrastructure (Inbox, Goals, Heartbeat, Budget, Routine, Mission Lock, Config Revision), SOUL.md agent personas, Iteration Gate triple-check, LLM memory gate, Structured Output retry, Toast gating, 31 new API endpoints |
 | v3.1.1 | 2026-03-26 | SSE Geny pattern, session management, agent rename, Telegram integration |
 | **v3.0.0** | 2026-03-24 | Pixel Office overhaul (60x40 map, 16x24 chibi sprites, camera system, outdoor areas), org restructure (realistic Korean IT company), mission real-time feed, global mute, tab rename (English), modular architecture (15 modules) |

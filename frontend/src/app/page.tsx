@@ -10,6 +10,7 @@ import { systemApi } from '@/lib/api';
 
 // MissionTab(Office)은 항상 마운트 (기본 탭) — 서브탭으로 근무 환경/업무 포함
 const MissionTab = dynamic(() => import('@/components/tabs/MissionTab'), { ssr: false });
+const WhiteboardPanel = dynamic(() => import('@/components/playground/WhiteboardPanel'), { ssr: false });
 // 자주 쓰는 탭은 항상 마운트 유지 — 탭 전환 시 로딩 없음
 const TeamTab = dynamic(() => import('@/components/tabs/TeamTab'), { ssr: false });
 // 나머지 탭은 lazy load (ssr: false — 클라이언트 전용)
@@ -18,6 +19,8 @@ const MemoryTab = dynamic(() => import('@/components/tabs/MemoryTab'), { ssr: fa
 const LogsTab = dynamic(() => import('@/components/tabs/LogsTab'), { ssr: false });
 const ToolsTab = dynamic(() => import('@/components/tabs/ToolsTab'), { ssr: false });
 const NotesTab = dynamic(() => import('@/components/tabs/NotesTab'), { ssr: false });
+const WorkflowTab = dynamic(() => import('@/components/tabs/WorkflowTab'), { ssr: false });
+const AutopilotTab = dynamic(() => import('@/components/tabs/AutopilotTab'), { ssr: false });
 const SettingsTab = dynamic(() => import('@/components/tabs/SettingsTab'), { ssr: false });
 
 export default function Home() {
@@ -26,7 +29,7 @@ export default function Home() {
   useEffect(() => {
     // URL 해시로 초기 탭 설정 (예: #mission, #team, #settings)
     const hash = window.location.hash.slice(1);
-    const validTabs = ['mission', 'team', 'projects', 'memory', 'logs', 'tools', 'notes', 'settings'] as const;
+    const validTabs = ['mission', 'team', 'projects', 'memory', 'logs', 'tools', 'notes', 'workflow', 'autopilot', 'settings'] as const;
     if (hash && validTabs.includes(hash as typeof validTabs[number])) {
       setActiveTab(hash as typeof validTabs[number]);
     }
@@ -62,9 +65,13 @@ export default function Home() {
           {activeTab === 'logs' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="logs"><LogsTab /></ErrorBoundary></div>}
           {activeTab === 'tools' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="tools"><ToolsTab /></ErrorBoundary></div>}
           {activeTab === 'notes' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="notes"><NotesTab /></ErrorBoundary></div>}
+          {activeTab === 'workflow' && <div className="h-full overflow-hidden p-3 sm:p-4 md:p-6"><ErrorBoundary key="workflow"><WorkflowTab isActive /></ErrorBoundary></div>}
+          {activeTab === 'autopilot' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="autopilot"><AutopilotTab isActive /></ErrorBoundary></div>}
           {activeTab === 'settings' && <div className="p-3 sm:p-4 md:p-6"><ErrorBoundary key="settings"><SettingsTab isActive /></ErrorBoundary></div>}
         </main>
       </div>
+      {/* 화이트보드 패널 (PixelOffice에서 화이트보드 클릭 시 오버레이) */}
+      <WhiteboardPanel />
     </div>
   );
 }

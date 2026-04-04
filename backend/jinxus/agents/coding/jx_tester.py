@@ -14,11 +14,12 @@ from jinxus.config import get_settings
 from jinxus.memory import get_jinx_memory
 from jinxus.tools import get_dynamic_executor, DynamicToolExecutor
 from jinxus.agents.state_tracker import get_state_tracker, GraphNode
+from jinxus.agents.base_agent import AgentCallbackMixin
 
 logger = logging.getLogger(__name__)
 
 
-class JXTester:
+class JXTester(AgentCallbackMixin):
     """테스트/검증 전문가 에이전트"""
 
     name = "JX_TESTER"

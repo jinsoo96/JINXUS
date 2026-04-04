@@ -25,7 +25,16 @@ from jinxus.core.workflow_executor import WorkflowExecutor
 from jinxus.core.delegation_logger import get_delegation_logger
 from jinxus.hr.channel import get_company_channel
 from jinxus.core.approval_gate import get_approval_gate, ApprovalStatus
-from jinxus.agents.personas import get_persona
+from jinxus.agents.personas import get_persona, get_all_personas
+
+
+def _display_name(agent_code: str) -> str:
+    """에이전트 내부 코드 → 표시 이름 (로그 노출 방지)"""
+    personas = get_all_personas()
+    p = personas.get(agent_code)
+    if p:
+        return p.full_name or p.korean_name
+    return agent_code
 
 
 async def _async_llm(client, **kwargs):
@@ -232,6 +241,8 @@ class JinxusCore:
             return text
 
         patterns = [
+            r'<tool_call>.*?</tool_call>',
+            r'<tool_response>.*?</tool_response>',
             r'<invoke[^>]*>.*?</invoke>',
             r'<parameter[^>]*>.*?</parameter>',
             r'<tool[^>]*>.*?</tool>',
@@ -642,7 +653,7 @@ class JinxusCore:
         # 진행 보고: 병렬 실행 시작
         if progress_callback and agent_names:
             await progress_callback(
-                f"🚀 병렬 실행 시작: {', '.join(agent_names)}"
+                f"🚀 병렬 실행 시작: {', '.join(_display_name(n) for n in agent_names)}"
             )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -677,10 +688,10 @@ class JinxusCore:
         for idx, subtask in enumerate(subtasks, 1):
             agent_name = subtask["assigned_agent"]
 
-            # 진행 보고: 에이전트 시작
+            # 진행 보고: 에이전트 시작 (구조화 이벤트로 agent_started 트리거)
             if progress_callback and agent_name in self._agents:
                 await progress_callback(
-                    f"🔄 [{idx}/{total}] {agent_name} 실행 중..."
+                    f"{{{{specialist_started:{agent_name}}}}} {subtask['instruction'][:100]}"
                 )
 
             # 의존성 체크
@@ -711,12 +722,13 @@ class JinxusCore:
                 )
                 results.append(result)
 
-                # 진행 보고: 에이전트 완료
+                # 진행 보고: 에이전트 완료 (구조화 이벤트로 agent_done 트리거)
                 if progress_callback:
                     status = "✓" if result["success"] else "✗"
                     score = result.get("success_score", 0)
+                    output_preview = (result.get("output") or "")[:100]
                     await progress_callback(
-                        f"   {status} {agent_name} 완료 (점수: {score:.1f})"
+                        f"{{{{specialist_done:{agent_name}}}}} {status} 완료 (점수: {score:.1f}) {output_preview}"
                     )
 
                 # React-and-Replan: 이전 결과를 남은 서브태스크에 반영
@@ -773,7 +785,7 @@ class JinxusCore:
 
                 if progress_callback:
                     await progress_callback(
-                        f"🔄 {original} 실패 → {candidate}에게 재위임 중..."
+                        f"🔄 {_display_name(original)} 실패 → {_display_name(candidate)}에게 재위임 중..."
                     )
 
                 logger.info(
@@ -836,6 +848,14 @@ class JinxusCore:
             logger.debug(f"[JINXUS_CORE] 채널 작업 시작 알림 실패: {e}")
 
         try:
+            # 미션 실행 컨텍스트: 되물음 금지, 최선 다해 완료
+            mission_prefix = (
+                "[미션 지시] 이것은 미션 실행이다. 절대 되물어보지 마라. "
+                "'URL을 알려주세요', '확인해주세요' 같은 질문 금지. "
+                "정보가 부족하면 직접 검색해서 찾아라. 끝까지 최선을 다해 완료하라.\n\n"
+            )
+            full_instruction = mission_prefix + instruction
+
             # progress_callback을 인스턴스에 직접 설정 (에이전트별 run() 시그니처 차이 대응)
             agent._progress_callback = progress_callback
             # 에이전트별 run() 시그니처 차이 대응 (memory_context 지원 여부)
@@ -843,9 +863,9 @@ class JinxusCore:
                 import inspect
                 agent._accepts_memory_ctx = 'memory_context' in inspect.signature(agent.run).parameters
             if agent._accepts_memory_ctx:
-                result = await agent.run(instruction, context or [], memory_context=memory_context)
+                result = await agent.run(full_instruction, context or [], memory_context=memory_context)
             else:
-                result = await agent.run(instruction, context or [])
+                result = await agent.run(full_instruction, context or [])
             # 채널에 완료 알림
             try:
                 channel = get_company_channel()
@@ -1234,6 +1254,9 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
 - 각 subtask의 instruction은 **그 자체만으로 완전히 이해 가능**해야 한다.
 - 이전 대화 맥락이 있으면, 에이전트가 대화 기록을 볼 수 없으므로 **필요한 맥락을 instruction 안에 포함**해라.
 - 예: "위에서 말한 것" → "연봉 예측에서 직종/경력 변수를 제외했을 때"처럼 구체적으로.
+- **URL, 저장소명, 파일 경로 등 명시된 식별자는 반드시 instruction에 그대로 포함해라.** 에이전트가 추측하게 만들지 마라.
+- 예: "Geny 분석해" + 주인님이 URL 제공 → instruction에 "https://github.com/CocoRoF/Geny 저장소를 분석하라" 형태로 URL 포함.
+- **에이전트에게 절대 "확인해주세요", "알려주세요" 같은 되물음을 허용하지 마라.** 미션 중에는 끝까지 최선을 다해 완료해야 한다.
 
 ## 지시
 위 명령을 분석하고 다음 JSON으로만 응답해:
@@ -1255,13 +1278,14 @@ knowledge cutoff 이후의 정보는 반드시 검색 도구를 사용해야 한
 }}
 ```
 
-판단 기준:
+## execution_mode 판단 기준 (중요! 반드시 따를 것)
 - 에이전트 없이 직접 답변 가능하면 subtasks를 빈 배열로
-- 서브태스크들 간 의존성 없으면 parallel
-- 앞 결과가 뒤 입력으로 필요하면 depends_on 명시 + sequential
-- **여러 에이전트가 서로 결과를 참조하며 협업해야 하면 collaborative** (예: 검색 결과를 바탕으로 코드 작성, 분석 결과를 보고서로 작성)
+- **parallel (기본값)**: 서브태스크들이 서로 독립적이면 반드시 parallel. 예: "A 검색해 + B 코드 작성" → 서로 입출력 의존 없음 → parallel
+- **sequential**: 앞 결과가 뒤 입력으로 **반드시** 필요한 경우에만. depends_on 명시. 예: "검색 후 그 결과를 보고서로 작성" → sequential
+- **collaborative**: 여러 에이전트가 결과를 상호 참조하며 협업해야 할 때 (드문 경우)
 - 단순 명령이면 subtasks 1개
 - MCP 도구 필요 시 tools_hint에 명시 (예: "mcp:puppeteer", "mcp:github")
+- **핵심: 2개 이상 에이전트에 각각 다른 독립 작업을 시키면 → 무조건 parallel. sequential은 결과 의존이 있을 때만.**
 """
 
     def _parse_decomposition(self, response_text: str) -> dict:
@@ -1689,12 +1713,12 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
             execution_mode = "sequential"
         elif input_type == "chat_search":
             # 검색 필요한 대화: JX_RESEARCHER에게 바로 위임 (decompose 불필요)
-            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "검색 필요 → JX_RESEARCHER 직접 위임"}}
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": f"검색 필요 → {_display_name('JX_RESEARCHER')} 직접 위임"}}
             subtasks = [{"task_id": "sub_001", "assigned_agent": "JX_RESEARCHER", "instruction": user_input, "depends_on": [], "priority": "normal"}]
             execution_mode = "sequential"
         elif self._is_simple_search(user_input):
             # task지만 단순 검색 (날씨/주가/뉴스): decompose 건너뛰고 바로 위임
-            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": "단순 검색 → JX_RESEARCHER 직접 위임"}}
+            yield {"event": "manager_thinking", "data": {"step": "classify", "detail": f"단순 검색 → {_display_name('JX_RESEARCHER')} 직접 위임"}}
             subtasks = [{"task_id": "sub_001", "assigned_agent": "JX_RESEARCHER", "instruction": user_input, "depends_on": [], "priority": "normal"}]
             execution_mode = "sequential"
         else:
@@ -1724,7 +1748,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
                 agent_list = [t.get("assigned_agent", "?") for t in subtasks]
                 yield {"event": "manager_thinking", "data": {
                     "step": "decompose",
-                    "detail": f"배정: {' → '.join(agent_list)} ({execution_mode})"
+                    "detail": f"배정: {' → '.join(_display_name(a) for a in agent_list)} ({execution_mode})"
                 }}
 
         # 서브태스크가 없으면 직접 응답
@@ -1872,7 +1896,7 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
                     yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "검색 결과 수집 완료"}}
                 else:
                     # 빠른 검색 실패 → JX_RESEARCHER로 에스컬레이션
-                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": "빠른 검색 실패, JX_RESEARCHER에게 위임..."}}
+                    yield {"event": "manager_thinking", "data": {"step": "web_search", "detail": f"빠른 검색 실패, {_display_name('JX_RESEARCHER')}에게 위임..."}}
                     try:
                         researcher_result = await self._delegate_to_researcher(user_input)
                         if researcher_result and researcher_result.get("success"):
@@ -1970,18 +1994,22 @@ C) task - 작업 요청 (코드, 파일, 분석, 생성 등 도구 필요)
                                 "agent": agent, "task_id": f"sub_{agent}", "instruction": detail,
                             }})
                         elif event_type == "specialist_done":
+                            success = "✓" in detail or ("✗" not in detail and "실패" not in detail)
                             await event_queue.put({"event": "agent_done", "data": {
-                                "agent": agent, "success": "완료" in detail, "output": detail,
+                                "agent": agent, "success": success, "output": detail,
                             }})
                         return
                     except (ValueError, IndexError):
                         pass
                 await event_queue.put({"event": "manager_thinking", "data": {"step": "agent_progress", "detail": msg}})
 
-            for task in subtasks:
-                agent_name = task["assigned_agent"]
-                if agent_name in self._agents:
-                    yield {"event": "agent_started", "data": {"agent": agent_name, "task_id": task["task_id"], "instruction": task["instruction"]}}
+            # 병렬 모드: 모든 에이전트 동시에 시작 알림
+            # 순차 모드: stream_progress 콜백에서 각 에이전트 시작 시점에 알림
+            if execution_mode == "parallel":
+                for task in subtasks:
+                    agent_name = task["assigned_agent"]
+                    if agent_name in self._agents:
+                        yield {"event": "agent_started", "data": {"agent": agent_name, "task_id": task["task_id"], "instruction": task["instruction"]}}
 
             # 에이전트를 백그라운드 태스크로 실행하여 실시간 이벤트 스트리밍
             async def _run_agents():

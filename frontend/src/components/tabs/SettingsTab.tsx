@@ -5,6 +5,7 @@ import { useAppStore } from '@/store/useAppStore';
 import {
   agentApi, logsApi, taskApi, improveApi, systemApi,
   AgentRuntimeStatus, TaskLog, ActiveTask, ImproveHistoryItem, PromptVersion,
+  ConfigGroup,
 } from '@/lib/api';
 import { POLLING_INTERVAL_MS } from '@/lib/constants';
 import { formatTime, getAgentStatusColor, getAgentStatusText } from '@/lib/utils';
@@ -13,7 +14,8 @@ import toast from 'react-hot-toast';
 import {
   Activity, CheckCircle2, XCircle, Clock, Cpu, Database, Zap, RefreshCw,
   Play, Pause, AlertCircle, ListTodo, ChevronDown, ChevronUp, Terminal,
-  Settings, Server, Sparkles, History, ArrowDownToLine, Loader2,
+  Settings, Server, Sparkles, History, ArrowDownToLine, Loader2, Sliders,
+  Save, RotateCcw,
 } from 'lucide-react';
 import { StatCardSkeleton, ListSkeleton } from '@/components/Skeleton';
 
@@ -88,6 +90,13 @@ export default function SettingsTab({ isActive = true }: { isActive?: boolean })
   const [promptLoading, setPromptLoading] = useState(false);
   const [activePromptVersion, setActivePromptVersion] = useState('');
   const [rollingBack, setRollingBack] = useState(false);
+
+  // --- 동적 설정 ---
+  const [configGroups, setConfigGroups] = useState<ConfigGroup[]>([]);
+  const [configEdits, setConfigEdits] = useState<Record<string, unknown>>({});
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
 
   // --- 버전 ---
   const [jinxusVersion, setJinxusVersion] = useState('');
@@ -251,6 +260,51 @@ export default function SettingsTab({ isActive = true }: { isActive?: boolean })
     }
   }, [showImprove]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 설정 스키마 로드
+  const loadConfigSchema = async () => {
+    setConfigLoading(true);
+    try {
+      const data = await systemApi.getConfigSchema();
+      setConfigGroups(data.groups);
+      setConfigEdits({});
+    } catch (error) {
+      console.error('설정 스키마 로드 실패:', error);
+      toast.error('설정 스키마 로드 실패');
+    } finally {
+      setConfigLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showConfig && configGroups.length === 0) {
+      loadConfigSchema();
+    }
+  }, [showConfig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleConfigChange = (key: string, value: unknown) => {
+    setConfigEdits(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleConfigSave = async () => {
+    if (Object.keys(configEdits).length === 0) return;
+    setConfigSaving(true);
+    try {
+      const result = await systemApi.updateConfig(configEdits);
+      if (Object.keys(result.applied).length > 0) {
+        toast.success(`${Object.keys(result.applied).length}개 설정 반영됨`);
+        await loadConfigSchema();
+      }
+      if (Object.keys(result.rejected).length > 0) {
+        toast.error(`거부됨: ${Object.values(result.rejected).join(', ')}`);
+      }
+    } catch (error) {
+      console.error('설정 저장 실패:', error);
+      toast.error('설정 저장 실패');
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
   // ============= 파생 값 =============
   const workingCount = agentStatuses.filter(a => a.status === 'working').length;
   const totalAgents = hrAgents.length;
@@ -264,7 +318,7 @@ export default function SettingsTab({ isActive = true }: { isActive?: boolean })
     return (
       <div className="space-y-6">
         <div className="h-8 w-32 bg-zinc-700/50 rounded animate-pulse" />
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
           {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -327,7 +381,7 @@ export default function SettingsTab({ isActive = true }: { isActive?: boolean })
         {showMonitor && (
           <div className="space-y-6">
             {/* 통계 카드 */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               {/* 시스템 상태 */}
               <div className="bg-dark-card border border-dark-border border-l-2 border-l-blue-500 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
@@ -750,9 +804,105 @@ export default function SettingsTab({ isActive = true }: { isActive?: boolean })
         )}
       </div>
 
-      {/* ==================== 섹션 4: 설정 ==================== */}
+      {/* ==================== 섹션 4: 시스템 설정 (동적 폼) ==================== */}
       <div>
-        <SectionHeader icon={Settings} title="설정" open={showSettings} onToggle={() => setShowSettings(!showSettings)} />
+        <SectionHeader
+          icon={Sliders}
+          title="시스템 설정"
+          open={showConfig}
+          onToggle={() => setShowConfig(!showConfig)}
+          extra={showConfig && Object.keys(configEdits).length > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-amber-400">{Object.keys(configEdits).length}개 변경</span>
+              <button
+                onClick={() => setConfigEdits({})}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500"
+                title="변경 취소"
+              >
+                <RotateCcw size={14} />
+              </button>
+              <button
+                onClick={handleConfigSave}
+                disabled={configSaving}
+                className="flex items-center gap-1 px-3 py-1 bg-primary text-black rounded-lg text-xs font-medium hover:bg-primary/80 disabled:opacity-50"
+              >
+                {configSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                저장
+              </button>
+            </div>
+          ) : undefined}
+        />
+
+        {showConfig && (
+          <div className="space-y-4">
+            {configLoading ? (
+              <div className="text-center py-8"><Loader2 size={24} className="mx-auto animate-spin text-zinc-500" /></div>
+            ) : configGroups.map((group) => (
+              <div key={group.group} className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-dark-border bg-zinc-800/30">
+                  <h3 className="text-sm font-semibold text-zinc-300">{group.group}</h3>
+                </div>
+                <div className="p-4 space-y-3">
+                  {group.fields.map((field) => {
+                    const editedValue = configEdits[field.key];
+                    const currentValue = editedValue !== undefined ? editedValue : field.value;
+                    const isEdited = editedValue !== undefined;
+
+                    return (
+                      <div key={field.key} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                        <label className={`text-xs sm:text-sm sm:w-56 flex-shrink-0 ${isEdited ? 'text-amber-400' : 'text-zinc-400'}`}>
+                          {field.key}
+                        </label>
+                        <div className="flex-1">
+                          {field.type === 'boolean' ? (
+                            <button
+                              onClick={() => handleConfigChange(field.key, !currentValue)}
+                              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                                currentValue
+                                  ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                                  : 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600'
+                              }`}
+                            >
+                              {currentValue ? 'ON' : 'OFF'}
+                            </button>
+                          ) : field.type === 'number' ? (
+                            <input
+                              type="number"
+                              value={currentValue as number}
+                              onChange={(e) => handleConfigChange(field.key, Number(e.target.value))}
+                              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary"
+                            />
+                          ) : field.type === 'array' ? (
+                            <input
+                              type="text"
+                              value={Array.isArray(currentValue) ? (currentValue as string[]).join(', ') : String(currentValue ?? '')}
+                              onChange={(e) => handleConfigChange(field.key, e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary"
+                              placeholder="쉼표로 구분"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={String(currentValue ?? '')}
+                              onChange={(e) => handleConfigChange(field.key, e.target.value)}
+                              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary"
+                            />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            <p className="text-[10px] text-zinc-600 text-center">런타임 설정 변경 — 서버 재시작 시 .env 기본값으로 복원됩니다</p>
+          </div>
+        )}
+      </div>
+
+      {/* ==================== 섹션 5: 일반 설정 ==================== */}
+      <div>
+        <SectionHeader icon={Settings} title="일반" open={showSettings} onToggle={() => setShowSettings(!showSettings)} />
 
         {showSettings && (
           <div className="space-y-4">

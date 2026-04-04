@@ -1,0 +1,5 @@
+{"timestamp": "2026-03-26T16:44:05.323067", "level": "COMMAND", "message": "ㅎㅇ", "metadata": {"timeout": null, "system_prompt_len": 0, "max_turns": 50}}
+{"timestamp": "2026-03-26T16:44:06.857187", "level": "STREAM", "message": "system_init", "metadata": {"model": "claude-sonnet-4-6", "tools_count": 24, "mcp_servers": []}}
+{"timestamp": "2026-03-26T16:44:10.941364", "level": "STREAM", "message": "assistant_text", "metadata": {"text_preview": "네, 진수님. 작업 지시 있으시면 말씀해주십시오.", "text_length": 27}}
+{"timestamp": "2026-03-26T16:44:10.969213", "level": "STREAM", "message": "result", "metadata": {"success": true, "duration_ms": 4209, "cost_usd": 0.05312505, "num_turns": 1}}
+{"timestamp": "2026-03-26T16:44:11.825018", "level": "RESPONSE", "message": "네, 진수님. 작업 지시 있으시면 말씀해주십시오.", "metadata": {"success": true, "duration_ms": 6501, "cost_usd": 0.05312505}}

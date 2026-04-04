@@ -20,6 +20,7 @@ import {
   makeBookshelf, makeServerRack, makePrinterSprite, makeVendingMachine,
   makeFridgeSprite, makeSofaSprite, makeWaterCooler, makeBenchSprite,
   makeTreeSprite, makeAshtraySprite, makeUmbrellaTable, makeMiniBarSprite,
+  makeMainWhiteboard,
 } from './sprites/furniture';
 import {
   ROOMS, DESKS, DOORS, POI_LIST, FURNITURE, TEAM_EN, ROOM_FLOORS,
@@ -409,6 +410,39 @@ function updateChar(c: CharState, runtime: AgentRuntimeStatus | undefined, dt: n
           c.smokingTimer = 27 + Math.random() * 6; // 27~33초 흡연
           c.speechBubble = '\uD83D\uDEAC'; c.speechBubbleTimer = c.smokingTimer;
           c.smokeAnchorCol = c.col; c.smokeAnchorRow = c.row;
+        } else if (c.poiTarget === 'main_whiteboard') {
+          // ── 화이트보드 발견 로직 ──
+          c.idleTimer = 8 + Math.random() * 5; // 화이트보드 앞에서 좀 더 오래 머무름
+          c.activity = '화이트보드 확인 중';
+          c.speechBubble = '📋 확인 중...'; c.speechBubbleTimer = 4;
+          // NEW 메모가 있으면 발견 → 미션 자동 생성 (비동기, 중복 방지)
+          if (_wbNewMemoIds.size > 0 && !_wbDiscovering) {
+            _wbDiscovering = true;
+            const memoId = Array.from(_wbNewMemoIds)[0]; // 첫 번째 새 메모
+            _wbNewMemoIds.delete(memoId);
+            const agentCode = c.code;
+            const agentName = getFirstName(c.code);
+            whiteboardApi.discoverItem(memoId, agentCode).then(res => {
+              if (res.success && res.mission_title) {
+                // 발견 말풍선 업데이트
+                const ch = getSharedGame().chars.get(agentCode);
+                if (ch) {
+                  ch.speechBubble = `📋 "${res.mission_title}"`;
+                  ch.speechBubbleTimer = 5;
+                  ch.activity = '화이트보드 메모 보고 중';
+                }
+                // OFFICE FEED에 기록
+                const p = getPersona(agentCode);
+                const now = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+                _wbEmitLog?.({
+                  id: ++_actLogId, time: now, type: 'work',
+                  agentA: agentName, emojiA: p?.emoji || '🤖',
+                  message: `화이트보드에서 "${res.mission_title}" 발견 → 미션 생성`,
+                });
+              }
+            }).catch(e => console.error('[Whiteboard] 발견 실패:', e))
+              .finally(() => { _wbDiscovering = false; });
+          }
         }
         c.poiTarget = null;
       } else {
@@ -603,6 +637,7 @@ const FURN_MAKERS: Record<string, () => HTMLCanvasElement> = {
   vending: makeVendingMachine, fridge: makeFridgeSprite, sofa: makeSofaSprite,
   water: makeWaterCooler, bench: makeBenchSprite, tree: makeTreeSprite,
   ashtray: makeAshtraySprite, umbrella: makeUmbrellaTable, minibar: makeMiniBarSprite,
+  wb_main: makeMainWhiteboard,
 };
 
 function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Record<string, AgentRuntimeStatus>, camera: Camera) {
@@ -745,6 +780,21 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
     const sy = 19 * TILE - (2 + i * 3) * SCALE - ((steamT + i * 2) % 5) * SCALE;
     const sx = 30 * TILE + 6 * SCALE + Math.sin(steamT + i) * 1.5 * SCALE;
     ctx.fillRect(sx, sy, 2 * SCALE, 1 * SCALE);
+  }
+
+  // Main Whiteboard glow (NEW 메모가 있을 때 강조 표시)
+  if (_wbNewMemoIds.size > 0) {
+    const pulse = 0.15 + Math.sin(Date.now() / 500) * 0.1;
+    ctx.fillStyle = `rgba(59, 130, 246, ${pulse})`;
+    ctx.fillRect(19 * TILE - 2, 17 * TILE - 2, 3 * TILE + 4, TILE + 4);
+    // NEW 뱃지
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath();
+    ctx.arc(22 * TILE, 17 * TILE, 4 * SCALE, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${3 * SCALE}px sans-serif`; ctx.textAlign = 'center';
+    ctx.fillText(String(_wbNewMemoIds.size), 22 * TILE, 17 * TILE + 1.2 * SCALE);
+    ctx.textAlign = 'left';
   }
 
   // LAYER 7: Characters (Y-sorted)
@@ -1006,6 +1056,15 @@ function render(game: GameState, ctx: CanvasRenderingContext2D, runtimeMap: Reco
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { ActivityLogEntry, PixelOfficeProps } from './engine/types';
+import { useAppStore } from '@/store/useAppStore';
+import { whiteboardApi } from '@/lib/api';
+
+// ── 화이트보드 발견 상태 (모듈 레벨 싱글톤) ──
+let _wbNewMemoIds: Set<string> = new Set();  // 현재 NEW 상태 메모 ID 목록
+let _wbLastPoll = 0;                          // 마지막 폴링 시각
+const WB_POLL_INTERVAL = 30_000;              // 30초 간격
+let _wbDiscovering = false;                   // 중복 발견 방지
+let _wbEmitLog: ((entry: ActivityLogEntry) => void) | null = null; // 모듈 레벨 로그 콜백
 
 let _actLogId = 0;
 
@@ -1100,6 +1159,7 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
 
       // Spontaneous chat
       const { onActivityLog: emitLog, muteChat: muted } = propsRef.current;
+      _wbEmitLog = emitLog ?? null; // 화이트보드 발견 콜백용
       const chars = Array.from(game.chars.values());
       if (!muted) for (let i = 0; i < chars.length; i++) {
         const a = chars[i];
@@ -1146,6 +1206,15 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
           }
         }
       });
+
+      // 화이트보드 NEW 메모 주기적 폴링 (30초 간격)
+      const now = Date.now();
+      if (now - _wbLastPoll > WB_POLL_INTERVAL) {
+        _wbLastPoll = now;
+        whiteboardApi.getNewMemos().then(res => {
+          _wbNewMemoIds = new Set(res.memos.map(m => m.id));
+        }).catch(() => {}); // 실패 시 무시
+      }
       } // end isUpdateOwner
 
       // Render (모든 인스턴스가 자기 canvas에 그림)
@@ -1224,9 +1293,20 @@ export default function PixelOffice({ runtimeMap, hiredSet, onSelectAgent, agent
     // Only click if didn't drag significantly
     if (!wasDragging || dragDist < 5) {
       const code = findChar(e);
-      if (code) propsRef.current.onSelectAgent(code);
+      if (code) {
+        propsRef.current.onSelectAgent(code);
+      } else {
+        // 화이트보드 클릭 감지 (타일 19-21, 17-18)
+        const [sx, sy] = getCanvasCoords(e);
+        const [wx, wy] = screenToWorld(cam, sx, sy);
+        const tileCol = Math.floor(wx / TILE);
+        const tileRow = Math.floor(wy / TILE);
+        if (tileCol >= 19 && tileCol <= 21 && tileRow >= 17 && tileRow <= 18) {
+          useAppStore.getState().setWhiteboardOpen(true);
+        }
+      }
     }
-  }, [findChar]);
+  }, [findChar, getCanvasCoords]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();

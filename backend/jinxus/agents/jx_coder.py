@@ -33,11 +33,12 @@ from jinxus.memory import get_jinx_memory
 from jinxus.tools.code_executor import CodeExecutor
 from jinxus.tools import get_dynamic_executor, DynamicToolExecutor
 from jinxus.agents.state_tracker import get_state_tracker, GraphNode
+from jinxus.agents.base_agent import AgentCallbackMixin, _agent_display_name
 
 logger = logging.getLogger(__name__)
 
 
-class JXCoder:
+class JXCoder(AgentCallbackMixin):
     """코딩팀 오케스트레이터
 
     간단한 작업은 직접 처리, 복잡한 작업은 전문가 팀에게 분배.
@@ -197,8 +198,9 @@ JSON으로 답변:
             # 전문가 실패 시 직접 처리 fallback
             if not result.get("success"):
                 logger.warning(f"[JX_CODER] {agent_name} 실패, 직접 처리 시도")
+                _dn = _agent_display_name(agent_name)
                 await self._report_progress(
-                    f"[{agent_name}] 실패 → JX_CODER 직접 처리로 전환"
+                    f"[{_dn}] 실패 → 직접 처리로 전환"
                 )
                 fallback = await self._fallback_direct(agent_name, instruction, context)
                 if fallback.get("success"):
@@ -207,7 +209,8 @@ JSON으로 답변:
             return result
         except Exception as e:
             logger.error(f"[JX_CODER] {agent_name} 실행 예외: {e}")
-            await self._report_progress(f"[{agent_name}] 예외 → 직접 처리 전환")
+            _dn = _agent_display_name(agent_name)
+            await self._report_progress(f"[{_dn}] 예외 → 직접 처리 전환")
             return await self._fallback_direct(agent_name, instruction, context)
 
     async def _fallback_direct(

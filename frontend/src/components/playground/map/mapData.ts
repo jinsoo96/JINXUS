@@ -148,6 +148,8 @@ export const POI_LIST: POIDef[] = [
   { name: 'entrance',     col: 30, row: 4,  action: '로비 통과 중', type: 'indoor' },
   { name: 'hall_walk_a',  col: 15, row: 19, action: '복도 이동 중', type: 'indoor' },
   { name: 'hall_walk_b',  col: 45, row: 19, action: '복도 이동 중', type: 'indoor' },
+  // Main Whiteboard (복도 중앙 대형 화이트보드 — AAI 핵심)
+  { name: 'main_whiteboard', col: 20, row: 18, action: '화이트보드 확인 중', type: 'indoor', capacity: 3 },
   // Outdoor
   { name: 'parking',      col: 10, row: 2,  action: '주차장에서', type: 'outdoor' },
   { name: 'smoking_c',    col: 46, row: 37, action: '니코틴 충전 중', type: 'outdoor', capacity: 3 },
@@ -194,6 +196,7 @@ export const FURNITURE: FurniturePlacement[] = [
   // Whiteboards
   { type: 'wb', x: 8, y: 7, w: 2 },   // Executive room upper-right
   { type: 'wb', x: 50, y: 7 },
+  { type: 'wb_main', x: 19, y: 17, w: 3 },  // Main corridor whiteboard (AAI)
 
   // CEO Room ashtray + mini-bar (indoor)
   { type: 'ashtray', x: 54, y: 12 },

@@ -50,6 +50,30 @@ export function makeWhiteboard(): HTMLCanvasElement {
   _furnCache.set('wb', c); return c;
 }
 
+export function makeMainWhiteboard(): HTMLCanvasElement {
+  if (_furnCache.has('wb_main')) return _furnCache.get('wb_main')!;
+  const c = document.createElement('canvas'); c.width = 48; c.height = 16; const x = c.getContext('2d')!;
+  // 프레임 (3타일 너비 대형 화이트보드)
+  x.fillStyle = '#27272a'; x.fillRect(0, 0, 48, 16); // 뒷판
+  x.fillStyle = '#fafaf9'; x.fillRect(1, 1, 46, 12); // 흰색 보드 면
+  x.strokeStyle = '#78716c'; x.lineWidth = 1; x.strokeRect(1, 1, 46, 12);
+  // 포스트잇/메모 표현
+  x.fillStyle = '#fbbf24'; x.fillRect(3, 3, 5, 4);  // 노란 메모
+  x.fillStyle = '#fb923c'; x.fillRect(9, 3, 5, 4);  // 주황 메모
+  x.fillStyle = '#38bdf8'; x.fillRect(15, 3, 5, 4); // 파란 메모
+  x.fillStyle = '#4ade80'; x.fillRect(21, 3, 5, 4); // 초록 메모
+  x.fillStyle = '#f472b6'; x.fillRect(27, 3, 5, 4); // 핑크 메모
+  x.fillStyle = '#a78bfa'; x.fillRect(33, 3, 5, 4); // 보라 메모
+  // 하단 줄 메모
+  x.fillStyle = '#fde68a'; x.fillRect(3, 8, 8, 3);
+  x.fillStyle = '#bae6fd'; x.fillRect(13, 8, 8, 3);
+  x.fillStyle = '#d9f99d'; x.fillRect(23, 8, 8, 3);
+  x.fillStyle = '#fecaca'; x.fillRect(33, 8, 8, 3);
+  // 다리
+  x.fillStyle = '#57534e'; x.fillRect(4, 13, 2, 3); x.fillRect(42, 13, 2, 3);
+  _furnCache.set('wb_main', c); return c;
+}
+
 export function makeBookshelf(): HTMLCanvasElement {
   if (_furnCache.has('book')) return _furnCache.get('book')!;
   const c = document.createElement('canvas'); c.width = 16; c.height = 16; const x = c.getContext('2d')!;

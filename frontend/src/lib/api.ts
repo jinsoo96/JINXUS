@@ -245,6 +245,20 @@ export interface MCPServerStatus {
   error?: string;
 }
 
+// 설정 스키마
+export interface ConfigField {
+  key: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'array';
+  value: unknown;
+  default: unknown;
+}
+
+export interface ConfigGroup {
+  group: string;
+  fields: ConfigField[];
+}
+
 export interface MCPStatus {
   initialized: boolean;
   connected_count: number;
@@ -383,6 +397,19 @@ export const systemApi = {
   // 시스템 정보 (버전 포함) — trailing slash 없이 /api 직접 호출 (308 redirect 방지)
   getInfo: async (): Promise<{ name: string; version: string; status: string }> => {
     return apiCall('');
+  },
+
+  // 설정 스키마 조회
+  getConfigSchema: async (): Promise<{ groups: ConfigGroup[] }> => {
+    return apiCall('/status/config/schema');
+  },
+
+  // 설정 런타임 업데이트
+  updateConfig: async (updates: Record<string, unknown>): Promise<{ applied: Record<string, unknown>; rejected: Record<string, string> }> => {
+    return apiCall('/status/config', {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
   },
 
   // MCP 상태 조회
@@ -1481,6 +1508,218 @@ export const missionApi = {
     return apiCall<{ mission_id: string; conversations: MissionData['agent_conversations']; total: number }>(
       `/mission/${missionId}/conversations`
     );
+  },
+};
+
+
+// ===== AAI (Agent-Agent Interaction) =====
+
+export interface AutonomyConfig {
+  agent: string;
+  autopilot_enabled: boolean;
+  autonomy_level: number;  // 0=관찰, 1=계획, 2=확인후실행, 3=자율실행
+  triggers_enabled: boolean;
+  heartbeat_interval: number;
+  budget_usd: number;
+}
+
+export interface TriggerConfig {
+  id: string;
+  name: string;
+  type: 'cron' | 'event' | 'idle' | 'interaction' | 'threshold';
+  agent: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  description: string;
+  fire_count: number;
+  last_fired_at: number;
+  created_at: number;
+}
+
+export interface InboxMessage {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  content: string;
+  content_type: string;
+  priority: number;
+  read: boolean;
+  created_at: number;
+}
+
+export interface BudgetReport {
+  agent: string;
+  month: string;
+  total_cost_usd: number;
+  budget_usd: number;
+  usage_percent: number;
+  status: 'ok' | 'warning' | 'hard_stop';
+  event_count: number;
+  top_models: Record<string, number>;
+}
+
+export interface AAIRoutine {
+  id: string;
+  name: string;
+  description: string;
+  cron_expr: string;
+  mission_template: string;
+  assigned_agent: string;
+  concurrency_policy: string;
+  status: 'active' | 'paused' | 'archived';
+  last_run_at: number;
+  next_run_at: number;
+  run_count: number;
+}
+
+export interface RoutineRun {
+  id: string;
+  routine_id: string;
+  mission_id: string;
+  status: string;
+  started_at: number;
+  completed_at: number;
+  result: string;
+}
+
+export interface HeartbeatStatus {
+  agent: string;
+  enabled: boolean;
+  last_heartbeat_at: string | null;
+  next_heartbeat_at: string | null;
+  interval_seconds: number;
+}
+
+export const aaiApi = {
+  // === Heartbeat ===
+  wakeAgent: async (agent: string, reason = 'manual', context = ''): Promise<Record<string, unknown>> => {
+    return apiCall('/aai/heartbeat/wake', {
+      method: 'POST', body: JSON.stringify({ agent, reason, context }),
+    });
+  },
+  getHeartbeatStatus: async (): Promise<{ heartbeats: Record<string, HeartbeatStatus> }> => {
+    return apiCall('/aai/heartbeat/status');
+  },
+  getAgentHeartbeat: async (agent: string): Promise<HeartbeatStatus> => {
+    return apiCall(`/aai/heartbeat/${agent}`);
+  },
+
+  // === Autonomy ===
+  getAutonomyConfigs: async (): Promise<{ agents: Record<string, AutonomyConfig> }> => {
+    return apiCall('/aai/autonomy');
+  },
+  setAutonomyConfig: async (config: Partial<AutonomyConfig> & { agent: string }): Promise<AutonomyConfig> => {
+    return apiCall('/aai/autonomy', {
+      method: 'POST', body: JSON.stringify(config),
+    });
+  },
+
+  // === Triggers ===
+  listTriggers: async (type?: string): Promise<{ triggers: TriggerConfig[] }> => {
+    return apiCall(`/aai/triggers${type ? `?type=${type}` : ''}`);
+  },
+  createTrigger: async (data: { name: string; type: string; agent: string; config: Record<string, unknown>; description?: string }): Promise<TriggerConfig> => {
+    return apiCall('/aai/triggers', { method: 'POST', body: JSON.stringify(data) });
+  },
+  deleteTrigger: async (id: string): Promise<{ success: boolean }> => {
+    return apiCall(`/aai/triggers/${id}`, { method: 'DELETE' });
+  },
+  toggleTrigger: async (id: string, enabled: boolean): Promise<{ success: boolean }> => {
+    return apiCall(`/aai/triggers/${id}/toggle?enabled=${enabled}`, { method: 'POST' });
+  },
+
+  // === Routines ===
+  listRoutines: async (status?: string): Promise<{ routines: AAIRoutine[] }> => {
+    return apiCall(`/aai/routines${status ? `?status=${status}` : ''}`);
+  },
+  createRoutine: async (data: { name: string; cron_expr: string; mission_template: string; description?: string; assigned_agent?: string; concurrency_policy?: string }): Promise<AAIRoutine> => {
+    return apiCall('/aai/routines', { method: 'POST', body: JSON.stringify(data) });
+  },
+  deleteRoutine: async (id: string): Promise<{ success: boolean }> => {
+    return apiCall(`/aai/routines/${id}`, { method: 'DELETE' });
+  },
+  getRoutineRuns: async (id: string, limit = 20): Promise<{ runs: RoutineRun[] }> => {
+    return apiCall(`/aai/routines/${id}/runs?limit=${limit}`);
+  },
+
+  // === Inbox ===
+  sendMessage: async (from: string, to: string, content: string, contentType = 'text', priority = 0): Promise<{ message_id: string }> => {
+    return apiCall('/aai/inbox/send', {
+      method: 'POST', body: JSON.stringify({ from_agent: from, to_agent: to, content, content_type: contentType, priority }),
+    });
+  },
+  getInbox: async (agent: string, unreadOnly = false, limit = 20): Promise<{ messages: InboxMessage[]; count: number }> => {
+    return apiCall(`/aai/inbox/${agent}?unread_only=${unreadOnly}&limit=${limit}`);
+  },
+  markRead: async (agent: string, messageId: string): Promise<{ success: boolean }> => {
+    return apiCall(`/aai/inbox/${agent}/read/${messageId}`, { method: 'POST' });
+  },
+  getAllUnread: async (): Promise<{ unread: Record<string, number> }> => {
+    return apiCall('/aai/inbox/unread/all');
+  },
+
+  // === Budget ===
+  getAgentBudget: async (agent: string, month?: string): Promise<BudgetReport> => {
+    return apiCall(`/aai/budget/${agent}${month ? `?month=${month}` : ''}`);
+  },
+  getAllBudgets: async (month?: string): Promise<{ reports: BudgetReport[]; total_cost_usd: number }> => {
+    return apiCall(`/aai/budget${month ? `?month=${month}` : ''}`);
+  },
+  setBudget: async (agent: string, budget_usd: number): Promise<{ success: boolean }> => {
+    return apiCall('/aai/budget/set', { method: 'POST', body: JSON.stringify({ agent, budget_usd }) });
+  },
+};
+
+// ── Whiteboard API ──
+
+export interface WhiteboardItem {
+  id: string;
+  type: 'guideline' | 'memo';
+  title: string;
+  content: string;
+  status: 'new' | 'seen' | 'claimed' | 'done' | 'archived';
+  created_at: string;
+  updated_at: string | null;
+  discovered_by: string | null;
+  discovered_at: string | null;
+  mission_id: string | null;
+  tags: string[];
+  source: string;
+}
+
+export const whiteboardApi = {
+  listAll: async (): Promise<{ items: WhiteboardItem[]; total: number }> => {
+    return apiCall('/whiteboard');
+  },
+  getGuidelines: async (): Promise<{ guidelines: WhiteboardItem[]; total: number }> => {
+    return apiCall('/whiteboard/guidelines');
+  },
+  getNewMemos: async (): Promise<{ memos: WhiteboardItem[]; total: number }> => {
+    return apiCall('/whiteboard/new-memos');
+  },
+  getItem: async (id: string): Promise<WhiteboardItem> => {
+    return apiCall(`/whiteboard/${id}`);
+  },
+  createItem: async (type: 'guideline' | 'memo', title: string, content: string, tags: string[] = [], source = 'manual'): Promise<{ success: boolean; item: WhiteboardItem }> => {
+    return apiCall('/whiteboard', {
+      method: 'POST',
+      body: JSON.stringify({ type, title, content, tags, source }),
+    });
+  },
+  updateItem: async (id: string, updates: { title?: string; content?: string; tags?: string[]; status?: string }): Promise<{ success: boolean; item: WhiteboardItem }> => {
+    return apiCall(`/whiteboard/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+  deleteItem: async (id: string): Promise<{ success: boolean }> => {
+    return apiCall(`/whiteboard/${id}`, { method: 'DELETE' });
+  },
+  discoverItem: async (id: string, agentCode: string): Promise<{ success: boolean; mission_id?: string; mission_type?: string; mission_title?: string }> => {
+    return apiCall(`/whiteboard/${id}/discover`, {
+      method: 'POST',
+      body: JSON.stringify({ agent_code: agentCode }),
+    });
   },
 };
 

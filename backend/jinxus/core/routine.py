@@ -68,56 +68,20 @@ class RoutineRun:
     result: str = ""
 
 
-def _parse_cron_field(field_str: str, min_val: int, max_val: int) -> list[int]:
-    """단일 cron 필드 파싱"""
-    if field_str == "*":
-        return list(range(min_val, max_val + 1))
-
-    values = set()
-    for part in field_str.split(","):
-        if "/" in part:
-            base, step = part.split("/", 1)
-            start = min_val if base == "*" else int(base)
-            for v in range(start, max_val + 1, int(step)):
-                values.add(v)
-        elif "-" in part:
-            start, end = part.split("-", 1)
-            for v in range(int(start), int(end) + 1):
-                values.add(v)
-        else:
-            values.add(int(part))
-
-    return sorted(values)
-
-
 def cron_next_run(cron_expr: str, after: float = 0.0) -> float:
-    """다음 실행 시간 계산 (간이 cron 파서)
+    """다음 실행 시간 계산 (croniter 기반 — 전체 cron 문법 지원)
 
-    지원 형식: "분 시 일 월 요일" (5필드)
+    지원 형식: "분 시 일 월 요일" (5필드) + 모든 표준 cron 표현식
+    예: "0 9 * * *", "*/30 * * * *", "0 9 * * 1-5"
     """
-    from datetime import datetime, timedelta
-
-    if not cron_expr or not cron_expr.strip():
+    from datetime import datetime
+    try:
+        from croniter import croniter
+        base = datetime.fromtimestamp(after) if after else datetime.now()
+        return croniter(cron_expr, base).get_next(float)
+    except Exception as e:
+        logger.error(f"[Routine] cron 파싱 실패 ({cron_expr}): {e}")
         return 0.0
-
-    parts = cron_expr.strip().split()
-    if len(parts) != 5:
-        logger.warning(f"[Routine] 잘못된 cron 표현식: {cron_expr}")
-        return 0.0
-
-    minutes = _parse_cron_field(parts[0], 0, 59)
-    hours = _parse_cron_field(parts[1], 0, 23)
-    # 일/월/요일은 간이 구현에서는 * 만 지원
-    now = datetime.fromtimestamp(after) if after else datetime.now()
-    candidate = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-
-    # 최대 7일 이내에서 탐색
-    for _ in range(7 * 24 * 60):
-        if candidate.minute in minutes and candidate.hour in hours:
-            return candidate.timestamp()
-        candidate += timedelta(minutes=1)
-
-    return (now + timedelta(hours=1)).timestamp()
 
 
 class RoutineManager:
@@ -259,7 +223,68 @@ class RoutineManager:
 
             logger.info(f"[Routine] 트리거: {routine.name} (#{routine.run_count + 1})")
 
+            # 미션 실행 (백그라운드 태스크)
+            task = asyncio.create_task(self._fire_mission(routine, run))
+            task.add_done_callback(
+                lambda t, name=routine.name: logger.error(
+                    f"[Routine] {name} 미션 실행 예외: {t.exception()}"
+                ) if not t.cancelled() and t.exception() else None
+            )
+
         return triggered
+
+    async def _fire_mission(self, routine: "Routine", run: "RoutineRun") -> None:
+        """루틴 → 미션 생성 및 실행"""
+        r = await self._get_redis()
+        runs_key = _ROUTINE_RUNS_KEY.format(routine_id=routine.id)
+        try:
+            from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+            from jinxus.core.mission_router import get_mission_router
+            executor = get_mission_executor_v4()
+            mission_router = get_mission_router()
+            mission = await mission_router.create_mission(
+                routine.mission_template or routine.description,
+                session_id=f"routine:{routine.id}",
+            )
+            run.mission_id = mission.id
+            run.status = "running"
+            executor.start_mission(mission)
+            logger.info(f"[Routine] 미션 생성: {routine.name} → {mission.id}")
+
+            # 완료 대기 (최대 2시간)
+            deadline = time.time() + 7200
+            while time.time() < deadline:
+                await asyncio.sleep(30)
+                fresh = await executor._store.get(mission.id)
+                if fresh and fresh.status.value in ("complete", "failed", "cancelled"):
+                    run.status = "completed" if fresh.status.value == "complete" else "failed"
+                    run.result = (fresh.result or fresh.error or "")[:500]
+                    break
+            else:
+                run.status = "failed"
+                run.result = "타임아웃"
+
+        except Exception as e:
+            logger.error(f"[Routine] 미션 실행 실패 {routine.name}: {e}")
+            run.status = "failed"
+            run.result = str(e)[:200]
+        finally:
+            run.completed_at = time.time()
+            # run 기록 업데이트
+            raw_list = await r.lrange(runs_key, 0, -1)
+            updated = False
+            for i, raw in enumerate(raw_list):
+                try:
+                    d = json.loads(raw)
+                    if d.get("id") == run.id:
+                        await r.lset(runs_key, i, json.dumps(asdict(run), ensure_ascii=False))
+                        updated = True
+                        break
+                except Exception:
+                    pass
+            if not updated:
+                await r.rpush(runs_key, json.dumps(asdict(run), ensure_ascii=False))
+            self.mark_complete(routine.id)
 
     def mark_complete(self, routine_id: str):
         """실행 완료 표시"""

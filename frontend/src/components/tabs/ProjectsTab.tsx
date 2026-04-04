@@ -273,9 +273,9 @@ export default function ProjectsTab() {
       </div>
 
       {/* 본문: 좌우 분할 */}
-      <div className={`flex gap-4 min-h-0 ${bottomPanelOpen ? '' : 'flex-1'}`} style={bottomPanelOpen ? { flex: '1 1 0', minHeight: 0 } : undefined}>
-        {/* 왼쪽: 프로젝트 목록 */}
-        <div className="w-80 flex-shrink-0 bg-dark-card border border-dark-border rounded-xl overflow-hidden flex flex-col">
+      <div className={`flex flex-col md:flex-row gap-3 md:gap-4 min-h-0 ${bottomPanelOpen ? '' : 'flex-1'}`} style={bottomPanelOpen ? { flex: '1 1 0', minHeight: 0 } : undefined}>
+        {/* 프로젝트 목록 */}
+        <div className="md:w-80 flex-shrink-0 bg-dark-card border border-dark-border rounded-xl overflow-hidden flex flex-col max-h-[180px] md:max-h-none">
           <div className="px-4 py-3 border-b border-dark-border text-sm font-semibold text-zinc-400">
             프로젝트 ({projects.length})
           </div>

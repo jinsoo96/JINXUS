@@ -5,6 +5,7 @@ import { missionApi, channelApi, type MissionData, type MissionSSEEvent, type Ag
 import { getFirstName, getPersona } from '@/lib/personas';
 import { useAppStore } from '@/store/useAppStore';
 import MarkdownRenderer from '@/components/MarkdownRenderer';
+import { createSmoothStreamer } from '@/lib/smooth-streaming';
 import {
   Send, Loader2, Target, CheckCircle2, XCircle,
   Users, ChevronDown, Zap, Swords, Crown,
@@ -161,23 +162,90 @@ const MissionHistoryItem = memo(function MissionHistoryItem({
   );
 });
 
-// 실시간 로그 라인 — 터미널 스타일
-const LogLine = memo(function LogLine({ entry }: { entry: LogEntry }) {
+// 타임라인 노드 색상 (Geny ExecutionTimeline 패턴)
+function getTimelineColor(type: LogEntry['type']): string {
+  switch (type) {
+    case 'dm': return '#3b82f6';       // 파랑
+    case 'huddle': return '#f59e0b';   // 주황
+    case 'report': return '#22c55e';   // 초록
+    case 'broadcast': return '#8b5cf6'; // 보라
+    case 'thinking': return '#52525b'; // 회색
+    case 'status': return '#06b6d4';   // 시안
+    case 'result': return '#10b981';   // 에메랄드
+    default: return '#71717a';
+  }
+}
+
+// 파일 변경 배지 (Geny FileChangeSummary 패턴)
+function FileChangeBadge({ message }: { message: string }) {
+  const match = message.match(/📝 파일 (\d+)개 변경: (.+)/);
+  if (!match) return null;
+  const files = match[2].split(', ').slice(0, 3);
+  return (
+    <span className="inline-flex items-center gap-1 ml-1.5">
+      {files.map((f, i) => {
+        const nameMatch = f.match(/(.+)\((.+)\)/);
+        if (!nameMatch) return null;
+        return (
+          <span key={i} className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-mono bg-zinc-800 border border-zinc-700/50">
+            <span className="text-zinc-400">{nameMatch[1]}</span>
+            <span className={nameMatch[2] === 'create' ? 'text-green-400' : nameMatch[2] === 'delete' ? 'text-red-400' : 'text-amber-400'}>
+              {nameMatch[2]}
+            </span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+// 실시간 로그 라인 — 타임라인 스타일 (Geny ExecutionTimeline 패턴)
+const LogLine = memo(function LogLine({ entry, isLast }: { entry: LogEntry; isLast?: boolean }) {
+  const nodeColor = getTimelineColor(entry.type);
   const color = getLogColor(entry.type);
   const prefix = getLogPrefix(entry.type);
   const time = new Date(entry.timestamp).toLocaleTimeString('ko-KR', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   });
-  // thinking(도구 로그)만 한줄, 나머지는 전체 표시
-  const isLong = entry.type !== 'thinking';
+  const isThinking = entry.type === 'thinking';
+  const isFileChange = entry.message.startsWith('📝 파일');
+  const isToolUse = entry.message.startsWith('📦 도구');
 
   return (
-    <div className={`flex items-start gap-0 text-[11px] leading-relaxed font-mono hover:bg-white/[0.02] active:bg-white/[0.04] px-2 sm:px-3 py-1 sm:py-0.5 ${isLong ? '' : 'whitespace-nowrap'}`}>
-      <span className="text-zinc-600 flex-shrink-0 w-[50px] sm:w-[60px] whitespace-nowrap">{time}</span>
-      <span className={`flex-shrink-0 w-[28px] sm:w-[32px] font-bold whitespace-nowrap ${color}`}>{prefix}</span>
-      <span className="flex-shrink-0 mr-1 whitespace-nowrap">{entry.emoji}</span>
-      <span className="text-zinc-500 flex-shrink-0 mr-1.5 whitespace-nowrap">{entry.agent}</span>
-      <span className={`text-zinc-300 min-w-0 ${isLong ? 'whitespace-pre-wrap break-words' : ''}`}>{entry.message}</span>
+    <div className={`flex items-start gap-0 text-[11px] leading-relaxed hover:bg-white/[0.02] active:bg-white/[0.04] pl-1 pr-2 sm:pl-2 sm:pr-3 py-1 sm:py-0.5 ${isThinking ? 'opacity-60' : ''}`}>
+      {/* 타임라인 노드 + 수직선 */}
+      <div className="flex-shrink-0 w-4 sm:w-5 flex flex-col items-center mr-1 sm:mr-1.5 mt-[5px]">
+        <div
+          className="w-2 h-2 rounded-full flex-shrink-0"
+          style={{
+            background: nodeColor,
+            boxShadow: isLast ? `0 0 6px ${nodeColor}80` : 'none',
+          }}
+        />
+        {!isLast && <div className="w-px flex-1 min-h-[8px] bg-zinc-800" />}
+      </div>
+      {/* 시간 (24h) */}
+      <span className="text-zinc-600 flex-shrink-0 w-[46px] sm:w-[50px] whitespace-nowrap font-mono text-[10px]">{time}</span>
+      {/* 타입 배지 */}
+      <span
+        className="flex-shrink-0 w-[28px] sm:w-[30px] text-center font-bold whitespace-nowrap text-[9px] rounded px-0.5 py-[1px] mr-1.5"
+        style={{ color: nodeColor, background: `${nodeColor}15` }}
+      >
+        {prefix}
+      </span>
+      {/* 에이전트 */}
+      <span className="flex-shrink-0 whitespace-nowrap">{entry.emoji}</span>
+      <span className="text-zinc-500 flex-shrink-0 mr-1.5 whitespace-nowrap font-medium">{entry.agent}</span>
+      {/* 메시지 */}
+      <span className={`text-zinc-300 min-w-0 ${isThinking ? 'whitespace-nowrap text-ellipsis overflow-hidden' : 'whitespace-pre-wrap break-words'}`}>
+        {isFileChange ? (
+          <>{entry.message.split(':')[0]}:<FileChangeBadge message={entry.message} /></>
+        ) : isToolUse ? (
+          <span className="text-cyan-400/80">{entry.message}</span>
+        ) : (
+          entry.message
+        )}
+      </span>
     </div>
   );
 });
@@ -221,6 +289,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
   const sessionIdRef = useRef<string>(`web-${Date.now()}`);
   const autoScrollRef = useRef(true);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const streamerRef = useRef(createSmoothStreamer((text) => setResponseText(text)));
 
   // visualViewport API — 키보드 올라올 때 레이아웃 조정
   useEffect(() => {
@@ -299,10 +368,15 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
       // 후속 지시: 기존 로그/결과 유지, 아래에 이어붙이기
       setExecutionPhase('후속 지시 처리 중...');
       setResponseText(prev => prev ? prev + '\n\n---\n\n' : '');
+      // 후속 시 streamer를 현재 텍스트 기준으로 재생성
+      streamerRef.current.flush();
+      streamerRef.current = createSmoothStreamer((text) => setResponseText(text));
       pushLog('SYSTEM', '─── 후속 지시 ───', 'status');
     } else {
       // 새 미션: 전부 초기화
       setResponseText('');
+      streamerRef.current.reset();
+      streamerRef.current = createSmoothStreamer((text) => setResponseText(text));
       setLogEntries([]);
       setCurrentMission(null);
       setTitleExpanded(false);
@@ -436,10 +510,11 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
             }
             case 'mission_message': {
               const chunk = (event.data.chunk as string) || '';
-              if (chunk) setResponseText(prev => prev + chunk);
+              if (chunk) streamerRef.current.push(chunk);
               break;
             }
             case 'mission_complete': {
+              streamerRef.current.flush();
               const result = event.data as Record<string, unknown>;
               setCurrentMission(prev => prev ? {
                 ...prev,
@@ -455,6 +530,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
               break;
             }
             case 'mission_failed': {
+              streamerRef.current.flush();
               setCurrentMission(prev => prev ? {
                 ...prev,
                 status: 'failed',
@@ -467,6 +543,7 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
               break;
             }
             case 'mission_cancelled': {
+              streamerRef.current.flush();
               setCurrentMission(prev => prev ? { ...prev, status: 'cancelled' } : prev);
               pushLog('SYSTEM', '미션 취소됨', 'status');
               break;
@@ -803,8 +880,8 @@ export default function MissionConsole({ onMissionEvent, runtimeMap = {} }: Miss
             {/* 로그 엔트리들 */}
             {logEntries.length > 0 && (
               <div className="py-1">
-                {logEntries.map(entry => (
-                  <LogLine key={entry.id} entry={entry} />
+                {logEntries.map((entry, idx) => (
+                  <LogLine key={entry.id} entry={entry} isLast={idx === logEntries.length - 1} />
                 ))}
               </div>
             )}

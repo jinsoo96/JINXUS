@@ -66,7 +66,24 @@ class RoutineCreateRequest(BaseModel):
 class SoulSaveRequest(BaseModel):
     agent: str
     content: str
-    file_type: str = "soul"  # soul / rules
+    file_type: str = "soul"
+
+
+class AutonomyConfigRequest(BaseModel):
+    agent: str
+    autopilot_enabled: bool = False
+    autonomy_level: int = 0  # 0=관찰, 1=계획, 2=확인후실행, 3=자율실행
+    triggers_enabled: bool = True
+    heartbeat_interval: int = 3600
+    budget_usd: float = 100.0
+
+
+class TriggerCreateRequest(BaseModel):
+    name: str
+    type: str = "cron"  # cron|event|idle|interaction|threshold
+    agent: str = ""
+    config: dict = {}
+    description: str = ""  # soul / rules
 
 class MissionLinkGoalRequest(BaseModel):
     mission_id: str
@@ -393,3 +410,86 @@ async def soul_save(req: SoulSaveRequest):
     else:
         success = save_soul(req.agent, req.content)
     return {"success": success}
+
+
+# ===== Autonomy Config =====
+
+@router.get("/autonomy")
+async def autonomy_list():
+    """전체 에이전트 자율 설정 조회"""
+    from jinxus.core.trigger_engine import get_trigger_engine
+    engine = get_trigger_engine()
+    configs = await engine.get_all_autonomy_configs()
+    return {"agents": {k: v.to_dict() for k, v in configs.items()}}
+
+
+@router.get("/autonomy/{agent}")
+async def autonomy_get(agent: str):
+    from jinxus.core.trigger_engine import get_trigger_engine
+    engine = get_trigger_engine()
+    config = await engine.get_autonomy_config(agent)
+    return config.to_dict()
+
+
+@router.post("/autonomy")
+async def autonomy_set(req: AutonomyConfigRequest):
+    """에이전트 자율 설정 저장"""
+    from jinxus.core.trigger_engine import get_trigger_engine, AutonomyConfig
+    engine = get_trigger_engine()
+    config = AutonomyConfig(
+        agent=req.agent,
+        autopilot_enabled=req.autopilot_enabled,
+        autonomy_level=max(0, min(3, req.autonomy_level)),
+        triggers_enabled=req.triggers_enabled,
+        heartbeat_interval=max(60, req.heartbeat_interval),
+        budget_usd=max(0, req.budget_usd),
+    )
+    result = await engine.set_autonomy_config(config)
+    return result.to_dict()
+
+
+# ===== Triggers =====
+
+@router.get("/triggers")
+async def trigger_list(type: Optional[str] = None):
+    """트리거 전체 목록"""
+    from jinxus.core.trigger_engine import get_trigger_engine
+    engine = get_trigger_engine()
+    triggers = await engine.list_triggers(type)
+    return {"triggers": [t.to_dict() for t in triggers]}
+
+
+@router.post("/triggers")
+async def trigger_create(req: TriggerCreateRequest):
+    """트리거 생성"""
+    from jinxus.core.trigger_engine import get_trigger_engine, TriggerConfig
+    engine = get_trigger_engine()
+    config = TriggerConfig(
+        name=req.name,
+        type=req.type,
+        agent=req.agent,
+        config=req.config,
+        description=req.description,
+    )
+    result = await engine.create_trigger(config)
+    return result.to_dict()
+
+
+@router.delete("/triggers/{trigger_id}")
+async def trigger_delete(trigger_id: str):
+    from jinxus.core.trigger_engine import get_trigger_engine
+    engine = get_trigger_engine()
+    success = await engine.delete_trigger(trigger_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="트리거를 찾을 수 없습니다")
+    return {"success": True}
+
+
+@router.post("/triggers/{trigger_id}/toggle")
+async def trigger_toggle(trigger_id: str, enabled: bool = True):
+    from jinxus.core.trigger_engine import get_trigger_engine
+    engine = get_trigger_engine()
+    success = await engine.toggle_trigger(trigger_id, enabled)
+    if not success:
+        raise HTTPException(status_code=404, detail="트리거를 찾을 수 없습니다")
+    return {"success": True}

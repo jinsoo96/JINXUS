@@ -33,9 +33,13 @@ from jinxus.core.agent_messenger import get_agent_messenger
 
 
 def _get_executor():
-    """오케스트레이터 기반 executor (분류→분해→위임→병렬실행)"""
-    from jinxus.core.mission_executor import get_mission_executor
-    return get_mission_executor()
+    """v4 CLI executor 우선, 실패 시 오케스트레이터 fallback"""
+    try:
+        from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+        return get_mission_executor_v4()
+    except Exception:
+        from jinxus.core.mission_executor import get_mission_executor
+        return get_mission_executor()
 
 router = APIRouter(prefix="/mission", tags=["mission"])
 logger = logging.getLogger(__name__)

@@ -137,7 +137,7 @@ MCP_SERVERS: list[MCPServerConfig] = [
         name="playwright",
         command="npx",
         args=["-y", "@playwright/mcp", "--headless"],  # headless 모드 추가
-        allowed_agents=["JX_RESEARCHER", "JX_CODER", "JX_OPS", "JX_SNS"],
+        allowed_agents=["JX_RESEARCHER", "JX_CODER", "JX_OPS", "JX_SNS", "JX_SECRETARY"],
         enabled=True,
         description="Playwright 브라우저 자동화 (크롬/파이어폭스/사파리)",
     ),

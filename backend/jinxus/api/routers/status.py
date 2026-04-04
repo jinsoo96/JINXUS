@@ -598,3 +598,104 @@ async def get_delegation_events(limit: int = Query(30, ge=1, le=100)):
     events = await dl.get_recent_events(limit=limit)
 
     return {"events": events, "total": len(events)}
+
+
+# ── 설정 스키마 API ────────────────────────────────────────────────
+_CONFIG_GROUPS = {
+    "서버": ["jinxus_host", "jinxus_port", "jinxus_debug"],
+    "LLM 모델": ["claude_model", "claude_fallback_model", "claude_fast_model"],
+    "Redis (단기 메모리)": ["redis_host", "redis_port"],
+    "Qdrant (장기 메모리)": ["qdrant_host", "qdrant_port"],
+    "임베딩": ["embedding_model", "embedding_dimensions"],
+    "자기 강화": ["auto_improve_threshold", "reflect_every_n_tasks", "max_prompt_versions"],
+    "작업 관리": ["task_retention_hours", "max_tasks", "step_timeout_seconds", "guardrail_max_retries", "checkpoint_ttl_hours"],
+    "컨텍스트": ["max_output_chars", "max_context_chars"],
+    "메모리 최적화": ["memory_prune_min_score", "memory_prune_halflife_days", "memory_inject_max_chars", "memory_dedup_threshold"],
+    "MCP": ["mcp_enabled", "use_dynamic_tools", "approval_gate_enabled"],
+    "모델 라우팅": ["quality_critical_agents", "complex_keywords", "simple_patterns"],
+}
+
+# API 키/시크릿 등 민감한 필드 (스키마에서 제외)
+_SENSITIVE_FIELDS = {
+    "anthropic_api_key", "openai_api_key", "gpt_emb_api_key", "tavily_api_key",
+    "naver_client_id", "naver_client_secret", "openweathermap_api_key",
+    "github_token", "github_personal_access_token", "telegram_bot_token",
+    "matrix_as_token", "matrix_hs_token", "brave_api_key",
+    "slack_bot_token", "slack_team_id", "notion_api_key",
+    "redis_password",
+}
+
+
+@router.get("/config/schema")
+async def get_config_schema():
+    """설정 스키마 반환 — 그룹별 필드 + 타입 + 현재값"""
+    from jinxus.config import get_settings
+    settings = get_settings()
+    schema = settings.model_json_schema()
+    props = schema.get("properties", {})
+
+    groups = []
+    for group_name, field_keys in _CONFIG_GROUPS.items():
+        fields = []
+        for key in field_keys:
+            if key in _SENSITIVE_FIELDS:
+                continue
+            prop = props.get(key, {})
+            value = getattr(settings, key, None)
+
+            # 타입 추론
+            field_type = "string"
+            if prop.get("type") == "integer":
+                field_type = "number"
+            elif prop.get("type") == "number":
+                field_type = "number"
+            elif prop.get("type") == "boolean":
+                field_type = "boolean"
+            elif prop.get("type") == "array":
+                field_type = "array"
+
+            fields.append({
+                "key": key,
+                "label": prop.get("description", key.replace("_", " ").title()),
+                "type": field_type,
+                "value": value,
+                "default": prop.get("default"),
+            })
+        if fields:
+            groups.append({"group": group_name, "fields": fields})
+
+    return {"groups": groups}
+
+
+@router.put("/config")
+async def update_config(updates: dict):
+    """설정 런타임 업데이트 (서버 재시작 없이 반영)
+
+    주의: .env 파일은 수정하지 않음. 런타임에만 반영됨.
+    """
+    from jinxus.config import get_settings
+    settings = get_settings()
+
+    applied = {}
+    rejected = {}
+    for key, value in updates.items():
+        if key in _SENSITIVE_FIELDS:
+            rejected[key] = "민감한 필드는 수정할 수 없습니다"
+            continue
+        if not hasattr(settings, key):
+            rejected[key] = "존재하지 않는 설정입니다"
+            continue
+        # 그룹에 포함된 필드만 수정 가능
+        allowed = set()
+        for fields in _CONFIG_GROUPS.values():
+            allowed.update(fields)
+        if key not in allowed:
+            rejected[key] = "수정 허용되지 않는 필드입니다"
+            continue
+        try:
+            setattr(settings, key, value)
+            applied[key] = value
+        except Exception as e:
+            rejected[key] = str(e)
+
+    return {"applied": applied, "rejected": rejected}

@@ -18,7 +18,7 @@ interface AppState {
   personasVersion: number;  // loadPersonas 완료 시 증가 → 구독 컴포넌트 리렌더링 트리거
 
   // 현재 탭
-  activeTab: 'mission' | 'team' | 'projects' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes';
+  activeTab: 'mission' | 'team' | 'projects' | 'memory' | 'logs' | 'tools' | 'settings' | 'notes' | 'workflow' | 'autopilot';
 
   // 로그 탭 에이전트 필터 (Sidebar에서 클릭 시 설정)
   logsAgentFilter: string;
@@ -30,6 +30,14 @@ interface AppState {
   // 플레이그라운드 잡담 음소거 (전역 — Office/Corporation 공유)
   muteChat: boolean;
   setMuteChat: (mute: boolean) => void;
+
+  // Dev Mode 토글 (Geny 패턴) — Tools, Logs, Settings, Notes 탭 표시 제어
+  devMode: boolean;
+  setDevMode: (mode: boolean) => void;
+
+  // 화이트보드 패널 (PixelOffice에서 클릭 시 열림)
+  whiteboardOpen: boolean;
+  setWhiteboardOpen: (open: boolean) => void;
 
   // 액션
   addMessage: (message: ChatMessage) => void;
@@ -64,6 +72,16 @@ export const useAppStore = create<AppState>((set) => ({
   agentBubbles: {},
   muteChat: false,
   setMuteChat: (mute) => set({ muteChat: mute }),
+
+  // Dev Mode — localStorage에서 복원
+  devMode: typeof window !== 'undefined' ? (localStorage.getItem('jinxus-dev-mode') ?? 'true') !== 'false' : true,
+  setDevMode: (mode) => {
+    if (typeof window !== 'undefined') localStorage.setItem('jinxus-dev-mode', String(mode));
+    set({ devMode: mode });
+  },
+
+  whiteboardOpen: false,
+  setWhiteboardOpen: (open) => set({ whiteboardOpen: open }),
 
   pushAgentBubble: (agentCode, text) =>
     set((state) => ({

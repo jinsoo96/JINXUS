@@ -60,7 +60,56 @@ class AgentState(TypedDict):
     created_at: str
 
 
-class BaseAgent(ABC):
+def _agent_display_name(agent_code: str) -> str:
+    """에이전트 코드 → 표시 이름 (JX_RESEARCHER → 예린 등)"""
+    try:
+        from jinxus.agents.personas import get_all_personas
+        p = get_all_personas().get(agent_code)
+        if p:
+            return p.korean_name or p.full_name or agent_code
+    except Exception:
+        pass
+    return agent_code
+
+
+class AgentCallbackMixin:
+    """에이전트 콜백 헬퍼 믹스인
+
+    BaseAgent를 상속하지 않는 에이전트(JXResearcher, JXCoder 등)도 이 믹스인을 통해
+    _make_tool_callback / _report_progress 를 사용할 수 있다.
+    """
+
+    def _make_tool_callback(self, agent_name: str = None):
+        """도구 호출 콜백 생성 (calling/done/error 전부 SSE로 전달)"""
+        cb = getattr(self, '_progress_callback', None)
+        if not cb:
+            return None
+        raw_name = agent_name or getattr(self, 'name', '?')
+        display = _agent_display_name(raw_name)
+
+        async def tool_cb(tool_name: str, status: str, detail: str = ""):
+            suffix = f" | {detail}" if detail else ""
+            if status == "calling":
+                await cb(f"[{display}] 🔧 {tool_name} 도구 호출{suffix}")
+            elif status == "done":
+                await cb(f"[{display}] ✅ {tool_name} 완료{suffix}")
+            elif status == "error":
+                await cb(f"[{display}] ❌ {tool_name} 실패{suffix}")
+        return tool_cb
+
+    async def _report_progress(self, detail: str):
+        """SSE progress_callback이 설정되어 있으면 호출"""
+        cb = getattr(self, '_progress_callback', None)
+        if cb:
+            try:
+                raw = getattr(self, 'name', '?')
+                display = _agent_display_name(raw)
+                await cb(f"[{display}] {detail}")
+            except Exception as e:
+                logger.debug(f"[AgentCallbackMixin] SSE progress_callback 호출 실패: {e}")
+
+
+class BaseAgent(AgentCallbackMixin, ABC):
     """JINXUS 에이전트 추상 기반 클래스
 
     모든 Sub-Agent는 이 클래스를 상속받아 구현한다.
@@ -289,11 +338,18 @@ class BaseAgent(ABC):
                     logger.error("[%s] 에러 신호 감지: %s", self.name, completion_reason)
                 break  # 첫 번째 매칭된 신호만 처리
 
-        # 출력에서 신호 마커 제거
+        # 출력에서 신호 마커 + raw 도구 호출 로그 제거
         cleaned_output = output
         for pattern in self._COMPLETION_PATTERNS:
             cleaned_output = pattern.sub("", cleaned_output)
-        cleaned_output = cleaned_output.strip()
+        # <tool_call>/<tool_response> 등 raw 도구 로그 제거
+        for tag_pattern in [
+            r'<tool_call>.*?</tool_call>',
+            r'<tool_response>.*?</tool_response>',
+            r'<invoke[^>]*>.*?</invoke>',
+        ]:
+            cleaned_output = re.sub(tag_pattern, '', cleaned_output, flags=re.DOTALL)
+        cleaned_output = re.sub(r'\n{3,}', '\n\n', cleaned_output).strip()
 
         result = {
             **state,
@@ -469,32 +525,6 @@ JSON으로 응답해:
             **state,
             "duration_ms": duration_ms,
         }
-
-    # ===== 진행 보고 =====
-
-    async def _report_progress(self, detail: str):
-        """SSE progress_callback이 설정되어 있으면 호출"""
-        if hasattr(self, '_progress_callback') and self._progress_callback:
-            try:
-                await self._progress_callback(f"[{self.name}] {detail}")
-            except Exception as e:
-                logger.debug(f"[BaseAgent] SSE progress_callback 호출 실패 (무시): {e}")
-
-    def _make_tool_callback(self, agent_name: str = None):
-        """도구 호출 콜백 생성 (calling/done/error 전부 SSE로 전달)"""
-        if not hasattr(self, '_progress_callback') or not self._progress_callback:
-            return None
-        cb = self._progress_callback
-        name = agent_name or self.name
-
-        async def tool_cb(tool_name: str, status: str):
-            if status == "calling":
-                await cb(f"[{name}] 🔧 {tool_name} 도구 호출")
-            elif status == "done":
-                await cb(f"[{name}] ✅ {tool_name} 완료")
-            elif status == "error":
-                await cb(f"[{name}] ❌ {tool_name} 실패")
-        return tool_cb
 
     # ===== 헬퍼 메서드 =====
 

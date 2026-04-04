@@ -60,6 +60,7 @@ const STATIC_PERSONA_MAP: Record<string, PersonaInfo> = {
   // ── 경영지원팀 ────────────────────────────────────────────────
   JX_ANALYST:      { name: '서현수',   firstName: '현수',   role: '비즈니스 애널리스트',       team: '경영지원팀',   channel: 'biz-support', emoji: '📊' },
   JX_OPS:          { name: '배태양',   firstName: '태양',   role: '시스템 운영',               team: '경영지원팀',   channel: 'biz-support', emoji: '🖥️' },
+  JX_SECRETARY:    { name: '정소율',   firstName: '소율',   role: '비서',                     team: '경영',         channel: 'general',     emoji: '📋' },
 };
 
 // ── 동적 맵 (앱 시작 시 백엔드에서 덮어씀) ───────────────────────────────
@@ -196,9 +197,6 @@ export function getTeamOrder(): string[] {
   return Array.from(teams).sort((a, b) => (TEAM_PRIORITY[a] ?? 99) - (TEAM_PRIORITY[b] ?? 99));
 }
 
-/** @deprecated 정적 배열 대신 getTeamOrder() 사용 */
-export const TEAM_ORDER = ['경영', '개발팀', '플랫폼팀', '프로덕트팀', '마케팅팀', '경영지원팀'] as const;
-
 // ── 채널별 에이전트 코드 배열 ─────────────────────────────────────────────
 
 /**
@@ -231,12 +229,6 @@ export function getFirstNameEmojiMap(): Record<string, string> {
     '진수': '👤',
   };
 }
-
-/** @deprecated FIRST_NAME_EMOJI 직접 참조 대신 getFirstNameEmojiMap() 사용 */
-export const FIRST_NAME_EMOJI: Record<string, string> = new Proxy({} as Record<string, string>, {
-  get(_t, key: string) { return getFirstNameEmojiMap()[key as string]; },
-  has(_t, key: string) { return key in getFirstNameEmojiMap(); },
-});
 
 /**
  * 팀별 에이전트 코드 그룹 (직원 현황 그리드)

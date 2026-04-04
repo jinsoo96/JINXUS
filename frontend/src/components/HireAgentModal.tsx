@@ -100,7 +100,7 @@ export default function HireAgentModal({ isOpen, onClose, onHired }: HireAgentMo
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
+      <div className="relative bg-dark-card border border-dark-border rounded-xl w-full max-w-2xl mx-3 sm:mx-4 max-h-[85vh] sm:max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-dark-border flex-shrink-0">
           <div className="flex items-center gap-2">

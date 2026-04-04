@@ -26,6 +26,7 @@ from jinxus.api.routers import (
     matrix_router,
     mission_router,
     command_router,
+    whiteboard_router,
 )
 from jinxus.api.routers.aai import router as aai_router
 
@@ -122,11 +123,11 @@ async def lifespan(app: FastAPI):
         session_mgr.start_idle_monitor()
         print("CLI Engine: AgentSessionManager initialized")
 
-        # MissionExecutor 고아 정리
-        from jinxus.core.mission_executor import get_mission_executor
-        executor = get_mission_executor()
-        await executor.cleanup_orphan_missions()
-        print("CLI Engine: MissionExecutor ready")
+        # v4 MissionExecutor 고아 정리
+        from jinxus.core.mission_executor_v4 import get_mission_executor_v4
+        executor_v4 = get_mission_executor_v4()
+        await executor_v4.cleanup_orphan_missions()
+        print("CLI Engine: MissionExecutorV4 ready")
     except Exception as e:
         logger.warning(f"CLI Engine init failed (v4 features disabled): {e}")
 
@@ -151,6 +152,37 @@ async def lifespan(app: FastAPI):
             print(f"Scheduler initialized, restored {restored} tasks")
     except Exception as e:
         logger.error(f"Failed to initialize scheduler: {e}")
+
+    # Routine 폴러 — 1분마다 실행 시점 도달한 루틴을 미션으로 발동
+    async def _routine_poll():
+        from jinxus.core.routine import get_routine_manager
+        mgr = get_routine_manager()
+        while True:
+            try:
+                triggered = await mgr.check_and_trigger()
+                if triggered:
+                    logger.info(f"[Routine] 발동된 루틴: {triggered}")
+            except Exception as e:
+                logger.debug(f"[Routine] 폴링 오류: {e}")
+            await asyncio.sleep(60)
+
+    asyncio.create_task(_routine_poll())
+    print("Routine poller started (60s interval)")
+
+    # Trigger 폴러 — 30초마다 idle/threshold 트리거 체크
+    async def _trigger_poll():
+        from jinxus.core.trigger_engine import get_trigger_engine
+        engine = get_trigger_engine()
+        while True:
+            try:
+                await engine.check_idle_triggers()
+                await engine.check_threshold_triggers()
+            except Exception as e:
+                logger.debug(f"[TriggerEngine] 폴링 오류: {e}")
+            await asyncio.sleep(30)
+
+    asyncio.create_task(_trigger_poll())
+    print("Trigger poller started (30s interval)")
 
     # 프로젝트 매니저 복원
     try:
@@ -177,6 +209,15 @@ async def lifespan(app: FastAPI):
         await tracker.init_redis()
     except Exception as e:
         logger.debug(f"StateTracker Redis init failed (in-memory mode): {e}")
+
+    # WaveNoter 동기화 루틴 등록 (JX_SECRETARY 10분 주기)
+    try:
+        from jinxus.core.wavenote_sync import ensure_wavenote_routine
+        wn_routine_id = await ensure_wavenote_routine()
+        if wn_routine_id:
+            print(f"WaveNoter sync routine: {wn_routine_id}")
+    except Exception as e:
+        logger.debug(f"WaveNoter routine registration failed: {e}")
 
     # 메트릭 복원 + 주기적 스냅샷
     metrics_task = None
@@ -309,6 +350,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"[server] MissionStore 종료 중 오류: {e}")
 
+    # WhiteboardStore Redis 종료
+    try:
+        from jinxus.core.whiteboard import get_whiteboard_store
+        await get_whiteboard_store().close()
+    except Exception as e:
+        logger.debug(f"[server] WhiteboardStore 종료 중 오류: {e}")
+
     # ResponseCache Redis 종료
     try:
         from jinxus.core.response_cache import get_response_cache
@@ -399,6 +447,7 @@ def create_app() -> FastAPI:
     app.include_router(matrix_router)
     app.include_router(mission_router)
     app.include_router(command_router)
+    app.include_router(whiteboard_router)
     app.include_router(aai_router)
 
     @app.get("/")
